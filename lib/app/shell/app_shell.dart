@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../core/settings/app_setting_keys.dart';
+import '../../core/settings/settings_service.dart';
 import '../argo_environment.dart';
 import '../navigation/app_module.dart';
 
@@ -13,7 +17,24 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
+
+  SettingsService get _settings =>
+      widget.environment.services.get<SettingsService>();
+
+  @override
+  void initState() {
+    super.initState();
+    final modules = widget.environment.moduleRegistry.modules;
+    final storedId = _settings.get(AppSettingKeys.lastModule);
+    final storedIndex = modules.indexWhere((module) => module.id == storedId);
+    final homeIndex = modules.indexWhere((module) => module.id == 'home');
+    _selectedIndex = storedIndex >= 0
+        ? storedIndex
+        : homeIndex >= 0
+        ? homeIndex
+        : 0;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +96,22 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _selectedIndex = index;
     });
+    final moduleId = widget.environment.moduleRegistry.modules[index].id;
+    unawaited(
+      _settings.set(AppSettingKeys.lastModule, moduleId).catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'Project Argo navigation',
+            context: ErrorDescription('while saving the selected module'),
+          ),
+        );
+      }),
+    );
   }
 }
 

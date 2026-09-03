@@ -11,10 +11,12 @@ final class VeloceRuntimeLifecycle extends StatefulWidget {
     super.key,
     required this.runtime,
     required this.child,
+    this.beforeShutdown,
   });
 
   final VeloceRuntime runtime;
   final Widget child;
+  final Future<void> Function()? beforeShutdown;
 
   @override
   State<VeloceRuntimeLifecycle> createState() => _VeloceRuntimeLifecycleState();
@@ -53,15 +55,27 @@ final class _VeloceRuntimeLifecycleState extends State<VeloceRuntimeLifecycle>
   Future<void> _shutdown() => _shutdownFuture ??= _shutdownRuntime();
 
   Future<void> _shutdownRuntime() async {
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    try {
+      await widget.beforeShutdown?.call();
+    } on Object catch (error, stackTrace) {
+      firstError = error;
+      firstStackTrace = stackTrace;
+    }
     try {
       await widget.runtime.shutdown();
     } on Object catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+    if (firstError case final error?) {
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: error,
-          stack: stackTrace,
+          stack: firstStackTrace,
           library: 'Project Argo Veloce integration',
-          context: ErrorDescription('while shutting down Veloce'),
+          context: ErrorDescription('while shutting down Argo services'),
         ),
       );
     }
