@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../navigation/app_modules.dart';
+import '../argo_environment.dart';
+import '../navigation/app_module.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  const AppShell({super.key, required this.environment});
+
+  final ArgoEnvironment environment;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -14,6 +17,8 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    final modules = widget.environment.moduleRegistry.modules;
+
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(
@@ -28,17 +33,19 @@ class _AppShellState extends State<AppShell> {
                       ? Row(
                           children: [
                             _SideNavigation(
+                              modules: modules,
                               selectedIndex: _selectedIndex,
                               onSelected: _selectModule,
                             ),
                             const VerticalDivider(width: 1),
-                            Expanded(child: _buildContent()),
+                            Expanded(child: _buildContent(modules)),
                           ],
                         )
-                      : _buildContent(),
+                      : _buildContent(modules),
                 ),
                 if (!useSideNavigation)
                   _BottomNavigation(
+                    modules: modules,
                     selectedIndex: _selectedIndex,
                     onSelected: _selectModule,
                   ),
@@ -50,11 +57,12 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildContent(List<AppModule> modules) {
     return IndexedStack(
       index: _selectedIndex,
       children: [
-        for (final module in appModules) Builder(builder: module.builder),
+        for (final module in modules)
+          Builder(key: ValueKey(module.id), builder: module.builder),
       ],
     );
   }
@@ -95,10 +103,12 @@ class _StatusBar extends StatelessWidget {
 
 class _BottomNavigation extends StatelessWidget {
   const _BottomNavigation({
+    required this.modules,
     required this.selectedIndex,
     required this.onSelected,
   });
 
+  final List<AppModule> modules;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
 
@@ -108,11 +118,11 @@ class _BottomNavigation extends StatelessWidget {
       height: 58,
       child: Row(
         children: [
-          for (var index = 0; index < appModules.length; index++)
+          for (var index = 0; index < modules.length; index++)
             Expanded(
               child: _NavigationButton(
-                label: appModules[index].label,
-                icon: appModules[index].icon,
+                label: modules[index].label,
+                icon: modules[index].icon,
                 selected: index == selectedIndex,
                 onTap: () => onSelected(index),
               ),
@@ -165,10 +175,12 @@ class _NavigationButton extends StatelessWidget {
 
 class _SideNavigation extends StatelessWidget {
   const _SideNavigation({
+    required this.modules,
     required this.selectedIndex,
     required this.onSelected,
   });
 
+  final List<AppModule> modules;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
 
@@ -179,7 +191,7 @@ class _SideNavigation extends StatelessWidget {
       onDestinationSelected: onSelected,
       labelType: NavigationRailLabelType.all,
       destinations: [
-        for (final module in appModules)
+        for (final module in modules)
           NavigationRailDestination(
             icon: Icon(module.icon),
             label: Text(module.label),

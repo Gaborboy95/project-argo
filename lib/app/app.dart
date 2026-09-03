@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
+import 'argo_environment.dart';
 import 'shell/app_shell.dart';
 
 class ArgoApp extends StatelessWidget {
-  const ArgoApp({super.key});
+  const ArgoApp({super.key, required this.environment});
+
+  final ArgoEnvironment environment;
 
   @override
   Widget build(BuildContext context) {
@@ -11,7 +14,7 @@ class ArgoApp extends StatelessWidget {
       title: 'Project Argo',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
-      home: const AppShell(),
+      home: AppShell(environment: environment),
     );
   }
 }
