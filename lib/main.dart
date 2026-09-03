@@ -22,6 +22,11 @@ Future<void> main() async {
   final veloceRuntime = await VeloceRuntime.start(
     configuration: veloceConfiguration,
     canProvider: canProvider,
+    canProviderDescription: socketCanConfiguration == null
+        ? null
+        : 'SocketCAN(interface=${socketCanConfiguration.interfaceName}, '
+              'bus=${socketCanConfiguration.logicalBus}, '
+              'writes=${socketCanConfiguration.writesEnabled})',
   );
   runApp(
     VeloceRuntimeLifecycle(runtime: veloceRuntime, child: const ArgoApp()),

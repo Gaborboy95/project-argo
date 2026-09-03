@@ -121,6 +121,7 @@ final class VeloceRuntime {
   static Future<VeloceRuntime> start({
     VeloceRuntimeConfiguration? configuration,
     CanProvider? canProvider,
+    String? canProviderDescription,
   }) async {
     final resolvedConfiguration =
         configuration ?? VeloceRuntimeConfiguration.fromEnvironment();
@@ -147,6 +148,7 @@ final class VeloceRuntime {
           key: traceKey,
           emitCurrent: true,
           handler: (point) {
+            stdout.writeln('[Veloce vehicle] ${point.key}=${point.value}');
             developer.log(
               '${point.key}=${point.value}',
               name: 'argo.veloce.vehicle',
@@ -168,6 +170,18 @@ final class VeloceRuntime {
       );
       final discovery = await pluginManager.discover();
       await pluginManager.startWatching();
+      if (traceKey != null) {
+        _writeStartupDiagnostics(
+          traceKey: traceKey,
+          canProviderDescription:
+              canProviderDescription ??
+              (canProvider == null
+                  ? 'disabled (fail-closed)'
+                  : resolvedCanProvider.runtimeType.toString()),
+          pluginRoot: resolvedConfiguration.pluginRoot,
+          plugins: pluginManager.currentPlugins,
+        );
+      }
 
       return VeloceRuntime._(
         pluginManager: pluginManager,
@@ -250,6 +264,33 @@ final class VeloceRuntime {
       await vehicleDataBus.close();
     } on Object {
       // Preserve the startup failure.
+    }
+  }
+
+  static void _writeStartupDiagnostics({
+    required String traceKey,
+    required String canProviderDescription,
+    required Directory pluginRoot,
+    required List<PluginRecord> plugins,
+  }) {
+    stdout.writeln('[Veloce] vehicle trace key: $traceKey');
+    stdout.writeln('[Veloce] CAN provider: $canProviderDescription');
+    stdout.writeln('[Veloce] plugin root: ${pluginRoot.path}');
+    if (plugins.isEmpty) {
+      stdout.writeln('[Veloce] discovered plugins: none');
+      return;
+    }
+    for (final plugin in plugins) {
+      stdout.writeln(
+        '[Veloce] plugin ${plugin.manifest.id}: '
+        'PluginState.${plugin.state.name}',
+      );
+      if (plugin.state == PluginState.failed && plugin.latestError != null) {
+        stdout.writeln(
+          '[Veloce] plugin ${plugin.manifest.id} latestError: '
+          '${plugin.latestError}',
+        );
+      }
     }
   }
 }
