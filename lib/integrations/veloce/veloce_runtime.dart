@@ -1,3 +1,4 @@
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:veloce_lua_core/veloce_lua_core.dart';
@@ -9,6 +10,7 @@ final class VeloceRuntimeConfiguration {
     required this.pluginRoot,
     required this.storageDatabase,
     this.nativeLibraryPath,
+    this.traceVehicleKey,
   });
 
   /// Builds the production configuration from host environment variables.
@@ -17,6 +19,7 @@ final class VeloceRuntimeConfiguration {
   /// `VELOCE_LUA_LIBRARY` override their respective defaults. Plugin and
   /// storage directories otherwise live in the current user's mutable
   /// application-data directory, outside the packaged application image.
+  /// `VELOCE_TRACE_VEHICLE_KEY` optionally enables terminal signal tracing.
   factory VeloceRuntimeConfiguration.fromEnvironment({
     Map<String, String>? environment,
   }) {
@@ -39,12 +42,14 @@ final class VeloceRuntimeConfiguration {
         ).absolute.uri.resolve('plugins.sqlite3'),
       ),
       nativeLibraryPath: _optionalPath(values, 'VELOCE_LUA_LIBRARY'),
+      traceVehicleKey: _optionalPath(values, 'VELOCE_TRACE_VEHICLE_KEY'),
     );
   }
 
   final Directory pluginRoot;
   final File storageDatabase;
   final String? nativeLibraryPath;
+  final String? traceVehicleKey;
 
   static Directory _applicationDataDirectory(Map<String, String> environment) {
     final String? basePath;
@@ -98,6 +103,7 @@ final class VeloceRuntime {
     required this.initialDiscovery,
     required this._storageProvider,
     required this._canProvider,
+    required this._traceSubscription,
   });
 
   final PluginManager pluginManager;
@@ -106,6 +112,7 @@ final class VeloceRuntime {
   final PluginDiscoveryResult initialDiscovery;
   final SqlitePluginStorageProvider _storageProvider;
   final CanProvider _canProvider;
+  final VehicleDataSubscription? _traceSubscription;
 
   Future<void>? _shutdownFuture;
 
@@ -122,9 +129,33 @@ final class VeloceRuntime {
       databaseFile: resolvedConfiguration.storageDatabase,
     );
     final resolvedCanProvider = canProvider ?? _UnavailableCanProvider();
+    final capabilityManager = CapabilityManager();
+    if (resolvedCanProvider.writesEnabled) {
+      capabilityManager.setHostCapabilityEnabled(
+        BuiltInCapabilities.canWrite,
+        enabled: true,
+      );
+    }
     PluginManager? pluginManager;
+    VehicleDataSubscription? traceSubscription;
 
     try {
+      final traceKey = resolvedConfiguration.traceVehicleKey;
+      if (traceKey != null) {
+        traceSubscription = vehicleDataBus.subscribe(
+          ownerId: 'argo.development.vehicle-trace',
+          key: traceKey,
+          emitCurrent: true,
+          handler: (point) {
+            developer.log(
+              '${point.key}=${point.value}',
+              name: 'argo.veloce.vehicle',
+              time: point.timestamp,
+              sequenceNumber: point.sequence,
+            );
+          },
+        );
+      }
       pluginManager = PluginManager(
         pluginRoot: resolvedConfiguration.pluginRoot,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
@@ -133,6 +164,7 @@ final class VeloceRuntime {
         vehicleDataBus: vehicleDataBus,
         canProvider: resolvedCanProvider,
         storageProvider: storageProvider,
+        capabilityManager: capabilityManager,
       );
       final discovery = await pluginManager.discover();
       await pluginManager.startWatching();
@@ -144,6 +176,7 @@ final class VeloceRuntime {
         initialDiscovery: discovery,
         storageProvider: storageProvider,
         canProvider: resolvedCanProvider,
+        traceSubscription: traceSubscription,
       );
     } on Object catch (error, stackTrace) {
       await _closeAfterStartupFailure(
@@ -151,12 +184,13 @@ final class VeloceRuntime {
         storageProvider: storageProvider,
         vehicleDataBus: vehicleDataBus,
         canProvider: resolvedCanProvider,
+        traceSubscription: traceSubscription,
       );
       Error.throwWithStackTrace(error, stackTrace);
     }
   }
 
-  /// Stops watching, unloads plugins, then releases host-owned resources.
+  /// Stops CAN input, unloads plugins, then releases host-owned resources.
   Future<void> shutdown() => _shutdownFuture ??= _shutdown();
 
   Future<void> _shutdown() async {
@@ -172,8 +206,11 @@ final class VeloceRuntime {
       }
     }
 
-    await close(pluginManager.close);
     await close(_canProvider.close);
+    await close(pluginManager.close);
+    if (_traceSubscription case final subscription?) {
+      await close(subscription.cancel);
+    }
     await close(_storageProvider.close);
     await close(vehicleDataBus.close);
 
@@ -187,14 +224,20 @@ final class VeloceRuntime {
     required SqlitePluginStorageProvider storageProvider,
     required VehicleDataBus vehicleDataBus,
     required CanProvider canProvider,
+    required VehicleDataSubscription? traceSubscription,
   }) async {
+    try {
+      await canProvider.close();
+    } on Object {
+      // Preserve the startup failure while still releasing other resources.
+    }
     try {
       await pluginManager?.close();
     } on Object {
       // Preserve the startup failure while still releasing other resources.
     }
     try {
-      await canProvider.close();
+      await traceSubscription?.cancel();
     } on Object {
       // Preserve the startup failure while still releasing other resources.
     }
@@ -235,9 +278,7 @@ final class _UnavailableCanProvider implements CanProvider {
   }
 
   @override
-  Future<void> removeOwner(String ownerId) async {
-    _ensureOpen();
-  }
+  Future<void> removeOwner(String ownerId) async {}
 
   @override
   Future<void> close() async {
