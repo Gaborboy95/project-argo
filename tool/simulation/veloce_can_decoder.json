@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "loop": false,
+  "events": [
+    {
+      "atMs": 500,
+      "type": "can",
+      "bus": "comfort",
+      "id": 640,
+      "data": [11, 184]
+    }
+  ]
+}
