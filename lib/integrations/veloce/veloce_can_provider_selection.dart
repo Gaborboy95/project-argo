@@ -31,9 +31,14 @@ Future<VeloceCanProviderSelection> selectVeloceCanProvider({
   required ArgoRuntimeMode runtimeMode,
   required Map<String, String> environment,
   SocketCanProviderStarter? startSocketCan,
+  SocketCanErrorHandler? onSocketCanError,
+  CanProviderErrorHandler? onCanHandlerError,
 }) async {
   if (runtimeMode == ArgoRuntimeMode.simulation) {
-    final provider = InMemoryCanProvider(writesEnabled: false);
+    final provider = InMemoryCanProvider(
+      writesEnabled: false,
+      onHandlerError: onCanHandlerError,
+    );
     return VeloceCanProviderSelection._(
       source: VeloceCanProviderSource.simulation,
       provider: provider,
@@ -51,8 +56,9 @@ Future<VeloceCanProviderSelection> selectVeloceCanProvider({
     );
   }
 
-  final starter = startSocketCan ?? SocketCanProvider.start;
-  final provider = await starter(configuration);
+  final provider = startSocketCan == null
+      ? await SocketCanProvider.start(configuration, onError: onSocketCanError)
+      : await startSocketCan(configuration);
   return VeloceCanProviderSelection._(
     source: VeloceCanProviderSource.socketCan,
     provider: provider,

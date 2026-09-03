@@ -106,7 +106,11 @@ final class SimulationService {
   void _reportPlaybackError(Object error, StackTrace stackTrace) {
     final handler = _onPlaybackError;
     if (handler != null) {
-      handler(error, stackTrace);
+      try {
+        handler(error, stackTrace);
+      } on Object {
+        // Diagnostics must not create a second playback failure.
+      }
       return;
     }
     stderr.writeln('[Argo simulation] playback failed: $error');

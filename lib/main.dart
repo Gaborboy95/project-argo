@@ -1,12 +1,7 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'app/argo_application_runner.dart';
 
-import 'app/bootstrap.dart';
-
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(
-    await bootstrapArgoApplication(processEnvironment: Platform.environment),
-  );
+void main() {
+  runArgoApplication(processEnvironment: Platform.environment);
 }
