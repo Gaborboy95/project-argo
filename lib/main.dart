@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'app/app.dart';
+import 'integrations/veloce/veloce_runtime.dart';
+import 'integrations/veloce/veloce_runtime_lifecycle.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ArgoApp());
+  final veloceRuntime = await VeloceRuntime.start();
+  runApp(
+    VeloceRuntimeLifecycle(runtime: veloceRuntime, child: const ArgoApp()),
+  );
 }
