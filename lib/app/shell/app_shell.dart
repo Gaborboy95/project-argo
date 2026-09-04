@@ -83,7 +83,11 @@ class _AppShellState extends State<AppShell> {
       index: _selectedIndex,
       children: [
         for (final module in modules)
-          Builder(key: ValueKey(module.id), builder: module.builder),
+          Builder(
+            key: ValueKey(module.id),
+            builder: (context) =>
+                module.builder(context, widget.environment.services),
+          ),
       ],
     );
   }

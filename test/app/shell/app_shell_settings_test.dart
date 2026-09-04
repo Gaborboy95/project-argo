@@ -84,7 +84,7 @@ AppModule _module(String id) => AppModule(
   id: id,
   label: id,
   icon: Icons.circle_outlined,
-  builder: (_) => Center(child: Text('$id page')),
+  builder: (_, _) => Center(child: Text('$id page')),
 );
 
 final class _Harness {

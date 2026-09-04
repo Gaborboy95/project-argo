@@ -13,10 +13,12 @@ import '../core/settings/json_file_settings_store.dart';
 import '../core/settings/settings_service.dart';
 import '../core/settings/settings_store.dart';
 import '../core/services/service_registry.dart';
+import '../core/vehicle/vehicle_data_service.dart';
 import '../integrations/simulation/simulation_scenario.dart';
 import '../integrations/simulation/simulation_service.dart';
 import '../integrations/veloce/veloce_can_provider_selection.dart';
 import '../integrations/veloce/veloce_runtime.dart';
+import '../integrations/veloce/veloce_vehicle_data_service.dart';
 import 'app.dart';
 import 'argo_environment.dart';
 import 'navigation/app_module_registry.dart';
@@ -111,11 +113,13 @@ Future<Widget> bootstrapArgoApplication({
       shutdown: veloceRuntime.shutdown,
     );
     _recordPluginStartupDiagnostics(diagnostics, veloceRuntime);
+    final vehicleData = VeloceVehicleDataService(veloceRuntime.vehicleDataBus);
 
     final services = ServiceRegistry()
       ..register(diagnostics)
       ..register(settings)
-      ..register(veloceRuntime);
+      ..register(veloceRuntime)
+      ..register<VehicleDataService>(vehicleData);
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {
       final simulation = SimulationService(

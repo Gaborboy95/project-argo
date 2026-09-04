@@ -1,6 +1,7 @@
 import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
 import 'package:argo/app/navigation/app_modules.dart';
+import 'package:argo/core/services/service_registry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -49,11 +50,41 @@ void main() {
       ]),
     );
   });
+
+  testWidgets('module builder receives explicitly supplied services', (
+    tester,
+  ) async {
+    final dependency = _ModuleDependency('ready');
+    final services = ServiceRegistry()..register(dependency);
+    final module = AppModule(
+      id: 'test',
+      label: 'Test',
+      icon: Icons.circle_outlined,
+      builder: (_, receivedServices) {
+        expect(receivedServices, same(services));
+        return Text(receivedServices.get<_ModuleDependency>().value);
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(builder: (context) => module.builder(context, services)),
+      ),
+    );
+
+    expect(find.text('ready'), findsOneWidget);
+  });
 }
 
 AppModule _module(String id) => AppModule(
   id: id,
   label: id,
   icon: Icons.circle_outlined,
-  builder: (_) => const SizedBox.shrink(),
+  builder: (_, _) => const SizedBox.shrink(),
 );
+
+final class _ModuleDependency {
+  const _ModuleDependency(this.value);
+
+  final String value;
+}

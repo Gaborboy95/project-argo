@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/vehicle/vehicle_data_service.dart';
 import '../../features/climate/climate_page.dart';
 import '../../features/home/home_page.dart';
 import '../../features/media/media_page.dart';
@@ -16,7 +17,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'home',
         label: 'Home',
         icon: Icons.home_outlined,
-        builder: (_) => const HomePage(),
+        builder: (_, _) => const HomePage(),
       ),
     )
     ..register(
@@ -24,7 +25,8 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'vehicle',
         label: 'Vehicle',
         icon: Icons.directions_car_outlined,
-        builder: (_) => const VehiclePage(),
+        builder: (_, services) =>
+            VehiclePage(vehicleData: services.get<VehicleDataService>()),
       ),
     )
     ..register(
@@ -32,7 +34,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'climate',
         label: 'Climate',
         icon: Icons.air_outlined,
-        builder: (_) => const ClimatePage(),
+        builder: (_, _) => const ClimatePage(),
       ),
     )
     ..register(
@@ -40,7 +42,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'parking',
         label: 'Parking',
         icon: Icons.local_parking_outlined,
-        builder: (_) => const ParkingPage(),
+        builder: (_, _) => const ParkingPage(),
       ),
     )
     ..register(
@@ -48,7 +50,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'media',
         label: 'Media',
         icon: Icons.music_note_outlined,
-        builder: (_) => const MediaPage(),
+        builder: (_, _) => const MediaPage(),
       ),
     )
     ..register(
@@ -56,7 +58,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'settings',
         label: 'Settings',
         icon: Icons.settings_outlined,
-        builder: (_) => const SettingsPage(),
+        builder: (_, _) => const SettingsPage(),
       ),
     );
 }
