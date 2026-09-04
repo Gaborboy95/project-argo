@@ -14,6 +14,8 @@ import '../core/settings/settings_service.dart';
 import '../core/settings/settings_store.dart';
 import '../core/services/service_registry.dart';
 import '../core/vehicle/vehicle_data_service.dart';
+import '../core/vehicle/vehicle_profile_registry.dart';
+import '../core/vehicle/vehicle_profiles.dart';
 import '../integrations/simulation/simulation_scenario.dart';
 import '../integrations/simulation/simulation_service.dart';
 import '../integrations/veloce/veloce_can_provider_selection.dart';
@@ -23,6 +25,7 @@ import 'app.dart';
 import 'argo_environment.dart';
 import 'navigation/app_module_registry.dart';
 import 'navigation/app_modules.dart';
+import 'vehicle_profile_composition.dart';
 
 /// Composes Project Argo and starts its application-owned integrations.
 Future<Widget> bootstrapArgoApplication({
@@ -42,6 +45,14 @@ Future<Widget> bootstrapArgoApplication({
   );
   return lifecycle.runStartup(() async {
     final runtimeMode = ArgoRuntimeMode.fromEnvironment(processEnvironment);
+    final vehicleProfiles = VehicleProfileRegistry();
+    registerBuiltInVehicleProfiles(vehicleProfiles);
+    final services = ServiceRegistry();
+    registerVehicleProfileServices(
+      services: services,
+      profiles: vehicleProfiles,
+      environment: processEnvironment,
+    );
     final scenarioFile = runtimeMode == ArgoRuntimeMode.simulation
         ? _configuredScenarioFile(processEnvironment)
         : null;
@@ -115,7 +126,7 @@ Future<Widget> bootstrapArgoApplication({
     _recordPluginStartupDiagnostics(diagnostics, veloceRuntime);
     final vehicleData = VeloceVehicleDataService(veloceRuntime.vehicleDataBus);
 
-    final services = ServiceRegistry()
+    services
       ..register(diagnostics)
       ..register(settings)
       ..register(veloceRuntime)
