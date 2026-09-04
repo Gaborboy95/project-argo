@@ -2,14 +2,21 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/power/head_unit_power_service.dart';
+import '../../core/power/head_unit_power_snapshot.dart';
 import '../../core/vehicle/vehicle_data_point.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
 import '../../core/vehicle/vehicle_signals.dart';
 
 class VehiclePage extends StatefulWidget {
-  const VehiclePage({super.key, required this.vehicleData});
+  const VehiclePage({
+    super.key,
+    required this.vehicleData,
+    required this.power,
+  });
 
   final VehicleDataService vehicleData;
+  final HeadUnitPowerService power;
 
   @override
   State<VehiclePage> createState() => _VehiclePageState();
@@ -17,7 +24,9 @@ class VehiclePage extends StatefulWidget {
 
 class _VehiclePageState extends State<VehiclePage> {
   VehicleDataPoint<double>? _engineRpm;
+  late HeadUnitPowerSnapshot _powerSnapshot;
   StreamSubscription<VehicleDataPoint<double>>? _rpmSubscription;
+  StreamSubscription<HeadUnitPowerSnapshot>? _powerSubscription;
   var _subscriptionGeneration = 0;
 
   @override
@@ -29,8 +38,10 @@ class _VehiclePageState extends State<VehiclePage> {
   @override
   void didUpdateWidget(VehiclePage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(widget.vehicleData, oldWidget.vehicleData)) {
+    if (!identical(widget.vehicleData, oldWidget.vehicleData) ||
+        !identical(widget.power, oldWidget.power)) {
       unawaited(_rpmSubscription?.cancel());
+      unawaited(_powerSubscription?.cancel());
       _subscribe();
     }
   }
@@ -42,6 +53,7 @@ class _VehiclePageState extends State<VehiclePage> {
     } on Object {
       _engineRpm = null;
     }
+    _powerSnapshot = widget.power.current;
     _rpmSubscription = widget.vehicleData
         .watch(VehicleSignals.engineRpm, emitCurrent: true)
         .listen(
@@ -54,12 +66,17 @@ class _VehiclePageState extends State<VehiclePage> {
             setState(() => _engineRpm = null);
           },
         );
+    _powerSubscription = widget.power.changes.listen((snapshot) {
+      if (!mounted || generation != _subscriptionGeneration) return;
+      setState(() => _powerSnapshot = snapshot);
+    });
   }
 
   @override
   void dispose() {
     _subscriptionGeneration++;
     unawaited(_rpmSubscription?.cancel());
+    unawaited(_powerSubscription?.cancel());
     super.dispose();
   }
 
@@ -92,7 +109,39 @@ class _VehiclePageState extends State<VehiclePage> {
                     const SizedBox(height: 8),
                     Text(
                       rpm == null ? '—' : _formatRpm(rpm),
+                      key: const ValueKey('vehicle.engineRpm'),
                       style: Theme.of(context).textTheme.headlineLarge,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 16,
+                ),
+                child: Column(
+                  children: [
+                    _PowerValueRow(
+                      label: 'Vehicle power',
+                      value: _powerSnapshot.vehiclePowerState.wireValue,
+                    ),
+                    _PowerValueRow(
+                      label: 'Ignition',
+                      value: _powerSnapshot.ignitionState?.wireValue ?? '—',
+                    ),
+                    _PowerValueRow(
+                      label: 'Battery voltage',
+                      value: _powerSnapshot.batteryVoltage == null
+                          ? '—'
+                          : '${_powerSnapshot.batteryVoltage!.toStringAsFixed(1)} V',
+                    ),
+                    _PowerValueRow(
+                      label: 'Head-unit state',
+                      value: _powerSnapshot.operationalState.wireValue,
                     ),
                   ],
                 ),
@@ -109,4 +158,23 @@ class _VehiclePageState extends State<VehiclePage> {
         ? '${rpm.toInt()} RPM'
         : '${rpm.toStringAsFixed(1)} RPM';
   }
+}
+
+class _PowerValueRow extends StatelessWidget {
+  const _PowerValueRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label: ', style: Theme.of(context).textTheme.bodyMedium),
+        Text(value, style: Theme.of(context).textTheme.bodyLarge),
+      ],
+    ),
+  );
 }

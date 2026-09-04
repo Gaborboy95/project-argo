@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/power/head_unit_power_service.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
 import '../../features/climate/climate_page.dart';
 import '../../features/home/home_page.dart';
@@ -25,8 +26,10 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'vehicle',
         label: 'Vehicle',
         icon: Icons.directions_car_outlined,
-        builder: (_, services) =>
-            VehiclePage(vehicleData: services.get<VehicleDataService>()),
+        builder: (_, services) => VehiclePage(
+          vehicleData: services.get<VehicleDataService>(),
+          power: services.get<HeadUnitPowerService>(),
+        ),
       ),
     )
     ..register(

@@ -1,7 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:argo/core/power/head_unit_operational_state.dart';
+import 'package:argo/core/power/vehicle_data_head_unit_power_service.dart';
+import 'package:argo/core/vehicle/vehicle_ignition_state.dart';
+import 'package:argo/core/vehicle/vehicle_power_state.dart';
 import 'package:argo/integrations/simulation/simulation_scenario.dart';
 import 'package:argo/integrations/simulation/simulation_service.dart';
+import 'package:argo/integrations/veloce/veloce_vehicle_data_service.dart';
 import 'package:veloce_lua_core/veloce_lua_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -140,5 +146,28 @@ void main() {
 
     expect(simulation.isScenarioRunning, isFalse);
     expect(updates, updatesAfterStop);
+  });
+
+  test('repository scenario drives normalized head-unit power state', () async {
+    final power = VehicleDataHeadUnitPowerService(
+      vehicleData: VeloceVehicleDataService(vehicleDataBus),
+    );
+    try {
+      final scenario = await SimulationScenario.load(
+        File('tool/simulation/power_state_cycle.json'),
+      );
+
+      await simulation.startScenario(scenario);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await vehicleDataBus.flush();
+
+      expect(power.current.vehiclePowerState, VehiclePowerState.asleep);
+      expect(power.current.ignitionState, VehicleIgnitionState.off);
+      expect(power.current.batteryVoltage, 12.4);
+      expect(power.current.operationalState, HeadUnitOperationalState.standby);
+    } finally {
+      await simulation.stopScenario();
+      await power.close();
+    }
   });
 }

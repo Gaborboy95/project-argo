@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "loop": false,
+  "events": [
+    {
+      "atMs": 0,
+      "type": "vehicle",
+      "key": "vehicle.power.state",
+      "value": "asleep"
+    },
+    {
+      "atMs": 0,
+      "type": "vehicle",
+      "key": "vehicle.ignition.state",
+      "value": "off"
+    },
+    {
+      "atMs": 0,
+      "type": "vehicle",
+      "key": "vehicle.battery.voltage",
+      "value": 12.4
+    },
+    {
+      "atMs": 1000,
+      "type": "vehicle",
+      "key": "vehicle.power.state",
+      "value": "awake"
+    },
+    {
+      "atMs": 1000,
+      "type": "vehicle",
+      "key": "vehicle.ignition.state",
+      "value": "accessory"
+    },
+    {
+      "atMs": 1000,
+      "type": "vehicle",
+      "key": "vehicle.battery.voltage",
+      "value": 12.2
+    },
+    {
+      "atMs": 2000,
+      "type": "vehicle",
+      "key": "vehicle.power.state",
+      "value": "active"
+    },
+    {
+      "atMs": 2000,
+      "type": "vehicle",
+      "key": "vehicle.ignition.state",
+      "value": "on"
+    },
+    {
+      "atMs": 2000,
+      "type": "vehicle",
+      "key": "vehicle.battery.voltage",
+      "value": 13.8
+    },
+    {
+      "atMs": 3000,
+      "type": "vehicle",
+      "key": "vehicle.power.state",
+      "value": "awake"
+    },
+    {
+      "atMs": 3000,
+      "type": "vehicle",
+      "key": "vehicle.battery.voltage",
+      "value": 12.7
+    },
+    {
+      "atMs": 4000,
+      "type": "vehicle",
+      "key": "vehicle.power.state",
+      "value": "asleep"
+    },
+    {
+      "atMs": 4000,
+      "type": "vehicle",
+      "key": "vehicle.ignition.state",
+      "value": "off"
+    },
+    {
+      "atMs": 4000,
+      "type": "vehicle",
+      "key": "vehicle.battery.voltage",
+      "value": 12.5
+    }
+  ]
+}

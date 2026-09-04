@@ -81,6 +81,52 @@ void main() {
     expect(event.frame.data, [11, 184]);
   });
 
+  test('repository power-state scenario is deterministic', () async {
+    final scenario = await SimulationScenario.load(
+      File('tool/simulation/power_state_cycle.json'),
+    );
+
+    expect(scenario.loop, isFalse);
+    expect(
+      scenario.events.map((event) => event.atMs),
+      orderedEquals([
+        0,
+        0,
+        0,
+        1000,
+        1000,
+        1000,
+        2000,
+        2000,
+        2000,
+        3000,
+        3000,
+        4000,
+        4000,
+        4000,
+      ]),
+    );
+    final vehicleEvents = scenario.events.whereType<SimulationVehicleEvent>();
+    expect(
+      vehicleEvents
+          .where((event) => event.key == 'vehicle.power.state')
+          .map((event) => event.value),
+      orderedEquals(['asleep', 'awake', 'active', 'awake', 'asleep']),
+    );
+    expect(
+      vehicleEvents
+          .where((event) => event.key == 'vehicle.ignition.state')
+          .map((event) => event.value),
+      orderedEquals(['off', 'accessory', 'on', 'off']),
+    );
+    expect(
+      vehicleEvents
+          .where((event) => event.key == 'vehicle.battery.voltage')
+          .map((event) => event.value),
+      orderedEquals([12.4, 12.2, 13.8, 12.7, 12.5]),
+    );
+  });
+
   test('rejects malformed scenarios and invalid event values', () {
     final invalidScenarios = <Object?>[
       {'schemaVersion': 2, 'events': <Object?>[]},
