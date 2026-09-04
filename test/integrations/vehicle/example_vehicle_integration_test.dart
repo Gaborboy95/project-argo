@@ -18,11 +18,16 @@ void main() {
 
     expect(discovery.failures, isEmpty);
     expect(
-      discovery.plugins.single.manifest.id,
-      'dev.example.vehicle.can_decoder',
+      discovery.plugins.map((plugin) => plugin.manifest.id),
+      containsAll({
+        'dev.example.vehicle.can_decoder',
+        'dev.example.vehicle.power_policy',
+      }),
     );
-    final filter =
-        discovery.plugins.single.manifest.canAccess.readFilters.single;
+    final decoder = discovery.plugins.singleWhere(
+      (plugin) => plugin.manifest.id == 'dev.example.vehicle.can_decoder',
+    );
+    final filter = decoder.manifest.canAccess.readFilters.single;
     expect(
       filter.matches(CanFrame(bus: 'comfort', id: 640, data: const [11, 184])),
       isTrue,
@@ -49,7 +54,16 @@ void main() {
 
       final discovery = await manager.discover();
       expect(discovery.failures, isEmpty);
-      expect(manager.currentPlugins.single.state, PluginState.running);
+      expect(
+        manager.currentPlugins,
+        everyElement(
+          isA<PluginRecord>().having(
+            (plugin) => plugin.state,
+            'state',
+            PluginState.running,
+          ),
+        ),
+      );
 
       final result = canProvider.inject(
         CanFrame(bus: 'comfort', id: 640, data: const [11, 184]),
@@ -60,6 +74,76 @@ void main() {
 
       final vehicleData = VeloceVehicleDataService(manager.vehicleDataBus);
       expect(vehicleData.current(VehicleSignals.engineRpm)?.value, 3000.0);
+    },
+    skip: nativeLibrary == null
+        ? 'Set VELOCE_LUA_LIBRARY to run the real Lua integration test.'
+        : false,
+  );
+
+  test(
+    'example Lua power policy cancels wakeups and publishes once per sleep '
+    'episode',
+    () async {
+      final bundle = await _exampleBundle();
+      final manager = PluginManager(
+        pluginRoot: bundle.velocePluginDirectory,
+        runtimeFactory: IsolatedNativeLuaRuntimeFactory(
+          libraryPath: nativeLibrary,
+        ),
+      );
+      final requests = <PluginEvent>[];
+      final subscription = manager.eventBus.subscribe(
+        ownerId: 'argo.test.host-power',
+        topic: 'host.power.suspend.request',
+        handler: requests.add,
+      );
+      addTearDown(() async {
+        await subscription.cancel();
+        await manager.close();
+      });
+
+      final discovery = await manager.discover();
+      expect(discovery.failures, isEmpty);
+      expect(
+        manager.currentPlugins
+            .singleWhere(
+              (plugin) =>
+                  plugin.manifest.id == 'dev.example.vehicle.power_policy',
+            )
+            .state,
+        PluginState.running,
+      );
+
+      manager.vehicleDataBus.publish('vehicle.power.state', 'asleep');
+      await manager.vehicleDataBus.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      manager.vehicleDataBus.publish('vehicle.power.state', 'awake');
+      await manager.vehicleDataBus.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 1550));
+      await manager.eventBus.flush();
+      expect(requests, isEmpty);
+
+      manager.vehicleDataBus.publish('vehicle.power.state', 'asleep');
+      await manager.vehicleDataBus.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 1550));
+      await manager.eventBus.flush();
+      expect(requests, hasLength(1));
+      expect(
+        requests.single.sourcePluginId,
+        'dev.example.vehicle.power_policy',
+      );
+      expect(requests.single.data, {'reason': 'vehicle_standby'});
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await manager.eventBus.flush();
+      expect(requests, hasLength(1));
+
+      manager.vehicleDataBus.publish('vehicle.power.state', 'awake');
+      manager.vehicleDataBus.publish('vehicle.power.state', 'asleep');
+      await manager.vehicleDataBus.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 1550));
+      await manager.eventBus.flush();
+      expect(requests, hasLength(2));
     },
     skip: nativeLibrary == null
         ? 'Set VELOCE_LUA_LIBRARY to run the real Lua integration test.'

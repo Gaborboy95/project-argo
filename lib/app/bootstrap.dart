@@ -26,6 +26,7 @@ import '../integrations/veloce/veloce_vehicle_data_service.dart';
 import 'app.dart';
 import 'argo_environment.dart';
 import 'head_unit_power_composition.dart';
+import 'host_power_composition.dart';
 import 'navigation/app_module_registry.dart';
 import 'navigation/app_modules.dart';
 import 'vehicle_profile_composition.dart';
@@ -177,6 +178,13 @@ Future<Widget> bootstrapArgoApplication({
       services: services,
       lifecycle: lifecycle,
       diagnostics: diagnostics,
+    );
+    await registerHostPowerServices(
+      services: services,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      environment: processEnvironment,
+      activeVehicleIntegration: activeIntegration,
     );
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {

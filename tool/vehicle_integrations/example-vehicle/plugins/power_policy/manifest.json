@@ -1,0 +1,12 @@
+{
+  "id": "dev.example.vehicle.power_policy",
+  "name": "Example Vehicle Power Policy",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "entrypoint": "main.lua",
+  "permissions": [
+    "events",
+    "vehicle.read",
+    "timer"
+  ]
+}

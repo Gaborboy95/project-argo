@@ -7,7 +7,10 @@ integration layout:
 example-vehicle/
 ├── vehicle.json
 └── plugins/
-    └── can_decoder/
+    ├── can_decoder/
+    │   ├── manifest.json
+    │   └── main.lua
+    └── power_policy/
         ├── manifest.json
         └── main.lua
 ```
@@ -28,3 +31,16 @@ flutter run -d linux --no-enable-impeller
 
 Do not set `VELOCE_PLUGIN_DIR` for that demonstration; setting it explicitly
 is supported and intentionally overrides the selected bundle's plugin root.
+
+The synthetic power policy owns its 1500 ms standby delay. This development
+run exercises the policy while the disabled host backend guarantees that the
+computer is not suspended:
+
+```sh
+ARGO_MODE=simulation \
+ARGO_VEHICLE_INTEGRATIONS_DIR="$(pwd)/tool/vehicle_integrations" \
+ARGO_VEHICLE_PROFILE=example-vehicle \
+ARGO_SIMULATION_SCENARIO="$(pwd)/tool/simulation/power_state_cycle.json" \
+ARGO_HOST_POWER_BACKEND=disabled \
+flutter run -d linux --no-enable-impeller
+```
