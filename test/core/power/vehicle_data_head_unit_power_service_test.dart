@@ -85,6 +85,49 @@ void main() {
     expect(power.current.updatedAt, firstTimestamp);
   });
 
+  test('requests catch-up values without duplicating seeded state', () async {
+    await power.close();
+    vehicleData.emitCurrentRequests.clear();
+    vehicleData.publish('vehicle.power.state', 'awake');
+    final transitions = <String>[];
+
+    power = VehicleDataHeadUnitPowerService(
+      vehicleData: vehicleData,
+      onVehiclePowerStateChanged: (previous, current) {
+        transitions.add('${previous.wireValue}->${current.wireValue}');
+      },
+    );
+    final snapshots = <Object?>[];
+    power.changes.listen(snapshots.add);
+
+    expect(power.current.vehiclePowerState, VehiclePowerState.awake);
+    expect(vehicleData.emitCurrentRequests, {
+      'vehicle.power.state',
+      'vehicle.ignition.state',
+      'vehicle.battery.voltage',
+    });
+    await Future<void>.delayed(Duration.zero);
+
+    expect(transitions, ['unknown->awake']);
+    expect(snapshots, isEmpty);
+  });
+
+  test('catches a value changed between seeding and subscription', () async {
+    await power.close();
+    vehicleData.publish('vehicle.power.state', 'asleep');
+    vehicleData.beforeWatch = (key) {
+      if (key != 'vehicle.power.state') return;
+      vehicleData.beforeWatch = null;
+      vehicleData.publish('vehicle.power.state', 'awake');
+    };
+
+    power = VehicleDataHeadUnitPowerService(vehicleData: vehicleData);
+
+    expect(power.current.vehiclePowerState, VehiclePowerState.asleep);
+    await Future<void>.delayed(Duration.zero);
+    expect(power.current.vehiclePowerState, VehiclePowerState.awake);
+  });
+
   test('retains the most recent valid state after a decoding error', () async {
     await power.close();
     final errors = <Object>[];
@@ -133,6 +176,8 @@ final class _TestVehicleDataService implements VehicleDataService {
       {};
   var _sequence = 0;
   var activeSubscriptions = 0;
+  final Set<String> emitCurrentRequests = {};
+  void Function(String key)? beforeWatch;
 
   @override
   VehicleDataPoint<T>? current<T>(VehicleSignal<T> signal) {
@@ -149,6 +194,8 @@ final class _TestVehicleDataService implements VehicleDataService {
     VehicleSignal<T> signal, {
     bool emitCurrent = false,
   }) {
+    if (emitCurrent) emitCurrentRequests.add(signal.key);
+    beforeWatch?.call(signal.key);
     final source = _controller(signal.key).stream
         .map((point) => _decode(point, signal));
     final retained = current(signal);

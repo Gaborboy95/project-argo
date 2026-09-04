@@ -37,13 +37,13 @@ final class VehicleDataHeadUnitPowerService implements HeadUnitPowerService {
     _seedCurrentValues();
     _subscriptions.addAll([
       _vehicleData
-          .watch(VehicleSignals.vehiclePowerState)
+          .watch(VehicleSignals.vehiclePowerState, emitCurrent: true)
           .listen(_updatePowerState, onError: _handleStreamError),
       _vehicleData
-          .watch(VehicleSignals.vehicleIgnitionState)
+          .watch(VehicleSignals.vehicleIgnitionState, emitCurrent: true)
           .listen(_updateIgnitionState, onError: _handleStreamError),
       _vehicleData
-          .watch(VehicleSignals.vehicleBatteryVoltage)
+          .watch(VehicleSignals.vehicleBatteryVoltage, emitCurrent: true)
           .listen(_updateBatteryVoltage, onError: _handleStreamError),
     ]);
   }
