@@ -93,6 +93,35 @@ pub struct PayloadReader<'a> {
     offset: usize,
 }
 
+#[derive(Default)]
+pub struct PayloadWriter {
+    bytes: Vec<u8>,
+}
+
+impl PayloadWriter {
+    pub fn u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    pub fn u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn string(&mut self, value: &str) -> Result<(), DecodeError> {
+        let bytes = value.as_bytes();
+        if bytes.len() > 4096 {
+            return Err(DecodeError::OversizedPayload(bytes.len()));
+        }
+        self.u16(bytes.len() as u16);
+        self.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
 impl<'a> PayloadReader<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
@@ -105,14 +134,20 @@ impl<'a> PayloadReader<'a> {
     }
 
     pub fn u16(&mut self) -> Option<u16> {
-        let value = u16::from_be_bytes(self.bytes.get(self.offset..self.offset + 2)?.try_into().ok()?);
+        let value = u16::from_be_bytes(
+            self.bytes
+                .get(self.offset..self.offset + 2)?
+                .try_into()
+                .ok()?,
+        );
         self.offset += 2;
         Some(value)
     }
 
     pub fn string(&mut self) -> Option<String> {
         let length = self.u16()? as usize;
-        let value = String::from_utf8(self.bytes.get(self.offset..self.offset + length)?.to_vec()).ok()?;
+        let value =
+            String::from_utf8(self.bytes.get(self.offset..self.offset + length)?.to_vec()).ok()?;
         self.offset += length;
         Some(value)
     }
@@ -217,5 +252,19 @@ mod tests {
         queue.push_latest(4);
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(4));
+    }
+
+    #[test]
+    fn payload_writer_matches_reader() {
+        let mut writer = PayloadWriter::default();
+        writer.u8(3);
+        writer.u16(42);
+        writer.string("phone").unwrap();
+        let payload = writer.finish();
+        let mut reader = PayloadReader::new(&payload);
+        assert_eq!(reader.u8(), Some(3));
+        assert_eq!(reader.u16(), Some(42));
+        assert_eq!(reader.string().as_deref(), Some("phone"));
+        assert!(reader.done());
     }
 }

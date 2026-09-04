@@ -9,11 +9,11 @@ rust-version.workspace = true
 default = []
 # Hardware builds opt in explicitly. The dependency is kept out of ordinary
 # desktop/test builds, which exercise the transport through the fake seam.
-linux-usb = ["dep:futures-lite", "dep:nusb", "dep:tokio"]
+linux-usb = ["dep:futures-lite", "dep:nusb"]
 
 [dependencies]
-nusb = { version = "0.2", optional = true }
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "time"], optional = true }
+nusb = { version = "0.2.7", features = ["tokio"], optional = true }
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 futures-lite = { version = "2.6", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2"

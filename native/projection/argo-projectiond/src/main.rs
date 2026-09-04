@@ -1,99 +1,61 @@
 #[cfg(unix)]
-fn main() -> std::io::Result<()> {
-    use argo_projectiond::identity::AndroidAutoIdentity;
-    use argo_projectiond::ipc::{encode, string_payload, Decoder, Message, PayloadReader};
-    use std::fs;
-    use std::io::{Read, Write};
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     use std::path::PathBuf;
 
-    const HELLO: u16 = 1;
-    const ERROR: u16 = 6;
+    use argo_projectiond::daemon_state::ProjectionRuntimeSnapshot;
+    use tokio::sync::watch;
 
     let socket_path = std::env::var("ARGO_PROJECTION_SOCKET")
         .unwrap_or_else(|_| "/run/argo/projection.sock".to_owned());
-    let path = PathBuf::from(&socket_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if path.exists() {
-        fs::remove_file(&path)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o660))?;
-    println!("argo-projectiond: control socket {socket_path}");
+    let (state_tx, state_rx) = watch::channel(ProjectionRuntimeSnapshot::default());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    for client in listener.incoming() {
-        let mut client = match client {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("argo-projectiond: accept failed: {error}");
-                continue;
-            }
-        };
-        let mut decoder = Decoder::default();
-        let mut buffer = [0_u8; 16 * 1024];
-        loop {
-            let count = match client.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(value) => value,
-                Err(error) => {
-                    eprintln!("argo-projectiond: client read failed: {error}");
-                    break;
-                }
-            };
-            let messages = match decoder.push(&buffer[..count]) {
-                Ok(value) => value,
-                Err(error) => {
-                    eprintln!("argo-projectiond: malformed IPC: {error:?}");
-                    break;
-                }
-            };
-            for message in messages {
-                if message.kind != HELLO {
-                    continue;
-                }
-                let mut payload = PayloadReader::new(&message.payload);
-                let parsed = (|| {
-                    let _width = payload.u16()?;
-                    let _height = payload.u16()?;
-                    let _dpi = payload.u16()?;
-                    let _fps = payload.u8()?;
-                    let _driver_side = payload.u8()?;
-                    let certificate = payload.string()?;
-                    let private_key = payload.string()?;
-                    payload.done().then_some(AndroidAutoIdentity {
-                        certificate: certificate.into(),
-                        private_key: private_key.into(),
-                    })
-                })();
-                let response = match parsed {
-                    Some(identity) => match identity.validate_files() {
-                        Ok(()) => Message {
-                            kind: HELLO,
-                            payload: Vec::new(),
-                        },
-                        Err(error) => Message {
-                            kind: ERROR,
-                            payload: string_payload(&format!(
-                                "Android Auto identity validation failed: {error:?}"
-                            ))
-                            .unwrap_or_default(),
-                        },
-                    },
-                    None => Message {
-                        kind: ERROR,
-                        payload: string_payload("Malformed projection hello").unwrap_or_default(),
-                    },
-                };
-                if client.write_all(&encode(&response).unwrap_or_default()).is_err() {
-                    break;
-                }
-            }
+    let ipc_task = tokio::spawn(async move {
+        if let Err(error) =
+            argo_projectiond::ipc_server::run(PathBuf::from(socket_path), state_rx, shutdown_rx)
+                .await
+        {
+            eprintln!("argo-projectiond: IPC listener stopped: {error}");
         }
+    });
+
+    #[cfg(all(feature = "linux-usb", target_os = "linux"))]
+    let usb_task = {
+        let shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            if let Err(error) = argo_projectiond::usb_runtime::run(state_tx, shutdown).await {
+                eprintln!("argo-projectiond: USB runtime stopped: {error}");
+            }
+        })
+    };
+
+    #[cfg(not(all(feature = "linux-usb", target_os = "linux")))]
+    {
+        let _ = state_tx;
+        eprintln!(
+            "argo-projectiond: built without Linux USB support; rebuild with --features linux-usb"
+        );
     }
+
+    wait_for_shutdown().await?;
+    println!("argo-projectiond: shutting down");
+    let _ = shutdown_tx.send(true);
+    let _ = ipc_task.await;
+    #[cfg(all(feature = "linux-usb", target_os = "linux"))]
+    let _ = usb_task.await;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown() -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 #[cfg(not(unix))]
