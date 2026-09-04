@@ -1,0 +1,19 @@
+[package]
+name = "argo-projectiond"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Hardware builds opt in explicitly. The dependency is kept out of ordinary
+# desktop/test builds, which exercise the transport through the fake seam.
+linux-usb = ["dep:futures-lite", "dep:nusb", "dep:tokio"]
+
+[dependencies]
+nusb = { version = "0.2", optional = true }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "time"], optional = true }
+futures-lite = { version = "2.6", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2"

@@ -31,6 +31,7 @@ import 'head_unit_power_composition.dart';
 import 'host_power_composition.dart';
 import 'navigation/app_module_registry.dart';
 import 'navigation/app_modules.dart';
+import 'projection_composition.dart';
 import 'vehicle_profile_composition.dart';
 
 /// Composes Project Argo and starts its application-owned integrations.
@@ -196,6 +197,12 @@ Future<Widget> bootstrapArgoApplication({
       diagnostics: diagnostics,
       environment: processEnvironment,
       activeVehicleIntegration: activeIntegration,
+    );
+    await registerProjectionServices(
+      services: services,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      environment: processEnvironment,
     );
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {

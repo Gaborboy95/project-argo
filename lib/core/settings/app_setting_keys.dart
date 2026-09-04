@@ -53,6 +53,49 @@ abstract final class AppSettingKeys {
     },
   );
 
+  static final projectionDisplayWidth = SettingKey<int>(
+    id: 'projection.display.width',
+    defaultValue: 1280,
+    serialize: (value) => value,
+    deserialize: _boundedInt('projection.display.width', 640, 3840),
+  );
+  static final projectionDisplayHeight = SettingKey<int>(
+    id: 'projection.display.height',
+    defaultValue: 720,
+    serialize: (value) => value,
+    deserialize: _boundedInt('projection.display.height', 360, 2160),
+  );
+  static final projectionDisplayDpi = SettingKey<int>(
+    id: 'projection.display.dpi',
+    defaultValue: 160,
+    serialize: (value) => value,
+    deserialize: _boundedInt('projection.display.dpi', 72, 640),
+  );
+  static final projectionFramesPerSecond = SettingKey<int>(
+    id: 'projection.display.framesPerSecond',
+    defaultValue: 30,
+    serialize: (value) => value,
+    deserialize: (value) {
+      if (value == 30 || value == 60) return value as int;
+      throw const FormatException('Projection FPS must be 30 or 60.');
+    },
+  );
+  static final projectionDriverSide = SettingKey<String>(
+    id: 'projection.display.driverSide',
+    defaultValue: 'left',
+    serialize: _serializeString,
+    deserialize: (value) {
+      if (value == 'left' || value == 'right') return value as String;
+      throw const FormatException(
+        'Projection driver side must be left or right.',
+      );
+    },
+  );
+  static final projectionSafeInsetLeft = _projectionInsetKey('left');
+  static final projectionSafeInsetTop = _projectionInsetKey('top');
+  static final projectionSafeInsetRight = _projectionInsetKey('right');
+  static final projectionSafeInsetBottom = _projectionInsetKey('bottom');
+
   static SettingsSchema createSchema() => SettingsSchema()
     ..register(lastModule)
     ..register(audioMasterVolume)
@@ -62,7 +105,16 @@ abstract final class AppSettingKeys {
     ..register(audioBassDb)
     ..register(audioMidDb)
     ..register(audioTrebleDb)
-    ..register(audioPreferredOutput);
+    ..register(audioPreferredOutput)
+    ..register(projectionDisplayWidth)
+    ..register(projectionDisplayHeight)
+    ..register(projectionDisplayDpi)
+    ..register(projectionFramesPerSecond)
+    ..register(projectionDriverSide)
+    ..register(projectionSafeInsetLeft)
+    ..register(projectionSafeInsetTop)
+    ..register(projectionSafeInsetRight)
+    ..register(projectionSafeInsetBottom);
 
   static Object _serializeString(String value) => value;
 
@@ -81,6 +133,22 @@ abstract final class AppSettingKeys {
     serialize: _serializeDouble,
     deserialize: _boundedDouble(id, -12, 12),
   );
+
+  static SettingKey<int> _projectionInsetKey(String edge) => SettingKey<int>(
+    id: 'projection.display.safeInset.$edge',
+    defaultValue: 0,
+    serialize: (value) => value,
+    deserialize: _boundedInt('projection.display.safeInset.$edge', 0, 1000),
+  );
+
+  static int Function(Object?) _boundedInt(
+    String id,
+    int minimum,
+    int maximum,
+  ) => (value) {
+    if (value is int && value >= minimum && value <= maximum) return value;
+    throw FormatException('$id must be an integer within $minimum..$maximum.');
+  };
 
   static double Function(Object?) _unitDouble(String id) =>
       _boundedDouble(id, 0, 1);
