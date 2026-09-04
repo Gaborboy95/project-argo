@@ -15,26 +15,30 @@ final class VeloceRuntimeConfiguration {
 
   /// Builds the production configuration from host environment variables.
   ///
-  /// `VELOCE_PLUGIN_DIR`, `VELOCE_PLUGIN_STORAGE`, and
-  /// `VELOCE_LUA_LIBRARY` override their respective defaults. Plugin and
+  /// `VELOCE_PLUGIN_DIR`, `VELOCE_PLUGIN_STORAGE`, and `VELOCE_LUA_LIBRARY`
+  /// override their respective defaults. Without an explicit plugin override,
+  /// [defaultPluginRoot] may bind an external vehicle integration. Plugin and
   /// storage directories otherwise live in the current user's mutable
   /// application-data directory, outside the packaged application image.
   /// `VELOCE_TRACE_VEHICLE_KEY` optionally enables terminal signal tracing.
   factory VeloceRuntimeConfiguration.fromEnvironment({
     Map<String, String>? environment,
+    Directory? defaultPluginRoot,
   }) {
     final values = environment ?? Platform.environment;
-    final pluginRoot = _optionalPath(values, 'VELOCE_PLUGIN_DIR');
+    final pluginRootOverride = _optionalPath(values, 'VELOCE_PLUGIN_DIR');
+    final pluginRoot = pluginRootOverride == null
+        ? defaultPluginRoot?.absolute
+        : Directory(pluginRootOverride).absolute;
     final storageRoot = _optionalPath(values, 'VELOCE_PLUGIN_STORAGE');
     final applicationData = pluginRoot == null || storageRoot == null
         ? _applicationDataDirectory(values)
         : null;
 
     return VeloceRuntimeConfiguration(
-      pluginRoot: Directory(
-        pluginRoot ??
-            Directory.fromUri(applicationData!.uri.resolve('plugins/')).path,
-      ).absolute,
+      pluginRoot:
+          pluginRoot ??
+          Directory.fromUri(applicationData!.uri.resolve('plugins/')).absolute,
       storageDatabase: File.fromUri(
         Directory(
           storageRoot ??

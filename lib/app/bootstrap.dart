@@ -14,6 +14,8 @@ import '../core/settings/settings_service.dart';
 import '../core/settings/settings_store.dart';
 import '../core/services/service_registry.dart';
 import '../core/vehicle/vehicle_data_service.dart';
+import '../core/vehicle/integration/vehicle_integration_bundle.dart';
+import '../core/vehicle/integration/vehicle_integration_discovery.dart';
 import '../core/vehicle/vehicle_profile_registry.dart';
 import '../core/vehicle/vehicle_profiles.dart';
 import '../integrations/simulation/simulation_scenario.dart';
@@ -45,14 +47,47 @@ Future<Widget> bootstrapArgoApplication({
   );
   return lifecycle.runStartup(() async {
     final runtimeMode = ArgoRuntimeMode.fromEnvironment(processEnvironment);
+    final integrationRoot = vehicleIntegrationsDirectoryFromEnvironment(
+      processEnvironment,
+    );
+    final integrationDiscovery = integrationRoot == null
+        ? const VehicleIntegrationDiscoveryResult.empty()
+        : await const VehicleIntegrationDiscovery().discover(integrationRoot);
+    for (final failure in integrationDiscovery.failures) {
+      diagnostics.warning(
+        'vehicle.integration.discovery',
+        'Could not load vehicle integration bundle at '
+            '"${failure.bundleDirectory.path}".',
+        error: failure.error,
+        stackTrace: failure.stackTrace,
+      );
+    }
     final vehicleProfiles = VehicleProfileRegistry();
     registerBuiltInVehicleProfiles(vehicleProfiles);
     final services = ServiceRegistry();
-    registerVehicleProfileServices(
+    final activeProfile = registerVehicleProfileServices(
       services: services,
       profiles: vehicleProfiles,
       environment: processEnvironment,
+      externalIntegrations: integrationDiscovery.bundles,
+      discoveryFailures: integrationDiscovery.failures,
     );
+    final activeIntegration = _integrationForProfile(
+      integrationDiscovery.bundles,
+      activeProfile.id,
+    );
+    diagnostics.info(
+      'vehicle.profile',
+      'Selected vehicle profile "${activeProfile.id}" '
+          '(${activeProfile.displayName}).',
+    );
+    if (activeIntegration != null) {
+      diagnostics.info(
+        'vehicle.integration',
+        'Selected external vehicle integration '
+            '"${activeIntegration.rootDirectory.path}".',
+      );
+    }
     final scenarioFile = runtimeMode == ArgoRuntimeMode.simulation
         ? _configuredScenarioFile(processEnvironment)
         : null;
@@ -86,6 +121,12 @@ Future<Widget> bootstrapArgoApplication({
 
     final veloceConfiguration = VeloceRuntimeConfiguration.fromEnvironment(
       environment: processEnvironment,
+      defaultPluginRoot: activeIntegration?.velocePluginDirectory,
+    );
+    diagnostics.info(
+      'veloce.configuration',
+      'Resolved Veloce plugin root '
+          '"${veloceConfiguration.pluginRoot.path}".',
     );
     final canSelection = await selectVeloceCanProvider(
       runtimeMode: runtimeMode,
@@ -167,6 +208,16 @@ Future<Widget> bootstrapArgoApplication({
       child: ArgoApp(environment: environment),
     );
   });
+}
+
+VehicleIntegrationBundle? _integrationForProfile(
+  Iterable<VehicleIntegrationBundle> integrations,
+  String profileId,
+) {
+  for (final integration in integrations) {
+    if (integration.profile.id == profileId) return integration;
+  }
+  return null;
 }
 
 File? _configuredScenarioFile(Map<String, String> environment) {

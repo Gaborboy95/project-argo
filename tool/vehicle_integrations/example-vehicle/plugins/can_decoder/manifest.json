@@ -1,0 +1,21 @@
+{
+  "id": "dev.example.vehicle.can_decoder",
+  "name": "Example Vehicle CAN Decoder",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "entrypoint": "main.lua",
+  "permissions": [
+    "logging",
+    "can.read",
+    "vehicle.write"
+  ],
+  "can": {
+    "read": [
+      {
+        "bus": "comfort",
+        "id": 640,
+        "mask": 2047
+      }
+    ]
+  }
+}
