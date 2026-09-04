@@ -25,6 +25,7 @@ void main() {
         'dev.example.vehicle.can_decoder',
         'dev.example.vehicle.battery_protection',
         'dev.example.vehicle.power_policy',
+        'dev.example.vehicle.audio_policy',
       }),
     );
     final decoder = discovery.plugins.singleWhere(
@@ -37,7 +38,91 @@ void main() {
     );
   });
 
+  test(
+    'example audio policy is normalized and transport-independent',
+    () async {
+      final bundle = await _exampleBundle();
+      final source = await File.fromUri(
+        bundle.velocePluginDirectory.uri.resolve('audio_policy/main.lua'),
+      ).readAsString();
+
+      expect(source, contains('controls.audio.volume_up.pressed'));
+      expect(source, contains('audio.command.volume.up'));
+      expect(source, isNot(contains('veloce.can')));
+      expect(source, isNot(contains('can.subscribe')));
+      expect(source, isNot(contains('can.send')));
+    },
+  );
+
   final nativeLibrary = _configuredNativeLibrary();
+  test(
+    'example Lua audio policy emits once per normalized rising edge',
+    () async {
+      final bundle = await _exampleBundle();
+      final manager = PluginManager(
+        pluginRoot: bundle.velocePluginDirectory,
+        runtimeFactory: IsolatedNativeLuaRuntimeFactory(
+          libraryPath: nativeLibrary,
+        ),
+      );
+      final commands = <String, List<PluginEvent>>{
+        'audio.command.volume.up': [],
+        'audio.command.volume.down': [],
+        'audio.command.mute.toggle': [],
+        'audio.command.source.next': [],
+        'audio.command.source.previous': [],
+      };
+      final subscriptions = [
+        for (final entry in commands.entries)
+          manager.eventBus.subscribe(
+            ownerId: 'argo.test.audio',
+            topic: entry.key,
+            handler: entry.value.add,
+          ),
+      ];
+      addTearDown(() async {
+        for (final subscription in subscriptions) {
+          await subscription.cancel();
+        }
+        await manager.close();
+      });
+      final discovery = await manager.discover();
+      expect(discovery.failures, isEmpty);
+
+      void press(String signal) {
+        manager.vehicleDataBus.publish(signal, false);
+        manager.vehicleDataBus.publish(signal, true);
+      }
+
+      press('controls.audio.volume_up.pressed');
+      manager.vehicleDataBus.publish('controls.audio.volume_up.pressed', true);
+      press('controls.audio.volume_down.pressed');
+      press('controls.audio.mute.pressed');
+      press('controls.audio.source_next.pressed');
+      press('controls.audio.source_previous.pressed');
+      await manager.vehicleDataBus.flush();
+      await manager.eventBus.flush();
+      expect(commands.values, everyElement(hasLength(1)));
+
+      press('controls.audio.volume_up.pressed');
+      await manager.vehicleDataBus.flush();
+      await manager.eventBus.flush();
+      expect(commands['audio.command.volume.up'], hasLength(2));
+      expect(
+        commands.values
+            .expand((events) => events)
+            .every(
+              (command) =>
+                  command.sourcePluginId == 'dev.example.vehicle.audio_policy',
+            ),
+        isTrue,
+      );
+    },
+    skip: nativeLibrary == null
+        ? 'Set VELOCE_LUA_LIBRARY to run the real Lua integration test.'
+        : false,
+  );
+
   test(
     'example integration drives engine.rpm through real Lua',
     () async {

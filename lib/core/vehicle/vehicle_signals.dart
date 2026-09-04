@@ -24,6 +24,28 @@ abstract final class VehicleSignals {
     decode: _finiteDouble('vehicle.battery.voltage'),
   );
 
+  static final audioVolumeUpPressed = _booleanSignal(
+    'controls.audio.volume_up.pressed',
+  );
+  static final audioVolumeDownPressed = _booleanSignal(
+    'controls.audio.volume_down.pressed',
+  );
+  static final audioMutePressed = _booleanSignal('controls.audio.mute.pressed');
+  static final audioSourceNextPressed = _booleanSignal(
+    'controls.audio.source_next.pressed',
+  );
+  static final audioSourcePreviousPressed = _booleanSignal(
+    'controls.audio.source_previous.pressed',
+  );
+
+  static VehicleSignal<bool> _booleanSignal(String key) => VehicleSignal<bool>(
+    key: key,
+    decode: (value) {
+      if (value is bool) return value;
+      throw FormatException('$key must be a boolean.');
+    },
+  );
+
   static double Function(Object?) _finiteDouble(String key) => (value) {
     if (value is num) {
       final decoded = value.toDouble();

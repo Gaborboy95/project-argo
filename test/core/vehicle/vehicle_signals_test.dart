@@ -4,6 +4,13 @@ import 'package:argo/core/vehicle/vehicle_signals.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('audio control signals accept only booleans', () {
+    expect(VehicleSignals.audioVolumeUpPressed.decode(true), isTrue);
+    expect(
+      () => VehicleSignals.audioVolumeUpPressed.decode(1),
+      throwsFormatException,
+    );
+  });
   test('engine RPM normalizes integers and doubles', () {
     expect(VehicleSignals.engineRpm.decode(3000), 3000.0);
     expect(VehicleSignals.engineRpm.decode(2875.5), 2875.5);

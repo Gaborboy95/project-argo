@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "loop": false,
+  "events": [
+    {
+      "atMs": 500,
+      "type": "vehicle",
+      "key": "controls.audio.volume_up.pressed",
+      "value": false
+    },
+    {
+      "atMs": 750,
+      "type": "vehicle",
+      "key": "controls.audio.volume_up.pressed",
+      "value": true
+    },
+    {
+      "atMs": 1000,
+      "type": "vehicle",
+      "key": "controls.audio.volume_up.pressed",
+      "value": false
+    },
+    {
+      "atMs": 1250,
+      "type": "vehicle",
+      "key": "controls.audio.volume_up.pressed",
+      "value": true
+    },
+    {
+      "atMs": 1750,
+      "type": "vehicle",
+      "key": "controls.audio.mute.pressed",
+      "value": true
+    }
+  ]
+}

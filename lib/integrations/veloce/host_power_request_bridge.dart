@@ -9,16 +9,14 @@ import '../../core/power/head_unit_power_service.dart';
 import '../../core/power/head_unit_power_snapshot.dart';
 import '../../core/power/host_power_controller.dart';
 import '../../core/vehicle/vehicle_transport_lifecycle.dart';
+import 'vehicle_integration_plugin_authorizer.dart';
 
-typedef VelocePluginLoadedLookup = bool Function(String pluginId);
 typedef SettingsFlush = Future<void> Function();
 
 /// Admits narrow privileged power requests from the active vehicle integration.
 final class HostPowerRequestBridge {
   HostPowerRequestBridge._({
-    required this.pluginRegistry,
-    required this.isPluginLoaded,
-    required this.activeIntegrationPluginRoot,
+    required this.authorizer,
     required this.powerService,
     required this.hostPowerController,
     required this.transportLifecycle,
@@ -50,13 +48,14 @@ final class HostPowerRequestBridge {
     required SettingsFlush flushSettings,
     required DiagnosticsService diagnostics,
   }) async {
-    final canonicalRoot = activeIntegrationPluginRoot == null
-        ? null
-        : Directory(await activeIntegrationPluginRoot.resolveSymbolicLinks());
-    final bridge = HostPowerRequestBridge._(
+    final authorizer = await VehicleIntegrationPluginAuthorizer.create(
       pluginRegistry: pluginRegistry,
       isPluginLoaded: isPluginLoaded,
-      activeIntegrationPluginRoot: canonicalRoot,
+      activeIntegrationPluginRoot: activeIntegrationPluginRoot,
+      diagnostics: diagnostics,
+    );
+    final bridge = HostPowerRequestBridge._(
+      authorizer: authorizer,
       powerService: powerService,
       hostPowerController: hostPowerController,
       transportLifecycle: transportLifecycle,
@@ -76,9 +75,7 @@ final class HostPowerRequestBridge {
     }
   }
 
-  final PluginRegistry pluginRegistry;
-  final VelocePluginLoadedLookup isPluginLoaded;
-  final Directory? activeIntegrationPluginRoot;
+  final VehicleIntegrationPluginAuthorizer authorizer;
   final HeadUnitPowerService powerService;
   final HostPowerController hostPowerController;
   final VehicleTransportLifecycle transportLifecycle;
@@ -264,7 +261,7 @@ final class HostPowerRequestBridge {
       );
       return null;
     }
-    if (!await _isAuthorized(pluginId)) {
+    if (!await authorizer.allows(pluginId)) {
       diagnostics.warning(
         _diagnosticSource,
         'Host $operation request rejected: unauthorized plugin $pluginId.',
@@ -343,45 +340,6 @@ final class HostPowerRequestBridge {
     if (isInStandby) _standbyEpisode++;
     _handledThisStandbyEpisode = false;
   }
-
-  Future<bool> _isAuthorized(String pluginId) async {
-    final root = activeIntegrationPluginRoot;
-    if (root == null || !isPluginLoaded(pluginId)) return false;
-    final record = pluginRegistry[pluginId];
-    if (record == null || record.state != PluginState.running) return false;
-
-    try {
-      final pluginDirectory = Directory(
-        await Directory(record.directoryPath).resolveSymbolicLinks(),
-      );
-      final current = pluginRegistry[pluginId];
-      if (!identical(record, current) ||
-          !isPluginLoaded(pluginId) ||
-          current?.state != PluginState.running) {
-        return false;
-      }
-      return _isContained(root.path, pluginDirectory.path);
-    } on FileSystemException catch (error, stackTrace) {
-      diagnostics.warning(
-        _diagnosticSource,
-        'Could not validate privileged request provenance for $pluginId.',
-        error: error,
-        stackTrace: stackTrace,
-      );
-      return false;
-    }
-  }
-
-  static bool _isContained(String rootPath, String childPath) {
-    final normalizedRoot = _normalizePath(rootPath);
-    final rootWithSeparator = normalizedRoot.endsWith(Platform.pathSeparator)
-        ? normalizedRoot
-        : '$normalizedRoot${Platform.pathSeparator}';
-    return _normalizePath(childPath).startsWith(rootWithSeparator);
-  }
-
-  static String _normalizePath(String path) =>
-      Platform.isWindows ? path.toLowerCase() : path;
 
   Future<void> close() => _closeFuture ??= _close();
 

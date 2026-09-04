@@ -25,6 +25,7 @@ import '../integrations/veloce/veloce_can_provider_selection.dart';
 import '../integrations/veloce/veloce_runtime.dart';
 import '../integrations/veloce/veloce_vehicle_data_service.dart';
 import 'app.dart';
+import 'audio_composition.dart';
 import 'argo_environment.dart';
 import 'head_unit_power_composition.dart';
 import 'host_power_composition.dart';
@@ -188,6 +189,13 @@ Future<Widget> bootstrapArgoApplication({
       environment: processEnvironment,
       activeVehicleIntegration: activeIntegration,
       transportLifecycle: canSelection.transportLifecycle,
+    );
+    await registerAudioServices(
+      services: services,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      environment: processEnvironment,
+      activeVehicleIntegration: activeIntegration,
     );
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {
