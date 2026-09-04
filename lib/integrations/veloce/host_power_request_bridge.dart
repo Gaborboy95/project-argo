@@ -8,12 +8,12 @@ import '../../core/power/head_unit_operational_state.dart';
 import '../../core/power/head_unit_power_service.dart';
 import '../../core/power/head_unit_power_snapshot.dart';
 import '../../core/power/host_power_controller.dart';
+import '../../core/vehicle/vehicle_transport_lifecycle.dart';
 
 typedef VelocePluginLoadedLookup = bool Function(String pluginId);
 typedef SettingsFlush = Future<void> Function();
 
-/// Admits one narrowly defined privileged request from the active vehicle
-/// integration after checking both plugin provenance and current vehicle state.
+/// Admits narrow privileged power requests from the active vehicle integration.
 final class HostPowerRequestBridge {
   HostPowerRequestBridge._({
     required this.pluginRegistry,
@@ -21,6 +21,7 @@ final class HostPowerRequestBridge {
     required this.activeIntegrationPluginRoot,
     required this.powerService,
     required this.hostPowerController,
+    required this.transportLifecycle,
     required this.flushSettings,
     required this.diagnostics,
   }) : _isInStandby =
@@ -32,28 +33,11 @@ final class HostPowerRequestBridge {
            ? 1
            : 0;
 
-  Future<void> _start(PluginEventBus eventBus) async {
-    _powerSubscription = powerService.changes.listen(
-      _onPowerChanged,
-      onError: (Object error, StackTrace stackTrace) {
-        diagnostics.warning(
-          _diagnosticSource,
-          'Could not track the current standby episode.',
-          error: error,
-          stackTrace: stackTrace,
-        );
-      },
-    );
-    _eventSubscription = eventBus.subscribe(
-      ownerId: _ownerId,
-      topic: suspendRequestTopic,
-      handler: _onSuspendRequested,
-    );
-  }
-
   static const suspendRequestTopic = 'host.power.suspend.request';
+  static const shutdownRequestTopic = 'host.power.shutdown.request';
   static const _ownerId = 'argo.host-power-request-bridge';
   static const _diagnosticSource = 'host.power';
+  static const _transportDiagnosticSource = 'vehicle.transport';
 
   static Future<HostPowerRequestBridge> start({
     required PluginEventBus eventBus,
@@ -62,6 +46,7 @@ final class HostPowerRequestBridge {
     required Directory? activeIntegrationPluginRoot,
     required HeadUnitPowerService powerService,
     required HostPowerController hostPowerController,
+    required VehicleTransportLifecycle transportLifecycle,
     required SettingsFlush flushSettings,
     required DiagnosticsService diagnostics,
   }) async {
@@ -74,14 +59,19 @@ final class HostPowerRequestBridge {
       activeIntegrationPluginRoot: canonicalRoot,
       powerService: powerService,
       hostPowerController: hostPowerController,
+      transportLifecycle: transportLifecycle,
       flushSettings: flushSettings,
       diagnostics: diagnostics,
     );
     try {
-      await bridge._start(eventBus);
+      bridge._start(eventBus);
       return bridge;
     } on Object catch (error, stackTrace) {
-      await bridge.close();
+      try {
+        await bridge.close();
+      } on Object {
+        // Preserve the subscription startup failure.
+      }
       Error.throwWithStackTrace(error, stackTrace);
     }
   }
@@ -91,35 +81,81 @@ final class HostPowerRequestBridge {
   final Directory? activeIntegrationPluginRoot;
   final HeadUnitPowerService powerService;
   final HostPowerController hostPowerController;
+  final VehicleTransportLifecycle transportLifecycle;
   final SettingsFlush flushSettings;
   final DiagnosticsService diagnostics;
 
-  PluginEventSubscription? _eventSubscription;
+  final List<PluginEventSubscription> _eventSubscriptions = [];
   StreamSubscription<HeadUnitPowerSnapshot>? _powerSubscription;
-  Future<void>? _activeRequest;
   Future<void>? _closeFuture;
   var _closed = false;
+  var _requestInProgress = false;
   bool _isInStandby;
   int _standbyEpisode;
   var _handledThisStandbyEpisode = false;
 
-  Future<void> _onSuspendRequested(PluginEvent event) async {
+  void _start(PluginEventBus eventBus) {
+    _powerSubscription = powerService.changes.listen(
+      _onPowerChanged,
+      onError: (Object error, StackTrace stackTrace) {
+        diagnostics.warning(
+          _diagnosticSource,
+          'Could not track the current standby episode.',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      },
+    );
+    _eventSubscriptions.add(
+      eventBus.subscribe(
+        ownerId: _ownerId,
+        topic: suspendRequestTopic,
+        handler: _onSuspendRequested,
+      ),
+    );
+    _eventSubscriptions.add(
+      eventBus.subscribe(
+        ownerId: _ownerId,
+        topic: shutdownRequestTopic,
+        handler: _onShutdownRequested,
+      ),
+    );
+  }
+
+  Future<void> _onSuspendRequested(PluginEvent event) => _runExclusive(
+    operation: 'suspend',
+    action: () => _handleSuspendRequest(event),
+  );
+
+  Future<void> _onShutdownRequested(PluginEvent event) => _runExclusive(
+    operation: 'shutdown',
+    action: () => _handleShutdownRequest(event),
+  );
+
+  Future<void> _runExclusive({
+    required String operation,
+    required Future<void> Function() action,
+  }) async {
     if (_closed) return;
-    final pluginId = event.sourcePluginId;
-    if (pluginId == null) {
-      diagnostics.warning(
+    if (_requestInProgress) {
+      diagnostics.info(
         _diagnosticSource,
-        'Host suspend request rejected: anonymous event.',
+        'Host $operation request suppressed: another host power operation is '
+        'in progress.',
       );
       return;
     }
-    if (!await _isAuthorized(pluginId)) {
-      diagnostics.warning(
-        _diagnosticSource,
-        'Host suspend request rejected: unauthorized plugin $pluginId.',
-      );
-      return;
+    _requestInProgress = true;
+    try {
+      await action();
+    } finally {
+      _requestInProgress = false;
     }
+  }
+
+  Future<void> _handleSuspendRequest(PluginEvent event) async {
+    final pluginId = await _authorizedPluginId(event, 'suspend');
+    if (pluginId == null) return;
     if (!_currentlyStandby) {
       diagnostics.warning(
         _diagnosticSource,
@@ -135,13 +171,6 @@ final class HostPowerRequestBridge {
       );
       return;
     }
-    if (_activeRequest != null) {
-      diagnostics.info(
-        _diagnosticSource,
-        'Host suspend request suppressed: suspend is already in progress.',
-      );
-      return;
-    }
 
     final standbyEpisode = _standbyEpisode;
     _handledThisStandbyEpisode = true;
@@ -149,7 +178,6 @@ final class HostPowerRequestBridge {
       _diagnosticSource,
       'Host suspend requested by plugin $pluginId.',
     );
-
     if (!hostPowerController.isEnabled) {
       diagnostics.info(
         _diagnosticSource,
@@ -158,33 +186,16 @@ final class HostPowerRequestBridge {
       return;
     }
 
-    final request = _performSuspend(standbyEpisode);
-    _activeRequest = request;
-    try {
-      await request;
-    } finally {
-      if (identical(_activeRequest, request)) _activeRequest = null;
-    }
-  }
-
-  Future<void> _performSuspend(int standbyEpisode) async {
-    try {
-      await flushSettings();
-    } on Object catch (error, stackTrace) {
-      diagnostics.warning(
-        _diagnosticSource,
-        'Settings flush failed before suspend.',
-        error: error,
-        stackTrace: stackTrace,
-      );
-    }
-
+    await _flushSettingsBefore('suspend');
     if (_closed) return;
-    if (!_currentlyStandby || standbyEpisode != _standbyEpisode) {
-      diagnostics.warning(
-        _diagnosticSource,
-        'Host suspend request rejected: vehicle no longer standby.',
-      );
+    if (!_sameStandbyEpisode(standbyEpisode)) {
+      _rejectStaleSuspend();
+      return;
+    }
+    if (!await _quiesceTransport()) return;
+    if (_closed || !_sameStandbyEpisode(standbyEpisode)) {
+      if (!_closed) _rejectStaleSuspend();
+      await _resumeTransport();
       return;
     }
 
@@ -199,12 +210,130 @@ final class HostPowerRequestBridge {
         error: error,
         stackTrace: stackTrace,
       );
+    } finally {
+      await _resumeTransport();
+    }
+  }
+
+  Future<void> _handleShutdownRequest(PluginEvent event) async {
+    final pluginId = await _authorizedPluginId(event, 'shutdown');
+    if (pluginId == null) return;
+    diagnostics.info(
+      _diagnosticSource,
+      'Host shutdown requested by plugin $pluginId.',
+    );
+    if (!hostPowerController.isEnabled) {
+      diagnostics.info(
+        _diagnosticSource,
+        'Host power control disabled; shutdown suppressed.',
+      );
+      return;
+    }
+
+    await _flushSettingsBefore('shutdown');
+    if (_closed || !await _quiesceTransport()) return;
+    if (_closed) {
+      await _resumeTransport();
+      return;
+    }
+
+    diagnostics.info(_diagnosticSource, 'Host shutdown requested.');
+    try {
+      await hostPowerController.powerOff();
+      diagnostics.info(_diagnosticSource, 'Host shutdown completed.');
+    } on Object catch (error, stackTrace) {
+      diagnostics.error(
+        _diagnosticSource,
+        'Host shutdown failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      await _resumeTransport();
+    }
+  }
+
+  Future<String?> _authorizedPluginId(
+    PluginEvent event,
+    String operation,
+  ) async {
+    final pluginId = event.sourcePluginId;
+    if (pluginId == null) {
+      diagnostics.warning(
+        _diagnosticSource,
+        'Host $operation request rejected: anonymous event.',
+      );
+      return null;
+    }
+    if (!await _isAuthorized(pluginId)) {
+      diagnostics.warning(
+        _diagnosticSource,
+        'Host $operation request rejected: unauthorized plugin $pluginId.',
+      );
+      return null;
+    }
+    return pluginId;
+  }
+
+  Future<void> _flushSettingsBefore(String operation) async {
+    try {
+      await flushSettings();
+    } on Object catch (error, stackTrace) {
+      diagnostics.warning(
+        _diagnosticSource,
+        'Settings flush failed before $operation.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<bool> _quiesceTransport() async {
+    diagnostics.info(_transportDiagnosticSource, 'CAN transport quiescing.');
+    try {
+      await transportLifecycle.quiesce();
+      diagnostics.info(_transportDiagnosticSource, 'CAN transport quiesced.');
+      return true;
+    } on Object catch (error, stackTrace) {
+      diagnostics.error(
+        _transportDiagnosticSource,
+        'CAN transport quiesce failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _resumeTransport() async {
+    diagnostics.info(_transportDiagnosticSource, 'CAN transport resuming.');
+    try {
+      await transportLifecycle.resume();
+      diagnostics.info(_transportDiagnosticSource, 'CAN transport resumed.');
+      return true;
+    } on Object catch (error, stackTrace) {
+      diagnostics.error(
+        _transportDiagnosticSource,
+        'CAN transport resume failed.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
     }
   }
 
   bool get _currentlyStandby =>
       _isInStandby &&
       powerService.current.operationalState == HeadUnitOperationalState.standby;
+
+  bool _sameStandbyEpisode(int episode) =>
+      _currentlyStandby && episode == _standbyEpisode;
+
+  void _rejectStaleSuspend() {
+    diagnostics.warning(
+      _diagnosticSource,
+      'Host suspend request rejected: vehicle no longer standby.',
+    );
+  }
 
   void _onPowerChanged(HeadUnitPowerSnapshot snapshot) {
     final isInStandby =
@@ -235,7 +364,7 @@ final class HostPowerRequestBridge {
     } on FileSystemException catch (error, stackTrace) {
       diagnostics.warning(
         _diagnosticSource,
-        'Could not validate host suspend request provenance for $pluginId.',
+        'Could not validate privileged request provenance for $pluginId.',
         error: error,
         stackTrace: stackTrace,
       );
@@ -270,15 +399,12 @@ final class HostPowerRequestBridge {
       }
     }
 
-    if (_eventSubscription case final subscription?) {
+    for (final subscription in _eventSubscriptions) {
       await cancel(subscription.cancel);
     }
+    _eventSubscriptions.clear();
     if (_powerSubscription case final subscription?) {
       await cancel(subscription.cancel);
-    }
-    final activeRequest = _activeRequest;
-    if (activeRequest != null) {
-      await cancel(() => activeRequest);
     }
     if (firstError case final error?) {
       Error.throwWithStackTrace(error, firstStackTrace!);

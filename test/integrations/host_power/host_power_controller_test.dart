@@ -71,6 +71,23 @@ void main() {
     expect(arguments, const ['suspend']);
   });
 
+  test('Linux backend invokes exactly systemctl poweroff', () async {
+    String? executable;
+    List<String>? arguments;
+    final controller = LinuxSystemdHostPowerController(
+      processRunner: (value, values) async {
+        executable = value;
+        arguments = List.of(values);
+        return ProcessResult(1, 0, '', '');
+      },
+    );
+
+    await controller.powerOff();
+
+    expect(executable, 'systemctl');
+    expect(arguments, const ['poweroff']);
+  });
+
   test('Linux backend surfaces non-zero status and stderr', () async {
     final controller = LinuxSystemdHostPowerController(
       processRunner: (_, _) async =>
@@ -102,6 +119,7 @@ void main() {
     );
 
     await controller.suspend();
+    await controller.powerOff();
 
     expect(controller.isEnabled, isFalse);
     expect(processCalls, 0);

@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+log_file="${ARGO_FAKE_SYSTEMCTL_LOG:-/tmp/argo-systemctl.log}"
+if [ "$#" -ne 1 ]; then
+  printf 'fake systemctl expects exactly one operation\n' >&2
+  exit 64
+fi
+case "${1:-}" in
+  suspend|poweroff)
+    printf '%s\n' "$1" >> "$log_file"
+    ;;
+  *)
+    printf 'unsupported fake systemctl operation: %s\n' "${1:-<missing>}" >&2
+    exit 64
+    ;;
+esac

@@ -4,6 +4,8 @@ abstract interface class HostPowerController {
   bool get isEnabled;
 
   Future<void> suspend();
+
+  Future<void> powerOff();
 }
 
 /// Safe default controller for development and unsupported deployments.
@@ -15,4 +17,7 @@ final class DisabledHostPowerController implements HostPowerController {
 
   @override
   Future<void> suspend() async {}
+
+  @override
+  Future<void> powerOff() async {}
 }

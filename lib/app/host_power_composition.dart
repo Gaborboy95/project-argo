@@ -5,18 +5,20 @@ import '../core/power/host_power_controller.dart';
 import '../core/settings/settings_service.dart';
 import '../core/services/service_registry.dart';
 import '../core/vehicle/integration/vehicle_integration_bundle.dart';
+import '../core/vehicle/vehicle_transport_lifecycle.dart';
 import '../integrations/host_power/host_power_controller_selection.dart';
 import '../integrations/host_power/linux_systemd_host_power_controller.dart';
 import '../integrations/veloce/host_power_request_bridge.dart';
 import '../integrations/veloce/veloce_runtime.dart';
 
-/// Selects the host backend and binds its only privileged request to Veloce.
+/// Selects the host backend and binds narrow privileged requests to Veloce.
 Future<HostPowerRequestBridge> registerHostPowerServices({
   required ServiceRegistry services,
   required AppLifecycleCoordinator lifecycle,
   required DiagnosticsService diagnostics,
   required Map<String, String> environment,
   required VehicleIntegrationBundle? activeVehicleIntegration,
+  required VehicleTransportLifecycle transportLifecycle,
   bool? isLinux,
   HostProcessRunner? processRunner,
 }) async {
@@ -36,6 +38,7 @@ Future<HostPowerRequestBridge> registerHostPowerServices({
         activeVehicleIntegration?.velocePluginDirectory,
     powerService: services.get<HeadUnitPowerService>(),
     hostPowerController: controller,
+    transportLifecycle: transportLifecycle,
     flushSettings: services.get<SettingsService>().flush,
     diagnostics: diagnostics,
   );

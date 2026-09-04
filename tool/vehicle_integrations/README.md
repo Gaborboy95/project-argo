@@ -10,6 +10,9 @@ example-vehicle/
     ├── can_decoder/
     │   ├── manifest.json
     │   └── main.lua
+    ├── battery_protection/
+    │   ├── manifest.json
+    │   └── main.lua
     └── power_policy/
         ├── manifest.json
         └── main.lua
@@ -44,3 +47,7 @@ ARGO_SIMULATION_SCENARIO="$(pwd)/tool/simulation/power_state_cycle.json" \
 ARGO_HOST_POWER_BACKEND=disabled \
 flutter run -d linux --no-enable-impeller
 ```
+
+The battery policy likewise owns its example-only voltage thresholds,
+hysteresis, and confirmation timer. See `tool/host_power/README.md` for the
+safe fake-systemctl SocketCAN suspend/resume and poweroff procedure.

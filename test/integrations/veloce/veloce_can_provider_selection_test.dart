@@ -1,4 +1,6 @@
 import 'package:argo/core/runtime/argo_runtime_mode.dart';
+import 'package:argo/core/vehicle/vehicle_transport_lifecycle.dart';
+import 'package:argo/integrations/veloce/restartable_can_provider.dart';
 import 'package:argo/integrations/veloce/socket_can_provider.dart';
 import 'package:argo/integrations/veloce/veloce_can_provider_selection.dart';
 import 'package:veloce_lua_core/veloce_lua_core.dart';
@@ -19,6 +21,7 @@ void main() {
 
     expect(selection.source, VeloceCanProviderSource.failClosed);
     expect(selection.provider, isNull);
+    expect(selection.transportLifecycle, isA<NoOpVehicleTransportLifecycle>());
     expect(socketCanStarted, isFalse);
   });
 
@@ -42,10 +45,11 @@ void main() {
       );
 
       expect(selection.source, VeloceCanProviderSource.socketCan);
-      expect(selection.provider, same(provider));
+      expect(selection.provider, isA<RestartableCanProvider>());
+      expect(selection.transportLifecycle, same(selection.provider));
       expect(startedConfiguration?.interfaceName, 'vcan0');
       expect(startedConfiguration?.logicalBus, 'comfort');
-      await provider.close();
+      await selection.provider!.close();
     },
   );
 
@@ -59,6 +63,7 @@ void main() {
     expect(selection.provider, same(selection.simulationProvider));
     expect(selection.simulationProvider, isA<InMemoryCanProvider>());
     expect(selection.simulationProvider!.writesEnabled, isFalse);
+    expect(selection.transportLifecycle, isA<NoOpVehicleTransportLifecycle>());
     await selection.simulationProvider!.close();
   });
 

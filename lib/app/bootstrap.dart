@@ -14,6 +14,7 @@ import '../core/settings/settings_service.dart';
 import '../core/settings/settings_store.dart';
 import '../core/services/service_registry.dart';
 import '../core/vehicle/vehicle_data_service.dart';
+import '../core/vehicle/vehicle_transport_lifecycle.dart';
 import '../core/vehicle/integration/vehicle_integration_bundle.dart';
 import '../core/vehicle/integration/vehicle_integration_discovery.dart';
 import '../core/vehicle/vehicle_profile_registry.dart';
@@ -173,7 +174,8 @@ Future<Widget> bootstrapArgoApplication({
       ..register(diagnostics)
       ..register(settings)
       ..register(veloceRuntime)
-      ..register<VehicleDataService>(vehicleData);
+      ..register<VehicleDataService>(vehicleData)
+      ..register<VehicleTransportLifecycle>(canSelection.transportLifecycle);
     registerHeadUnitPowerService(
       services: services,
       lifecycle: lifecycle,
@@ -185,6 +187,7 @@ Future<Widget> bootstrapArgoApplication({
       diagnostics: diagnostics,
       environment: processEnvironment,
       activeVehicleIntegration: activeIntegration,
+      transportLifecycle: canSelection.transportLifecycle,
     );
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {
