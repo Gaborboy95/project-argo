@@ -3,48 +3,62 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 use crate::daemon_state::{IPC_ERROR, IPC_HELLO, ProjectionRuntimeSnapshot, snapshot_messages};
 use crate::identity::AndroidAutoIdentity;
 use crate::ipc::{Decoder, Message, PayloadReader, encode, string_payload};
 
+pub fn bind(socket_path: &Path) -> io::Result<UnixListener> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Never unlink another live daemon's socket (or an arbitrary file).
+    // A socket left by a crash must be removed explicitly by the operator.
+    let listener = UnixListener::bind(socket_path)?;
+    if let Err(error) =
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660))
+    {
+        remove_socket(socket_path);
+        return Err(error);
+    }
+    println!("argo-projectiond: control socket {}", socket_path.display());
+    Ok(listener)
+}
+
 pub async fn run(
+    listener: UnixListener,
     socket_path: PathBuf,
     state: watch::Receiver<ProjectionRuntimeSnapshot>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
-    }
-    let listener = UnixListener::bind(&socket_path)?;
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o660))?;
-    println!("argo-projectiond: control socket {}", socket_path.display());
-
+    let mut clients = JoinSet::new();
     loop {
         tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+            }
             accepted = listener.accept() => {
                 match accepted {
                     Ok((client, _)) => {
-                        tokio::spawn(handle_client(client, state.clone()));
+                        if clients.len() < 4 {
+                            clients.spawn(handle_client(client, state.clone()));
+                        }
                     }
                     Err(error) => eprintln!("argo-projectiond: IPC accept failed: {error}"),
                 }
             }
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-            }
+            _ = clients.join_next(), if !clients.is_empty() => {},
         }
     }
 
+    clients.shutdown().await;
     drop(listener);
     remove_socket(&socket_path);
     Ok(())
@@ -66,9 +80,11 @@ async fn handle_client(
     let mut buffer = [0_u8; 16 * 1024];
     let mut hello_complete = false;
     let mut sent_state = ProjectionRuntimeSnapshot::default();
+    let hello_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(hello_deadline), if !hello_complete => return,
             read = client.read(&mut buffer) => {
                 let count = match read {
                     Ok(0) => return,
@@ -87,7 +103,8 @@ async fn handle_client(
                 };
                 for message in messages {
                     if hello_complete || message.kind != IPC_HELLO {
-                        continue;
+                        let _ = send_error(&mut client, "Commands are unavailable during the version-only checkpoint").await;
+                        return;
                     }
                     match parse_hello(&message) {
                         Ok(identity) => {
@@ -172,5 +189,97 @@ async fn send_error(client: &mut UnixStream, text: &str) -> io::Result<()> {
 async fn send(client: &mut UnixStream, message: &Message) -> io::Result<()> {
     let bytes = encode(message)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?;
-    client.write_all(&bytes).await
+    tokio::time::timeout(Duration::from_secs(5), client.write_all(&bytes))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "IPC write timed out"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_path() -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "argo-ipc-{}-{}.sock",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_idle_clients_and_removes_owned_socket() {
+        let path = test_path();
+        let listener = bind(&path).unwrap();
+        let (state, snapshot) = watch::channel(ProjectionRuntimeSnapshot::default());
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let server = tokio::spawn(run(listener, path.clone(), snapshot, shutdown_rx));
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        // USB state can change without a hello; idle Flutter must not block it.
+        state.send_replace(ProjectionRuntimeSnapshot::connecting(
+            "phone".into(),
+            "Android phone".into(),
+        ));
+        tokio::task::yield_now().await;
+        shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!path.exists());
+        let mut buffer = [0; 1];
+        let read = tokio::time::timeout(Duration::from_secs(1), client.read(&mut buffer))
+            .await
+            .unwrap();
+        assert!(matches!(read, Ok(0) | Err(_)));
+    }
+
+    #[tokio::test]
+    async fn bind_never_deletes_an_existing_file_or_live_socket() {
+        let path = test_path();
+        std::fs::write(&path, "not a socket").unwrap();
+        assert!(bind(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not a socket");
+        std::fs::remove_file(&path).unwrap();
+        let listener = bind(&path).unwrap();
+        assert!(bind(&path).is_err());
+        assert!(UnixStream::connect(&path).await.is_ok());
+        drop(listener);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_hello_is_rejected_without_affecting_runtime_state() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let (state, snapshot) = watch::channel(ProjectionRuntimeSnapshot::default());
+        let task = tokio::spawn(handle_client(server, snapshot));
+        send(
+            &mut client,
+            &Message {
+                kind: IPC_HELLO,
+                payload: vec![0],
+            },
+        )
+        .await
+        .unwrap();
+        let mut bytes = [0; 1024];
+        let count = tokio::time::timeout(Duration::from_secs(1), client.read(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        let messages = Decoder::default().push(&bytes[..count]).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].kind, IPC_ERROR);
+        assert_eq!(
+            PayloadReader::new(&messages[0].payload).string(),
+            Some("Malformed projection hello".to_owned())
+        );
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*state.borrow(), ProjectionRuntimeSnapshot::default());
+    }
 }

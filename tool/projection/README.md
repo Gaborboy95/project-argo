@@ -32,11 +32,23 @@ The native tests use fake USB/control and byte-stream transports. No USB
 device is opened. They cover the AOAP request order, failed probes,
 re-enumeration/unplug state, endpoint selection, bounded incremental framing,
 split and coalesced `VersionResponse` input, malformed lengths, disconnects,
-and the deliberate stop before TLS.
+and the deliberate stop before TLS. Fake runtime tests also cancel a pending
+read, park a successful exchange until unplug, and start a fresh session. On
+Linux, Unix-socket tests verify idle-client shutdown and malformed hello
+rejection independently of USB.
+
+Latest non-hardware verification (2026-09-05): Linux/WSL `cargo test` passed
+28 tests; `cargo test --all-features` passed 30. Rust formatting and strict
+all-targets/all-features Clippy passed. Flutter passed 207 tests with five
+existing native-Lua/environment-dependent skips; Dart formatting, Flutter
+analysis, and `git diff --check` passed. The standalone daemon started without
+Flutter and handled SIGINT/socket cleanup. WSL exposed no USB device tree, so
+this is **not** USB or real-phone acceptance. No VersionResponse has yet been
+observed from hardware in this environment.
 
 ## Debian / Ubuntu build
 
-Install a native compiler, udev headers/tools, and Rust:
+Install a native compiler, udev headers/tools, and Rust (1.88 or newer):
 
 ```bash
 sudo apt update
@@ -113,6 +125,15 @@ the normal and accessory identities if useful:
 watch -n 0.5 lsusb
 ```
 
+For a VM, configure USB passthrough for **both** the phone's normal VID/PID and
+the Google accessory VID/PIDs above. The original virtual USB attachment does
+not necessarily follow re-enumeration; the VM must capture the accessory too.
+Use a data-capable cable. Candidate probing deliberately requires an ADB
+interface or a known Android phone vendor with MTP (USB File Transfer).
+Charging-only interfaces are not probed indiscriminately. USB debugging is not
+required when the MTP candidate path is available. An unrecognized candidate
+needs its descriptors reviewed; do not broaden permissions to all USB devices.
+
 The required daemon proof is this complete sequence (numeric values vary):
 
 ```text
@@ -137,12 +158,24 @@ sed -n '/USB candidate detected/,$p' /tmp/argo-projectiond-version.log
 Unplug at any earlier point must remove the current attempt without exiting
 the daemon. A later replug starts a fresh attempt; failed probes are not retried
 aggressively while the same USB enumeration remains present.
+An expected AOAP removal is retained for a bounded 15-second accessory window;
+if no accessory arrives the attempt is cleared or marked failed. The window
+is a handover deadline, not a retry/polling loop.
+
+The daemon uses `$XDG_RUNTIME_DIR/argo/projection.sock` by default when
+`XDG_RUNTIME_DIR` is set, otherwise `/run/argo/projection.sock`. The explicit
+override above avoids needing root. An existing socket is never unlinked at
+startup: stop the other daemon first. Following a crash, remove only the stale
+socket after confirming no daemon is using it. Ctrl+C/SIGTERM cancels transfers,
+closes clients, and removes the daemon's socket.
 
 ## Optional Argo IPC observation
 
 The USB runtime and IPC listener run concurrently, so waiting for Flutter can
 never block phone handling. A Flutter connection receives the current generic
-`Android phone / USB / connecting|ready|failed` snapshot. The existing IPC
+`Android phone / USB / connecting|failed` snapshot. Version negotiation alone
+does not make projection media ready: the native diagnostic reports
+`waitingForTls` while the generic session remains `connecting`. The existing IPC
 identity validation still requires a legitimate certificate/key pair even
 though Milestone 14.1 does not consume it for TLS:
 

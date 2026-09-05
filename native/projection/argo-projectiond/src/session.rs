@@ -43,6 +43,8 @@ pub enum ChannelRole {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrameError {
+    UnsupportedFlags(u8),
+    InvalidLength(usize),
     OversizedBuffer,
     OversizedPayload(usize),
     DisconnectMidFrame(usize),
@@ -88,6 +90,18 @@ impl FrameDecoder {
                 break;
             }
             let length = u16::from_be_bytes([self.buffered[2], self.buffered[3]]) as usize;
+            // Version negotiation uses complete plaintext messages. Reject
+            // fragmented/encrypted headers rather than interpreting an
+            // extended header as a payload in this limited checkpoint.
+            let flags = self.buffered[1];
+            if flags != FLAGS_PLAINTEXT_SINGLE_FRAME {
+                self.buffered.clear();
+                return Err(FrameError::UnsupportedFlags(flags));
+            }
+            if length < 2 {
+                self.buffered.clear();
+                return Err(FrameError::InvalidLength(length));
+            }
             if length > MAX_FRAME_PAYLOAD_BYTES {
                 self.buffered.clear();
                 return Err(FrameError::OversizedPayload(length));
@@ -210,6 +224,9 @@ pub fn parse_version_response(frame: &Frame) -> Result<VersionResponse, VersionN
     let major = u16::from_be_bytes([frame.payload[2], frame.payload[3]]);
     let minor = u16::from_be_bytes([frame.payload[4], frame.payload[5]]);
     let status = u16::from_be_bytes([frame.payload[6], frame.payload[7]]);
+    if major == 0 {
+        return Err(VersionNegotiationError::MalformedResponse);
+    }
     if status == u16::MAX {
         return Err(VersionNegotiationError::VersionMismatch { major, minor });
     }
@@ -231,7 +248,13 @@ pub async fn negotiate_version(
     let mut decoder = FrameDecoder::default();
     let mut input = [0_u8; 16 * 1024];
     loop {
-        let count = transport.read(&mut input).await?;
+        let count = match transport.read(&mut input).await {
+            Ok(count) => count,
+            Err(error) => {
+                decoder.disconnect()?;
+                return Err(error.into());
+            }
+        };
         if count == 0 {
             decoder.disconnect()?;
             return Err(VersionNegotiationError::Disconnected);
@@ -424,6 +447,74 @@ mod tests {
             parse_version_response(&frames[0]).unwrap(),
             VersionResponse { major: 1, minor: 7 }
         );
+    }
+
+    #[test]
+    fn every_usb_read_split_and_malformed_header_is_handled() {
+        let wire = response_frame(1, 7);
+        for split in 0..wire.len() {
+            let mut decoder = FrameDecoder::default();
+            assert!(decoder.push(&wire[..split]).unwrap().is_empty());
+            let frames = decoder.push(&wire[split..]).unwrap();
+            assert_eq!(frames.len(), 1);
+            assert_eq!(parse_version_response(&frames[0]).unwrap().minor, 7);
+        }
+        assert_eq!(
+            FrameDecoder::default().push(&[0, 3, 0, 1]),
+            Err(FrameError::InvalidLength(1))
+        );
+        assert_eq!(
+            FrameDecoder::default().push(&[0, 1, 0, 8]),
+            Err(FrameError::UnsupportedFlags(1))
+        );
+        assert_eq!(
+            FrameDecoder::default().push(&vec![0; MAX_BUFFERED_BYTES + 1]),
+            Err(FrameError::OversizedBuffer)
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_read_error_mid_frame_and_clean_disconnect_are_distinct() {
+        let mut transport = FakeTransport::with_reads([vec![0, 3, 0, 8, 0]]);
+        transport
+            .reads
+            .push_back(Err(io::Error::new(io::ErrorKind::NotConnected, "unplug")));
+        assert!(matches!(
+            negotiate_version(&mut transport).await,
+            Err(VersionNegotiationError::Frame(
+                FrameError::DisconnectMidFrame(5)
+            ))
+        ));
+        let mut replugged = FakeTransport::with_reads([response_frame(1, 7)]);
+        assert!(negotiate_version(&mut replugged).await.is_ok());
+        let mut empty = FakeTransport::with_reads([]);
+        assert!(matches!(
+            negotiate_version(&mut empty).await,
+            Err(VersionNegotiationError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn malformed_response_and_failure_status_never_succeed() {
+        let mut frame = FrameDecoder::default()
+            .push(&response_frame(1, 7))
+            .unwrap()
+            .remove(0);
+        frame.payload[6..8].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert!(matches!(
+            parse_version_response(&frame),
+            Err(VersionNegotiationError::VersionMismatch { .. })
+        ));
+        frame.payload[6..8].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(matches!(
+            parse_version_response(&frame),
+            Err(VersionNegotiationError::RejectedStatus(1))
+        ));
+        frame.payload.truncate(7);
+        assert!(matches!(
+            parse_version_response(&frame),
+            Err(VersionNegotiationError::MalformedResponse)
+        ));
     }
 
     #[tokio::test]

@@ -103,6 +103,7 @@ pub enum UsbConnectionState {
     WaitingForAccessory {
         original: UsbDeviceKey,
         deadline: Instant,
+        original_removed: bool,
     },
     AccessoryPresent(UsbDeviceKey),
     SessionStarting(UsbDeviceKey),
@@ -141,6 +142,11 @@ impl UsbConnectionStateMachine {
         let available = match &self.state {
             UsbConnectionState::Disconnected => true,
             UsbConnectionState::Failed { device: failed, .. } => failed.id != device.id,
+            UsbConnectionState::WaitingForAccessory {
+                original,
+                original_removed: true,
+                ..
+            } => original.id != device.id,
             _ => false,
         };
         if !available {
@@ -171,13 +177,16 @@ impl UsbConnectionStateMachine {
         self.state = UsbConnectionState::WaitingForAccessory {
             original,
             deadline: now + ACCESSORY_WAIT,
+            original_removed: false,
         };
         true
     }
 
     pub fn probe_failed(&mut self, id: &str, reason: impl Into<String>) -> bool {
-        let UsbConnectionState::Probing(device) = &self.state else {
-            return false;
+        let device = match &self.state {
+            UsbConnectionState::Probing(device) => device,
+            UsbConnectionState::WaitingForAccessory { original, .. } => original,
+            _ => return false,
         };
         if device.id != id {
             return false;
@@ -192,8 +201,9 @@ impl UsbConnectionStateMachine {
     pub fn accessory_discovered(&mut self, device: UsbDeviceKey, now: Instant) -> bool {
         match &self.state {
             UsbConnectionState::Disconnected => {}
-            UsbConnectionState::WaitingForAccessory { original, deadline }
-                if now <= *deadline && serials_can_correlate(original, &device) => {}
+            UsbConnectionState::WaitingForAccessory {
+                original, deadline, ..
+            } if now <= *deadline && serials_can_correlate(original, &device) => {}
             _ => return false,
         }
         self.state = UsbConnectionState::AccessoryPresent(device);
@@ -245,6 +255,16 @@ impl UsbConnectionStateMachine {
     }
 
     pub fn removed(&mut self, id: &str) -> bool {
+        if let UsbConnectionState::WaitingForAccessory {
+            original,
+            original_removed,
+            ..
+        } = &mut self.state
+            && original.id == id
+        {
+            *original_removed = true;
+            return true;
+        }
         let owns_device = match &self.state {
             UsbConnectionState::Disconnected => false,
             UsbConnectionState::WaitingForAccessory { original, .. } => original.id == id,
@@ -263,15 +283,24 @@ impl UsbConnectionStateMachine {
     }
 
     pub fn expire_accessory_wait(&mut self, now: Instant) -> bool {
-        let UsbConnectionState::WaitingForAccessory { original, deadline } = &self.state else {
+        let UsbConnectionState::WaitingForAccessory {
+            original,
+            deadline,
+            original_removed,
+        } = &self.state
+        else {
             return false;
         };
         if now < *deadline {
             return false;
         }
-        self.state = UsbConnectionState::Failed {
-            device: original.clone(),
-            reason: "timed out waiting for Android accessory re-enumeration".to_owned(),
+        self.state = if *original_removed {
+            UsbConnectionState::Disconnected
+        } else {
+            UsbConnectionState::Failed {
+                device: original.clone(),
+                reason: "timed out waiting for Android accessory re-enumeration".to_owned(),
+            }
         };
         true
     }
@@ -373,25 +402,33 @@ pub mod nusb_backend {
         info.vendor_id() == GOOGLE_VENDOR_ID && ACCESSORY_PRODUCT_IDS.contains(&info.product_id())
     }
 
-    /// Restrict probes to devices exposing the Android Debug Bridge interface
-    /// or a vendor-specific device/interface. GET_PROTOCOL remains the final
+    /// Restrict probes to an Android Debug Bridge interface, or a known phone
+    /// vendor exposing MTP. Do not probe arbitrary vendor-specific peripherals.
+    /// GET_PROTOCOL remains the final
     /// authority and a failed probe is parked until unplug.
     pub fn is_candidate(info: &DeviceInfo) -> bool {
         if is_accessory(info) {
             return false;
         }
-        let has_adb = info
-            .interfaces()
-            .any(|interface| interface.class() == 0xff && interface.subclass() == 0x42);
+        let has_adb = info.interfaces().any(|interface| {
+            interface.class() == 0xff
+                && interface.subclass() == 0x42
+                && interface.protocol() == 0x01
+        });
         let phone_vendor = ANDROID_PHONE_VENDOR_IDS.contains(&info.vendor_id());
-        let phone_interface = info
-            .interfaces()
-            .any(|interface| matches!(interface.class(), 0x06 | 0xff));
+        let phone_interface = info.interfaces().any(|interface| {
+            interface.class() == 0x06
+                && interface.subclass() == 0x01
+                && interface.protocol() == 0x01
+        });
         has_adb || (phone_vendor && matches!(info.class(), 0x00 | 0xff) && phone_interface)
     }
 
     #[cfg(target_os = "linux")]
-    pub async fn request_accessory_mode(info: &DeviceInfo) -> Result<u16, String> {
+    pub async fn request_accessory_mode<F: Future<Output = bool>>(
+        info: &DeviceInfo,
+        before_start: impl FnOnce(u16) -> F,
+    ) -> Result<u16, String> {
         let device = info
             .open()
             .await
@@ -417,14 +454,8 @@ pub mod nusb_backend {
         if version == 0 {
             return Err("device reported unsupported AOAP protocol version 0".to_owned());
         }
+        println!("AOAP protocol version {version}");
         for (index, value) in IDENTITY_STRINGS.iter().enumerate() {
-            let value = if index == 5 {
-                info.serial_number()
-                    .filter(|serial| !serial.is_empty())
-                    .unwrap_or(value)
-            } else {
-                value
-            };
             let mut data = value.as_bytes().to_vec();
             data.push(0);
             device
@@ -442,6 +473,11 @@ pub mod nusb_backend {
                 .await
                 .map_err(|error| format!("SEND_STRING {index}: {error}"))?;
         }
+        // Record re-enumeration ownership before START can remove the device.
+        if !before_start(version).await {
+            return Err("AOAP attempt cancelled before START".to_owned());
+        }
+        println!("AOAP accessory switch requested");
         device
             .control_out(
                 ControlOut {
@@ -456,25 +492,28 @@ pub mod nusb_backend {
             )
             .await
             .map_err(|error| format!("START: {error}"))?;
+        println!("AOAP START completed; waiting for accessory re-enumeration");
         Ok(version)
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub async fn request_accessory_mode(_info: &DeviceInfo) -> Result<u16, String> {
+    pub async fn request_accessory_mode<F: Future<Output = bool>>(
+        _info: &DeviceInfo,
+        _before_start: impl FnOnce(u16) -> F,
+    ) -> Result<u16, String> {
         Err("AOAP USB switching is supported only on Linux".to_owned())
     }
 
-    async fn discover_bulk_endpoints(info: &DeviceInfo) -> Result<BulkEndpoints, String> {
-        let device = info
-            .open()
-            .await
-            .map_err(|error| format!("open: {error}"))?;
+    fn discover_bulk_endpoints(device: &nusb::Device) -> Result<BulkEndpoints, String> {
         let configuration = device
             .active_configuration()
             .map_err(|error| format!("active configuration: {error}"))?;
         let mut candidates = Vec::new();
         for interface in configuration.interfaces() {
             for alternate in interface.alt_settings() {
+                if alternate.class() == 0xff && alternate.subclass() == 0x42 {
+                    continue; // The ADB bulk interface is not the accessory pipe.
+                }
                 for endpoint in alternate.endpoints() {
                     candidates.push(EndpointCandidate {
                         interface: interface.interface_number(),
@@ -501,11 +540,11 @@ pub mod nusb_backend {
 
     impl UsbAaTransport {
         pub async fn open(info: &DeviceInfo) -> Result<(Self, BulkEndpoints), String> {
-            let endpoints = discover_bulk_endpoints(info).await?;
             let device = info
                 .open()
                 .await
                 .map_err(|error| format!("open: {error}"))?;
+            let endpoints = discover_bulk_endpoints(&device)?;
             let interface = device
                 .claim_interface(endpoints.interface)
                 .await
@@ -712,14 +751,7 @@ mod tests {
         lifecycle.accessory_switch_requested("candidate", 2, now);
         assert!(lifecycle.removed("candidate"));
         assert!(lifecycle.expire_accessory_wait(now + ACCESSORY_WAIT));
-        assert!(matches!(
-            lifecycle.state(),
-            UsbConnectionState::Failed { .. }
-        ));
-        assert!(!lifecycle.candidate_discovered(UsbDeviceKey {
-            id: "candidate".to_owned(),
-            serial: None,
-        }));
+        assert_eq!(lifecycle.state(), &UsbConnectionState::Disconnected);
         assert!(lifecycle.candidate_discovered(UsbDeviceKey {
             id: "replugged-candidate".to_owned(),
             serial: None,
@@ -767,6 +799,88 @@ mod tests {
                 input: 0x82,
                 output: 0x03,
             })
+        );
+    }
+
+    #[test]
+    fn failed_or_short_control_transfer_never_sends_identification() {
+        let mut usb = FakeUsb {
+            fail_at: Some(0),
+            ..FakeUsb::default()
+        };
+        assert_eq!(
+            request_accessory_mode(&mut usb),
+            Err(AoapError::Transport("control failed"))
+        );
+        assert!(usb.requests.is_empty());
+        let mut short = FakeUsb {
+            reply: vec![2],
+            ..FakeUsb::default()
+        };
+        assert_eq!(
+            request_accessory_mode(&mut short),
+            Err(AoapError::ShortProtocolReply)
+        );
+        assert_eq!(short.requests.len(), 1);
+    }
+
+    #[test]
+    fn failed_probe_is_parked_until_unplug_and_stale_completion_is_ignored() {
+        let phone = UsbDeviceKey {
+            id: "phone".to_owned(),
+            serial: None,
+        };
+        let mut state = UsbConnectionStateMachine::default();
+        assert!(state.candidate_discovered(phone.clone()));
+        assert!(state.probe_failed("phone", "not supported"));
+        assert!(!state.candidate_discovered(phone.clone()));
+        state.removed("phone");
+        assert!(!state.accessory_switch_requested("phone", 2, Instant::now()));
+        assert!(state.candidate_discovered(phone));
+    }
+
+    #[test]
+    fn reenumeration_rejects_another_serial_and_expired_handover() {
+        let now = Instant::now();
+        let mut state = UsbConnectionStateMachine::default();
+        state.candidate_discovered(UsbDeviceKey {
+            id: "old".into(),
+            serial: Some("one".into()),
+        });
+        state.accessory_switch_requested("old", 2, now);
+        assert!(!state.accessory_discovered(
+            UsbDeviceKey {
+                id: "new".into(),
+                serial: Some("two".into())
+            },
+            now
+        ));
+        assert!(!state.accessory_discovered(
+            UsbDeviceKey {
+                id: "new".into(),
+                serial: Some("one".into())
+            },
+            now + ACCESSORY_WAIT + Duration::from_secs(1)
+        ));
+        state.removed("old");
+        assert!(state.candidate_discovered(UsbDeviceKey {
+            id: "replug".into(),
+            serial: Some("one".into())
+        }));
+    }
+
+    #[test]
+    fn no_bulk_pair_is_an_explicit_failure() {
+        assert_eq!(select_bulk_endpoints([]), None);
+        assert_eq!(
+            select_bulk_endpoints([EndpointCandidate {
+                interface: 4,
+                alternate_setting: 0,
+                address: 0x81,
+                direction: EndpointDirection::Input,
+                bulk: true,
+            }]),
+            None
         );
     }
 }

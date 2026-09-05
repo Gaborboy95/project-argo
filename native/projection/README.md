@@ -21,5 +21,12 @@ fourcc and modifier intersect the formats advertised by IHS. In particular,
 an NV12 decoder buffer is not assumed to be directly importable by an IHS
 backend that currently grants RGB formats.
 
-No Android Auto certificate or private key is included. A hardware session is
-fail-closed until an independently provisioned compatible identity is supplied.
+No Android Auto certificate or private key is included. Milestone 14.1 runs
+USB discovery and a plaintext VersionRequest/VersionResponse checkpoint
+independently of Flutter, then parks without sending TLS. IPC identity parsing
+and key-pair validation remain intact; a later authenticated hardware session
+is fail-closed until an independently provisioned compatible identity is supplied.
+
+See [the checkpoint runbook](../../tool/projection/README.md) for build,
+permissions, standalone phone testing, and the required hardware log. The
+projection view and native media path remain parked for this checkpoint.
