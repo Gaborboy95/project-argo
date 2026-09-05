@@ -10,7 +10,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 
 use crate::daemon_state::ProjectionRuntimeSnapshot;
-use crate::session::{AndroidAutoSessionEngine, AndroidAutoTransport, negotiate_version};
+use crate::host_control::HostControl;
+#[cfg(test)]
+use crate::session::AndroidAutoSessionEngine;
+use crate::session::{AndroidAutoTransport, negotiate_version};
 use crate::usb::nusb_backend::{
     UsbAaTransport, is_accessory, is_candidate, request_accessory_mode,
 };
@@ -52,6 +55,7 @@ impl ActiveSession {
 pub async fn run(
     state_tx: watch::Sender<ProjectionRuntimeSnapshot>,
     mut shutdown: watch::Receiver<bool>,
+    control: HostControl,
 ) -> Result<(), String> {
     let mut watcher = nusb::watch_devices().map_err(|error| error.to_string())?;
     let (work_tx, mut work_rx) = mpsc::channel(8);
@@ -80,6 +84,7 @@ pub async fn run(
                     &mut probes,
                     &mut probe,
                     &mut attempted,
+                    &control,
                 );
             }
         }
@@ -97,7 +102,7 @@ pub async fn run(
             event = watcher.next() => match event {
                 Some(HotplugEvent::Connected(info)) => connected(
                     info, &mut lifecycle, &state_tx, &work_tx, &mut active_session,
-                    &mut probes, &mut probe, &mut attempted),
+                    &mut probes, &mut probe, &mut attempted, &control),
                 Some(HotplugEvent::Disconnected(id)) => {
                     attempted.remove(&id);
                     let waiting = matches!(lifecycle.state(), UsbConnectionState::WaitingForAccessory { .. });
@@ -158,6 +163,7 @@ fn connected(
     probes: &mut JoinSet<()>,
     probe: &mut Option<(DeviceId, AbortHandle)>,
     attempted: &mut HashSet<DeviceId>,
+    control: &HostControl,
 ) {
     if attempted.contains(&info.id()) {
         return;
@@ -171,7 +177,13 @@ fn connected(
         println!("Android accessory detected");
         lifecycle.session_starting(&key.id);
         publish_connecting(state_tx, &info);
-        *active_session = Some(start_session(info, key, work_tx.clone()));
+        *active_session = Some(start_session(
+            info,
+            key,
+            work_tx.clone(),
+            control.clone(),
+            state_tx.clone(),
+        ));
     } else if is_candidate(&info) && lifecycle.candidate_discovered(key.clone()) {
         attempted.insert(info.id());
         println!(
@@ -246,9 +258,7 @@ fn handle_work_result(
                 println!(
                     "Android Auto version negotiation succeeded: phone protocol major={major} minor={minor}"
                 );
-                println!("Android Auto checkpoint parked: waitingForTls (no TLS bytes sent)");
-                // Version exchange is only part of connecting. The projection
-                // session is not ready for media until the later checkpoints.
+                // TLS/session work continues inside the same transport owner.
             }
         }
         WorkResult::Version {
@@ -270,6 +280,8 @@ fn start_session(
     info: DeviceInfo,
     key: UsbDeviceKey,
     work_tx: mpsc::Sender<WorkResult>,
+    control: HostControl,
+    state: watch::Sender<ProjectionRuntimeSnapshot>,
 ) -> ActiveSession {
     let id = info.id();
     let (cancel, mut cancelled) = watch::channel(false);
@@ -280,7 +292,7 @@ fn start_session(
             value = tokio::time::timeout(SETUP_TIMEOUT, UsbAaTransport::open(&info)) =>
                 value.unwrap_or_else(|_| Err("accessory interface setup timed out".to_owned())),
         };
-        let (transport, endpoints) = match opened {
+        let (mut transport, endpoints) = match opened {
             Ok(value) => value,
             Err(error) => {
                 let _ = work_tx.try_send(WorkResult::Version {
@@ -294,16 +306,70 @@ fn start_session(
             "bulk interface claimed: interface={} alternate={} in=0x{:02x} out=0x{:02x}",
             endpoints.interface, endpoints.alternate_setting, endpoints.input, endpoints.output
         );
-        run_checkpoint(transport, cancelled, move |result| {
-            let _ = work_tx.try_send(WorkResult::Version { key, result });
-        })
-        .await;
+        let session_id = state
+            .borrow()
+            .session
+            .as_ref()
+            .map(|s| s.id.clone())
+            .unwrap_or_default();
+        #[cfg(unix)]
+        let mut media = crate::native_playback::SessionMedia::default();
+        let session = async {
+            let response = tokio::time::timeout(SETUP_TIMEOUT, negotiate_version(&mut transport))
+                .await
+                .map_err(|_| "VersionResponse timeout".to_owned())?
+                .map_err(|e| e.to_string())?;
+            let _ = work_tx.try_send(WorkResult::Version {
+                key: key.clone(),
+                result: Ok((response.major, response.minor)),
+            });
+            #[cfg(unix)]
+            {
+                crate::aa_session::run(
+                    &mut transport,
+                    control,
+                    state.clone(),
+                    session_id.clone(),
+                    &mut media,
+                )
+                .await
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (control, session_id);
+                Err::<(), String>("AA native session requires Linux".into())
+            }
+        };
+        let result =
+            tokio::select! { biased; _=cancelled.changed()=>Ok(()), result=session=>result };
+        let ended_normally = result.is_ok();
+        if let Err(error) = result {
+            eprintln!("Android Auto session failed: {error}");
+            let _ = work_tx.try_send(WorkResult::Version {
+                key,
+                result: Err(error),
+            });
+        }
+        #[cfg(unix)]
+        media.close().await;
+        if let Err(error) = transport.close().await {
+            eprintln!("AA transport cleanup: {error}");
+        }
+        state.send_modify(|snapshot| {
+            snapshot.video = None;
+            snapshot.audio = [false; 3];
+            if ended_normally {
+                snapshot.session = None;
+                snapshot.device = None;
+            }
+        });
     });
     ActiveSession { id, cancel, task }
 }
 
 /// Also exercised with a fake transport: cancellation closes the same owned
 /// transport both during a read and while parked after VersionResponse.
+#[cfg(test)]
 async fn run_checkpoint(
     mut transport: impl AndroidAutoTransport,
     mut cancelled: watch::Receiver<bool>,
@@ -351,10 +417,15 @@ fn device_key(info: &DeviceInfo) -> UsbDeviceKey {
 
 fn publish_connecting(state_tx: &watch::Sender<ProjectionRuntimeSnapshot>, info: &DeviceInfo) {
     let id = format!("android-usb:{:?}", info.id());
-    state_tx.send_replace(ProjectionRuntimeSnapshot::connecting(
-        id,
-        "Android phone".to_owned(),
-    ));
+    let mut snapshot = ProjectionRuntimeSnapshot::connecting(id, "Android phone".to_owned());
+    if let Some(session) = snapshot.session.as_mut() {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        session.id.push_str(&format!(":{epoch}"));
+    }
+    state_tx.send_replace(snapshot);
 }
 
 fn publish_failure(state_tx: &watch::Sender<ProjectionRuntimeSnapshot>, failure: String) {

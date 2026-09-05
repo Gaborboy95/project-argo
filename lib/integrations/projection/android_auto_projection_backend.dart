@@ -150,7 +150,8 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
             ProjectionIpcKind.touch ||
             ProjectionIpcKind.button ||
             ProjectionIpcKind.rotary ||
-            ProjectionIpcKind.videoVisibility:
+            ProjectionIpcKind.videoVisibility ||
+            ProjectionIpcKind.audioGain:
           throw FormatException(
             'Sidecar sent command-only message ${message.kind.name}.',
           );
@@ -264,6 +265,9 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
 
   void _fail(String message, [Object? error, StackTrace? stackTrace]) {
     if (_closed) return;
+    _devices.clear();
+    _sessions.clear();
+    _activeSessionId = null;
     diagnostics.error(
       'projection.androidAuto',
       message,
@@ -341,6 +345,20 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
       ..string(streamId)
       ..uint8(visible ? 1 : 0),
   );
+
+  @override
+  Future<void> setAudioGain(String sessionId, String streamId, double gain) {
+    if (!gain.isFinite || gain < 0 || gain > 1) {
+      return Future.error(RangeError.range(gain, 0, 1, 'gain'));
+    }
+    return _send(
+      ProjectionIpcKind.audioGain,
+      ProjectionIpcWriter()
+        ..string(sessionId)
+        ..string(streamId)
+        ..float32(gain),
+    );
+  }
 
   @override
   Future<void> close() async {

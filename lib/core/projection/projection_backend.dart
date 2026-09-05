@@ -18,5 +18,9 @@ abstract interface class ProjectionBackend {
   });
   Future<void> sendRotary(String sessionId, int detents);
   Future<void> setVideoVisibility(String streamId, bool visible);
+
+  /// Applies generic AudioService focus policy to a native projection stream.
+  /// This is source gain, never system master volume or PCM transport.
+  Future<void> setAudioGain(String sessionId, String streamId, double gain);
   Future<void> close();
 }

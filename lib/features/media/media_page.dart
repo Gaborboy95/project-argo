@@ -64,7 +64,28 @@ class _MediaPageState extends State<MediaPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Projection', style: Theme.of(context).textTheme.headlineMedium),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Projection',
+                  style: Theme.of(context).textTheme.headlineMedium,
+                ),
+              ),
+              if (stream != null &&
+                  session?.state == ProjectionSessionState.streaming)
+                TextButton(
+                  onPressed: () =>
+                      widget.projection.setVideoVisibility(stream!.id, false),
+                  child: const Text('Return to Argo'),
+                ),
+              if (session?.state == ProjectionSessionState.suspended)
+                TextButton(
+                  onPressed: () => widget.projection.activate(session!.id),
+                  child: const Text('Show projection'),
+                ),
+            ],
+          ),
           const SizedBox(height: 12),
           Expanded(
             child: Card(

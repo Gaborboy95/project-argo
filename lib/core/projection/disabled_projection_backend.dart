@@ -42,4 +42,10 @@ final class DisabledProjectionBackend implements ProjectionBackend {
 
   @override
   Future<void> close() async {}
+  @override
+  Future<void> setAudioGain(
+    String sessionId,
+    String streamId,
+    double gain,
+  ) async => _disabled();
 }

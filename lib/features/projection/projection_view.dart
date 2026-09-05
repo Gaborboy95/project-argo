@@ -74,7 +74,12 @@ class _ProjectionViewState extends State<ProjectionView> {
         onPointerUp: (event) => _send(event, ProjectionTouchPhase.up, geometry),
         onPointerCancel: (event) =>
             _send(event, ProjectionTouchPhase.cancel, geometry),
-        child: IgnorePointer(child: _nativeView(context)),
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: widget.stream.width / widget.stream.height,
+            child: IgnorePointer(child: _nativeView(context)),
+          ),
+        ),
       );
     },
   );

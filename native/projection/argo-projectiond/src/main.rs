@@ -14,10 +14,18 @@ async fn main() -> std::io::Result<()> {
     let listener = argo_projectiond::ipc_server::bind(&socket_path)?;
     let (state_tx, state_rx) = watch::channel(ProjectionRuntimeSnapshot::default());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let control = argo_projectiond::host_control::HostControl::from_environment();
+    let ipc_control = control.clone();
 
     let ipc_task = tokio::spawn(async move {
-        if let Err(error) =
-            argo_projectiond::ipc_server::run(listener, socket_path, state_rx, shutdown_rx).await
+        if let Err(error) = argo_projectiond::ipc_server::run(
+            listener,
+            socket_path,
+            state_rx,
+            shutdown_rx,
+            ipc_control,
+        )
+        .await
         {
             eprintln!("argo-projectiond: IPC listener stopped: {error}");
         }
@@ -27,7 +35,9 @@ async fn main() -> std::io::Result<()> {
     let usb_task = {
         let shutdown = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            if let Err(error) = argo_projectiond::usb_runtime::run(state_tx, shutdown).await {
+            if let Err(error) =
+                argo_projectiond::usb_runtime::run(state_tx, shutdown, control).await
+            {
                 eprintln!("argo-projectiond: USB runtime stopped: {error}");
             }
         })

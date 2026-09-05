@@ -54,6 +54,16 @@ final class InMemoryProjectionBackend implements ProjectionBackend {
       rotaryDetents.add(detents);
   @override
   Future<void> setVideoVisibility(String streamId, bool visible) async {}
+  final Map<String, double> audioGains = {};
+  @override
+  Future<void> setAudioGain(
+    String sessionId,
+    String streamId,
+    double gain,
+  ) async {
+    audioGains['$sessionId/$streamId'] = gain;
+  }
+
   @override
   Future<void> close() async {
     if (closed) return;

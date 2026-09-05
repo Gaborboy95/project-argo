@@ -20,6 +20,8 @@ pub struct ProjectionDeviceStatus {
 pub enum ProjectionSessionStatus {
     Connecting,
     Ready,
+    Streaming,
+    Suspended,
     Failed,
 }
 
@@ -28,6 +30,8 @@ impl ProjectionSessionStatus {
         match self {
             Self::Connecting => 0,
             Self::Ready => 1,
+            Self::Streaming => 2,
+            Self::Suspended => 3,
             Self::Failed => 4,
         }
     }
@@ -45,6 +49,8 @@ pub struct ProjectionSessionStatusSnapshot {
 pub struct ProjectionRuntimeSnapshot {
     pub device: Option<ProjectionDeviceStatus>,
     pub session: Option<ProjectionSessionStatusSnapshot>,
+    pub video: Option<(crate::aa_channels::DisplayConfig, bool)>,
+    pub audio: [bool; 3],
 }
 
 impl ProjectionRuntimeSnapshot {
@@ -60,6 +66,8 @@ impl ProjectionRuntimeSnapshot {
                 state: ProjectionSessionStatus::Connecting,
                 failure: None,
             }),
+            video: None,
+            audio: [false; 3],
         }
     }
 
@@ -72,6 +80,8 @@ impl ProjectionRuntimeSnapshot {
     }
 
     pub fn failed(mut self, failure: impl Into<String>) -> Self {
+        self.video = None;
+        self.audio = [false; 3];
         if let Some(session) = self.session.as_mut() {
             session.state = ProjectionSessionStatus::Failed;
             session.failure = Some(failure.into());
@@ -106,6 +116,45 @@ pub fn snapshot_messages(
         && let Some(session) = current.session.as_ref()
     {
         messages.push(session_message(session)?);
+    }
+    if let Some(session) = current.session.as_ref() {
+        if let Some((display, visible)) = &current.video
+            && (previous.video != current.video || previous.session != current.session)
+        {
+            let mut writer = PayloadWriter::default();
+            writer.string(&session.id)?;
+            writer.string(&format!("{}:main", session.id))?;
+            writer.u8(0);
+            writer.u8(0);
+            writer.u16(display.width);
+            writer.u16(display.height);
+            writer.u8(display.fps);
+            for _ in 0..8 {
+                writer.u16(0);
+            }
+            writer.u8(u8::from(*visible));
+            writer.u8(u8::from(*visible));
+            messages.push(Message {
+                kind: 4,
+                payload: writer.finish(),
+            });
+        }
+        for i in 0..3 {
+            if current.audio[i] != previous.audio[i]
+                || (current.audio[i] && previous.session != current.session)
+            {
+                let mut writer = PayloadWriter::default();
+                writer.string(&session.id)?;
+                writer.string(["media", "speech", "system"][i])?;
+                writer.u8(i as u8);
+                writer.u8(u8::from(current.audio[i]));
+                writer.u8(u8::from(current.audio[i]));
+                messages.push(Message {
+                    kind: 5,
+                    payload: writer.finish(),
+                });
+            }
+        }
     }
     Ok(messages)
 }

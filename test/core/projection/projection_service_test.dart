@@ -50,6 +50,22 @@ void main() {
         fixture.audioBackend.sourceGains['player.media'],
         closeTo(0.35, 0.0001),
       );
+      expect(fixture.backend.audioGains['session/speech'], 1);
+      // A higher-priority non-projection source also updates native projection
+      // gain through the same policy; releasing it restores the prior gain.
+      await fixture.audio.registerSource(
+        AudioSource(id: 'call', role: AudioSourceRole.communication),
+      );
+      await fixture.audio.setSourceActive('call', true);
+      final focus = await fixture.audio.requestFocus('call', duckingGain: 0.2);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        fixture.backend.audioGains['session/speech'],
+        closeTo(0.2, 0.0001),
+      );
+      await focus.release();
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.backend.audioGains['session/speech'], 1);
       await fixture.close();
     },
   );

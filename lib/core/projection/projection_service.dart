@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../audio/audio_service.dart';
+import '../audio/audio_snapshot.dart';
 import '../audio/audio_types.dart';
 import '../diagnostics/diagnostics_service.dart';
 import 'projection_backend.dart';
@@ -51,6 +52,22 @@ final class DefaultProjectionService implements ProjectionService {
         onError: service._onBackendError,
       );
       await service._synchronizeAudio(service._current);
+      service._audioSubscription = audio.changes.listen((_) {
+        service._updateTail = service._updateTail
+            .then((_) async {
+              if (!service._closed) {
+                await service._applyAudioGains(service._current);
+              }
+            })
+            .catchError((Object error, StackTrace stack) {
+              diagnostics.error(
+                'projection.audio',
+                'Native source gain update failed.',
+                error: error,
+                stackTrace: stack,
+              );
+            });
+      });
       return service;
     } on Object catch (error, stackTrace) {
       try {
@@ -71,6 +88,8 @@ final class DefaultProjectionService implements ProjectionService {
   final Set<String> _registeredAudioSources = {};
   ProjectionSnapshot _current;
   StreamSubscription<ProjectionSnapshot>? _backendSubscription;
+  StreamSubscription<AudioSnapshot>? _audioSubscription;
+  final Map<String, double> _sentAudioGains = {};
   Future<void> _updateTail = Future<void>.value();
   bool _closed = false;
 
@@ -177,6 +196,26 @@ final class DefaultProjectionService implements ProjectionService {
         await _focusHandles.remove(sourceId)?.release();
       }
     }
+    await _applyAudioGains(snapshot);
+  }
+
+  Future<void> _applyAudioGains(ProjectionSnapshot snapshot) async {
+    final present = <String>{};
+    for (final session in snapshot.sessions) {
+      for (final stream in session.audioStreams) {
+        final id = _audioSourceId(stream);
+        if (!stream.active) {
+          _sentAudioGains.remove(id);
+          continue;
+        }
+        present.add(id);
+        final gain = audio.current.effectiveSourceGains[id] ?? 0;
+        if (_sentAudioGains[id] == gain) continue;
+        await backend.setAudioGain(session.id, stream.id, gain);
+        _sentAudioGains[id] = gain;
+      }
+    }
+    _sentAudioGains.removeWhere((key, _) => !present.contains(key));
   }
 
   @override
@@ -184,6 +223,7 @@ final class DefaultProjectionService implements ProjectionService {
     if (_closed) return;
     _closed = true;
     await _backendSubscription?.cancel();
+    await _audioSubscription?.cancel();
     await _updateTail;
     for (final handle in _focusHandles.values.toList()) {
       await handle.release();

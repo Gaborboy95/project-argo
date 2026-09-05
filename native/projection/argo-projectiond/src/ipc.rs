@@ -123,6 +123,16 @@ impl PayloadWriter {
 }
 
 impl<'a> PayloadReader<'a> {
+    pub fn f32(&mut self) -> Option<f32> {
+        let value = f32::from_be_bytes(
+            self.bytes
+                .get(self.offset..self.offset + 4)?
+                .try_into()
+                .ok()?,
+        );
+        self.offset += 4;
+        Some(value)
+    }
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }

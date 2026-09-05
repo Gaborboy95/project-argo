@@ -14,19 +14,19 @@ Media does not cross the Dart control socket. The intended native data path is:
 argo-projectiond media socket -> GStreamer -> argo-projection-view -> IHS grant
 ```
 
-The checked-in view implements the universal RGB `SOFTWARE_SHM` floor. Its
-render-path selector prefers a compatible DMA-BUF texture and then a DRM plane,
-but those paths are requested only after a decoder/exporter proves that its
-fourcc and modifier intersect the formats advertised by IHS. In particular,
-an NV12 decoder buffer is not assumed to be directly importable by an IHS
-backend that currently grants RGB formats.
+The view discovers the active EGL/Vulkan render device and exports native
+linear RGB DMA-BUFs after verifying IHS format/modifier support. It prefers
+texture import, then a DRM plane, then SHM only when a real SHM buffer is
+provided. Current upstream IHS advertises SHM without allocating its buffer;
+that case fails explicitly. H.264 decode and RGB conversion use GStreamer;
+NV12 is never assumed importable as RGB. Native PCM playback uses separate
+GStreamer/PipeWire pipelines and metadata-only Argo focus gains.
 
-No Android Auto certificate or private key is included. Milestone 14.1 runs
-USB discovery and a plaintext VersionRequest/VersionResponse checkpoint
-independently of Flutter, then parks without sending TLS. IPC identity parsing
-and key-pair validation remain intact; a later authenticated hardware session
-is fail-closed until an independently provisioned compatible identity is supplied.
+No Android Auto certificate or private key is included. The hardware-proven
+USB/version path now continues into memory TLS 1.2, service discovery and AV
+channels. Identity files are explicitly configured and key-pair validated.
+Read the runbook's narrow USB peer-trust policy before deployment.
 
 See [the checkpoint runbook](../../tool/projection/README.md) for build,
-permissions, standalone phone testing, and the required hardware log. The
-projection view and native media path remain parked for this checkpoint.
+permissions, standalone debugging, the exact homescreen launch, and the
+required remaining end-to-end hardware acceptance.

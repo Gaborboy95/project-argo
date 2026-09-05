@@ -1,199 +1,240 @@
-# Wired Android Auto checkpoint
+# Wired Android Auto
 
-Milestone 14.1 stops immediately after a phone returns a valid Android Auto
-`VersionResponse`. It does not send TLS, service-discovery, media, audio, or
-input bytes. The daemon can prove this checkpoint without Flutter or
-ivi-homescreen running.
+The user has proven AOAP, accessory re-enumeration, bulk endpoints and Android
+Auto VersionResponse **1.7** on a real phone. The daemon now continues into
+TLS 1.2, discovery, main H.264 video, touch, and media/speech/system audio.
+**Post-version hardware acceptance is still pending.** Unit tests are not a
+claim that phone UI, audio, or the production embedder have worked on hardware.
 
-Project Argo does not contain Android Auto credentials. Certificate/key
-validation remains on the Flutter IPC path for the later TLS checkpoint; the
-standalone USB/version proof does not need an identity because it never starts
-TLS.
+## Build and provision once
 
-## Automated validation
-
-From the Argo repository:
+Use the existing narrowly scoped USB permissions if already installed.
+Otherwise, for the proven phone (04e8:6860), install:
 
 ```bash
-cd native/projection
+sudo groupadd -f plugdev
+sudo usermod -aG plugdev "$USER"
+sudo tee /etc/udev/rules.d/70-project-argo-android-auto.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04e8", ATTR{idProduct}=="6860", GROUP="plugdev", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d0[0-5]", GROUP="plugdev", MODE="0660", TAG+="uaccess"
+EOF
+sudo udevadm control --reload-rules
+```
+
+Log out/in after group changes. A different phone needs its exact normal-mode
+VID/PID from `lsusb`, not broader USB access. A VM must forward both the normal
+device and its Google accessory re-enumeration. Never run the daemon as root.
+
+Install native dependencies and use Rust 1.88+:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config cmake ninja-build curl \
+  ca-certificates openssl usbutils libudev-dev libgbm-dev libegl1-mesa-dev \
+  libvulkan-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire \
+  pipewire wireplumber
+
+# Skip this if Rust is already installed.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. "$HOME/.cargo/env"
+rustup component add rustfmt clippy
+
+export ARGO="$HOME/dev/argo" # adjust to the actual checkout
+cd "$ARGO/native/projection"
+cargo build --release --features linux-usb,linux-media
+```
+
+Keep your existing Argo-owned RSA identity. Only if one does not exist, create
+your own; no project/accessory credentials are provided or required:
+
+```bash
+install -d -m 700 "$HOME/.config/project-argo/android-auto"
+export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
+export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
+(
+  umask 077
+  test ! -e "$ARGO_ANDROID_AUTO_KEY_FILE" &&
+  test ! -e "$ARGO_ANDROID_AUTO_CERT_FILE" &&
+  openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \
+    -subj '/CN=Project Argo/' -addext 'basicConstraints=critical,CA:FALSE' \
+    -addext 'extendedKeyUsage=clientAuth' \
+    -keyout "$ARGO_ANDROID_AUTO_KEY_FILE" -out "$ARGO_ANDROID_AUTO_CERT_FILE"
+)
+chmod 600 "$ARGO_ANDROID_AUTO_KEY_FILE"
+```
+
+The files are parsed and checked for a matching key pair. TLS is restricted to
+1.2; resumption is disabled. The AA-only USB peer verifier does **not** claim
+WebPKI certificate-chain, hostname, or signature authentication: some AA peers
+use legacy certificates. This permissive policy is isolated in `aa_tls.rs`,
+never applied to IPC or network clients. TLS Finished verification is mandatory.
+Generated RSA identities pass the in-memory TLS test; acceptance by your actual
+phone still requires its TLS log. No certificate or private key is logged.
+
+## Build the native view and Argo bundle
+
+Use the headers, pkg-config file and library from the **same IHS build** that
+will run Argo:
+
+```bash
+export ARGO="$HOME/dev/argo"
+export IHS_PREFIX="$HOME/dev/ivi-build/out/usr/local"
+export PKG_CONFIG_PATH="$IHS_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+cmake -S "$ARGO/native/projection/argo-projection-view" \
+  -B "$ARGO/native/projection/argo-projection-view/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$ARGO/native/projection/argo-projection-view/build"
+
+cd "$FLUTTER_WORKSPACE"
+emb bundle --app-path "$ARGO" --arch x86_64 --build
+export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+install -m 755 \
+  "$ARGO/native/projection/argo-projection-view/build/libargo_projection_view.so" \
+  "$BUNDLE/lib/libargo_projection_view.so"
+test -f "$BUNDLE/lib/libveloce_lua_native.so"
+```
+
+The native view queries IHS capabilities, format/modifier support and the active
+EGL/Vulkan device. The initial export path uses native BGRx conversion and fresh
+linear RGB DMA-BUF allocations, avoiding reuse before compositor release.
+IHS scales the source into the aspect-correct Flutter view. This is a correctness
+path, not a zero-copy decoder claim. No EGL/Vulkan backend name is assumed.
+SOFTWARE_SHM is used only if the host supplies an actual buffer; current upstream
+IHS advertises that kind but its host adapter does not allocate one. A VM needs
+a usable render device/GBM linear allocation or a functioning host SHM grant.
+An unsupported grant produces a specific native diagnostic, not an invented
+working renderer. Output renegotiation is implemented.
+
+## One real-device workflow
+
+Terminal 1 — start the standalone daemon **before plugging in the phone**:
+
+```bash
+export ARGO="$HOME/dev/argo"
+export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
+export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
+install -d -m 700 "$XDG_RUNTIME_DIR/argo"
+export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock"
+export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo/projection-video.sock"
+
+"$ARGO/native/projection/target/release/argo-projectiond" 2>&1 \
+  | tee /tmp/argo-projectiond.log
+```
+
+The standalone path requires neither Flutter nor IHS for TLS/discovery debugging.
+Video is drained until the native view attaches; standalone logs are not display
+acceptance. USB discovery runs concurrently with IPC. No automatic respawn/retry
+loop is installed. Ctrl+C/SIGTERM cancels and closes the owned session. If a
+crash leaves a socket, remove only that stale socket after confirming the daemon
+is stopped; startup never unlinks another process's socket.
+
+Terminal 2 — run the actual existing homescreen executable:
+
+```bash
+export ARGO="$HOME/dev/argo"
+export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
+export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
+export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock"
+export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo/projection-video.sock"
+
+systemctl --user status pipewire wireplumber --no-pager
+gst-inspect-1.0 h264parse
+gst-inspect-1.0 pipewiresink
+
+cd "$HOME/dev/ivi-build"
+export LD_LIBRARY_PATH="$PWD/out/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$BUNDLE/lib:$LD_LIBRARY_PATH"
+
+ARGO_MODE=simulation \
+ARGO_HOST_POWER_BACKEND=disabled \
+ARGO_AUDIO_BACKEND=pipewire \
+ARGO_PROJECTION_BACKEND=android-auto \
+VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
+"$PWD/out/usr/local/bin/homescreen" -b "$BUNDLE" --w=1280 --h=720 \
+  2>&1 | tee /tmp/argo-homescreen.log
+```
+
+Use the existing vehicle/profile/plugin environment if your normal Argo launch
+requires it. Android Auto itself does not depend on a vehicle profile.
+Select **Media** in Argo, unlock the phone, and plug it in. Accept any phone-side
+Android Auto prompts. Then verify touch, music and a navigation announcement.
+Use **Return to Argo** / **Show projection** to switch the surface. Unplug must
+clear projection while leaving Argo alive; replug must create a fresh session.
+
+Expected stages:
+
+```text
+AOAP protocol version 2
+Android accessory detected
+bulk interface claimed ...
+AA VersionRequest sent
+AA VersionResponse received
+Android Auto version negotiation succeeded: phone protocol major=1 minor=7
+AA TLS 1.2 starting with configured Argo identity
+AA TLS 1.2 established
+AA authentication complete; awaiting service discovery
+AA service discovery response ...
+AA AV setup: channel=3
+AA AV start: channel=3
+Native projection video consumer attached
+AA AV start: channel=4     # media
+AA AV start: channel=5     # speech/navigation
+AA AV start: channel=6     # system; when used by the phone
+```
+
+IHS logs a native RGB DMA-BUF grant on successful rendering setup. AA media stays
+entirely native: H.264 travels over the bounded local video feed; PCM uses
+GStreamer appsrc and PipeWire. AV starts, stops, configuration indices and ACK
+session IDs are handled explicitly. Argo's AudioService supplies per-stream
+focus/duck gains via metadata IPC; it never rewrites master volume for ducking.
+Existing non-projection backend routing capabilities remain unchanged.
+
+Only H.264 and PCM are advertised. Defaults are 1280x720, 30 FPS, 160 DPI;
+the existing Argo preferences supplied before connection select supported
+800x480/1280x720/1920x1080 and 30/60 FPS. Unsupported sizes fail explicitly.
+Only night/driving-status sensors are currently advertised: absent vehicle
+inputs mean day mode and conservative driving restrictions, never fictitious
+speed/RPM/parking-brake data. Microphone capture is not advertised or implemented.
+
+If a real run fails, share both logs and the last successful stage. Do not change
+unrelated protocol settings or credentials speculatively. Wired acceptance is
+UI + touch + media/speech audio + clean unplug/replug, not merely a TLS message.
+Wireless, CarPlay, vehicle-specific controls and power-policy changes are out
+of scope.
+
+## Validation
+
+```bash
+cd "$ARGO/native/projection"
 cargo fmt --check
-cargo test
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
-
-cd ../..
+cd "$ARGO"
 dart format lib test
 flutter test
 flutter analyze --no-pub
 git diff --check
 ```
 
-The native tests use fake USB/control and byte-stream transports. No USB
-device is opened. They cover the AOAP request order, failed probes,
-re-enumeration/unplug state, endpoint selection, bounded incremental framing,
-split and coalesced `VersionResponse` input, malformed lengths, disconnects,
-and the deliberate stop before TLS. Fake runtime tests also cancel a pending
-read, park a successful exchange until unplug, and start a fresh session. On
-Linux, Unix-socket tests verify idle-client shutdown and malformed hello
-rejection independently of USB.
+Native tests generate temporary RSA identities with OpenSSL; they do not embed
+credentials or open a phone/audio device. New coverage is limited to high-risk
+TLS, framing, channel, input and cleanup paths.
 
-Latest non-hardware verification (2026-09-05): Linux/WSL `cargo test` passed
-28 tests; `cargo test --all-features` passed 30. Rust formatting and strict
-all-targets/all-features Clippy passed. Flutter passed 207 tests with five
-existing native-Lua/environment-dependent skips; Dart formatting, Flutter
-analysis, and `git diff --check` passed. The standalone daemon started without
-Flutter and handled SIGINT/socket cleanup. WSL exposed no USB device tree, so
-this is **not** USB or real-phone acceptance. No VersionResponse has yet been
-observed from hardware in this environment.
+Validation in the development environment: 38 Linux Rust tests passed (eight
+new tests), strict all-feature Clippy and Rust formatting passed; 207 Flutter
+tests passed with five existing native-Lua skips, analyzer and diff checks passed.
+The native view passed C++ syntax checking against current IHS headers. A
+synthetic GStreamer H.264 pipeline delivered three decoded BGRx buffers to a
+discard sink (OpenH264 also printed an encoder warning). This is not an IHS
+runtime, PipeWire playback, or real-phone acceptance result.
 
-## Debian / Ubuntu build
-
-Install a native compiler, udev headers/tools, and Rust (1.88 or newer):
-
-```bash
-sudo apt update
-sudo apt install -y build-essential ca-certificates curl pkg-config libudev-dev usbutils
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --profile minimal
-. "$HOME/.cargo/env"
-rustup component add clippy rustfmt
-
-cd "$HOME/dev/argo/native/projection"
-cargo build --release --features linux-usb
-```
-
-`nusb` uses Linux usbfs directly. The daemon must be able to open the phone's
-`/dev/bus/usb/...` node, but it should not run permanently as root.
-
-## Identify the phone and install a narrow udev rule
-
-Connect the unlocked phone in its normal USB mode and note its exact VID/PID:
-
-```bash
-lsusb
-lsusb -t
-```
-
-For example, a line ending in `ID 18d1:4ee7` means `PHONE_VID=18d1` and
-`PHONE_PID=4ee7`. Replace those two values below with the values from the real
-phone. The rule deliberately grants access only to that normal-mode VID/PID
-and the six standard Google accessory PIDs:
-
-```bash
-PHONE_VID=18d1
-PHONE_PID=4ee7
-
-sudo groupadd -f plugdev
-sudo usermod -aG plugdev "$USER"
-
-sudo tee /etc/udev/rules.d/70-project-argo-android-auto.rules >/dev/null <<EOF
-SUBSYSTEM=="usb", ATTR{idVendor}=="$PHONE_VID", ATTR{idProduct}=="$PHONE_PID", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d00", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d01", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d02", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d03", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d04", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d05", GROUP="plugdev", MODE="0660", TAG+="uaccess"
-EOF
-
-sudo udevadm control --reload-rules
-```
-
-Log out and back in if `id -nG` does not yet include `plugdev`, then unplug the
-phone. Avoid a broad all-USB permission rule.
-
-## Standalone first-phone test
-
-Flutter and ivi-homescreen are unnecessary for this checkpoint:
-
-```bash
-install -d -m 700 "$XDG_RUNTIME_DIR/argo"
-cd "$HOME/dev/argo/native/projection"
-
-ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock" \
-  RUST_BACKTRACE=1 \
-  target/release/argo-projectiond 2>&1 \
-  | tee /tmp/argo-projectiond-version.log
-```
-
-Now unlock the Android phone, ensure Android Auto is enabled, and connect it
-directly rather than through an unpowered hub. In another terminal, observe
-the normal and accessory identities if useful:
-
-```bash
-watch -n 0.5 lsusb
-```
-
-For a VM, configure USB passthrough for **both** the phone's normal VID/PID and
-the Google accessory VID/PIDs above. The original virtual USB attachment does
-not necessarily follow re-enumeration; the VM must capture the accessory too.
-Use a data-capable cable. Candidate probing deliberately requires an ADB
-interface or a known Android phone vendor with MTP (USB File Transfer).
-Charging-only interfaces are not probed indiscriminately. USB debugging is not
-required when the MTP candidate path is available. An unrecognized candidate
-needs its descriptors reviewed; do not broaden permissions to all USB devices.
-
-The required daemon proof is this complete sequence (numeric values vary):
-
-```text
-USB candidate detected: vvvv:pppp
-AOAP protocol version N
-AOAP accessory switch requested
-original USB device removed; waiting for Android accessory
-Android accessory detected
-bulk interface claimed: interface=N alternate=N in=0x.. out=0x..
-AA VersionRequest sent
-AA VersionResponse received
-Android Auto version negotiation succeeded: phone protocol major=X minor=Y
-```
-
-At that point the session is parked in `WaitingForTls`; no TLS bytes are sent.
-Stop the daemon with Ctrl+C. To inspect or share the bounded checkpoint log:
-
-```bash
-sed -n '/USB candidate detected/,$p' /tmp/argo-projectiond-version.log
-```
-
-Unplug at any earlier point must remove the current attempt without exiting
-the daemon. A later replug starts a fresh attempt; failed probes are not retried
-aggressively while the same USB enumeration remains present.
-An expected AOAP removal is retained for a bounded 15-second accessory window;
-if no accessory arrives the attempt is cleared or marked failed. The window
-is a handover deadline, not a retry/polling loop.
-
-The daemon uses `$XDG_RUNTIME_DIR/argo/projection.sock` by default when
-`XDG_RUNTIME_DIR` is set, otherwise `/run/argo/projection.sock`. The explicit
-override above avoids needing root. An existing socket is never unlinked at
-startup: stop the other daemon first. Following a crash, remove only the stale
-socket after confirming no daemon is using it. Ctrl+C/SIGTERM cancels transfers,
-closes clients, and removes the daemon's socket.
-
-## Optional Argo IPC observation
-
-The USB runtime and IPC listener run concurrently, so waiting for Flutter can
-never block phone handling. A Flutter connection receives the current generic
-`Android phone / USB / connecting|failed` snapshot. Version negotiation alone
-does not make projection media ready: the native diagnostic reports
-`waitingForTls` while the generic session remains `connecting`. The existing IPC
-identity validation still requires a legitimate certificate/key pair even
-though Milestone 14.1 does not consume it for TLS:
-
-```bash
-cd "$FLUTTER_WORKSPACE"
-emb bundle --app-path "$HOME/dev/argo" --arch x86_64 --build
-
-cd "$HOME/dev/argo"
-ARGO_MODE=production \
-ARGO_PROJECTION_BACKEND=android-auto \
-ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock" \
-ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto.crt" \
-ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto.key" \
-ivi-homescreen \
-  -b "$FLUTTER_WORKSPACE/bundle/argo-release-x86_64" \
-  --w=1280 --h=720
-```
-
-Do not use credentials copied from LIVI, another open-source project, or a
-commercial accessory. The next checkpoint is TLS only after the real-phone
-log above has been captured.
+Protocol behavior was cross-checked against
+[LIVI](https://github.com/f-io/LIVI) as a GPL behavioral reference only; no source,
+protobuf definitions or credentials were copied into Argo. Native API references:
+[IHS platform-view ABI](https://github.com/toyota-connected/ivi-homescreen/blob/main/shared/include/ihs/platform_view.h),
+[rustls](https://docs.rs/rustls/0.23.43/rustls/),
+[Vulkan DRM-device properties](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDrmPropertiesEXT.html).

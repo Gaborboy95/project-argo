@@ -26,7 +26,8 @@ enum ProjectionIpcKind {
   touch(23),
   button(24),
   rotary(25),
-  videoVisibility(26);
+  videoVisibility(26),
+  audioGain(27);
 
   const ProjectionIpcKind(this.wireValue);
   final int wireValue;
