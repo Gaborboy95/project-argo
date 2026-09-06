@@ -7,9 +7,18 @@ import '../../core/audio/audio_snapshot.dart';
 import '../../core/audio/audio_types.dart';
 import '../../core/projection/projection_settings_service.dart';
 import 'projection_settings_card.dart';
+import 'appearance_settings_card.dart';
+import '../../core/settings/settings_service.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({required this.audio, this.projectionSettings, super.key});
+  const SettingsPage({
+    required this.audio,
+    this.projectionSettings,
+    this.settings,
+    super.key,
+  });
+
+  final SettingsService? settings;
 
   final ProjectionSettingsService? projectionSettings;
 
@@ -25,6 +34,7 @@ class SettingsPage extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            if (settings != null) AppearanceSettingsCard(settings: settings!),
             if (projectionSettings != null)
               ProjectionSettingsCard(service: projectionSettings!),
             Text('Audio', style: Theme.of(context).textTheme.headlineMedium),

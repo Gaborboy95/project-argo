@@ -2,6 +2,31 @@ import 'setting_key.dart';
 import 'settings_schema.dart';
 
 abstract final class AppSettingKeys {
+  static final appearanceThemeMode = SettingKey<String>(
+    id: 'appearance.themeMode',
+    defaultValue: 'dark',
+    serialize: _serializeString,
+    deserialize: (value) {
+      if (value == 'light' || value == 'dark' || value == 'system') {
+        return value as String;
+      }
+      throw const FormatException('Expected light, dark or system.');
+    },
+  );
+
+  /// Opaque seed colour serialized as a six-digit RGB hex string.
+  static final appearanceSeedColor = SettingKey<String>(
+    id: 'appearance.seedColor',
+    defaultValue: '#6750A4',
+    serialize: _serializeString,
+    deserialize: (value) {
+      if (value is String && RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(value)) {
+        return value.toUpperCase();
+      }
+      throw const FormatException('Expected an opaque #RRGGBB colour.');
+    },
+  );
+
   static final lastModule = SettingKey<String>(
     id: 'app.navigation.lastModule',
     defaultValue: 'home',
@@ -97,6 +122,8 @@ abstract final class AppSettingKeys {
   static final projectionSafeInsetBottom = _projectionInsetKey('bottom');
 
   static SettingsSchema createSchema() => SettingsSchema()
+    ..register(appearanceThemeMode)
+    ..register(appearanceSeedColor)
     ..register(lastModule)
     ..register(audioMasterVolume)
     ..register(audioMuted)

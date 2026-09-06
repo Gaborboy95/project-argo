@@ -286,3 +286,28 @@ that checkout was not modified.
 The [versioned Lua contract](vehicle-integrations.md#read-only-argo-host-state-v1)
 explains freshness, permission and subscription/read ordering. Its data is not
 published on the vehicle signal bus or exposed as CAN telemetry.
+
+## Shared appearance and native-page background
+
+Appearance uses the existing SettingsService and lifecycle-owned persistence.
+The two typed preferences are plain strings in core; Flutter ThemeData creation
+and mode resolution live in [ArgoTheme](../lib/app/theme/argo_theme.dart).
+[ArgoApp](../lib/app/app.dart) listens for appearance changes and updates
+MaterialApp's light theme, dark theme and ThemeMode. Its StreamBuilder owns its
+subscription; it neither replaces the service registry nor restarts integrations.
+
+New feature pages consume `Theme.of(context).colorScheme` and `textTheme`, with
+Material component defaults for paired foregrounds and backgrounds. Existing
+shell, Settings and Now Playing already use these semantics. No extra token
+catalog or ThemeExtension is required. Use error roles for errors rather than
+turning every status indicator into the accent colour.
+
+[ArgoBackground](../lib/app/shell/argo_background.dart) is the shared solid
+background around normal shell content. Feature pages should avoid adding an
+opaque full-page background unless their content requires it. This is the future
+placement boundary for backgrounds, not an implemented wallpaper/shader system.
+Fullscreen projection bypasses this background and retains its own black paint.
+The IndexedStack, shell and native surface are not keyed by appearance; theme
+updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
+System-mode resolution uses Flutter's host brightness only; a future normalized
+vehicle day/night source would require a separate explicit policy.

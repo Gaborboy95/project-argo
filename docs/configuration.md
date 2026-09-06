@@ -157,3 +157,31 @@ metadata diagnostics; packet metadata remains TRACE. The optional host diagnosti
 switch only exposes observer DEBUG lines; it does not grant Lua read permission.
 Read access requires `argo.host.read.v1`; see [the host API](vehicle-integrations.md#read-only-argo-host-state-v1).
 The generic profile does not automatically install the synthetic observer.
+
+## Appearance preferences
+
+Settings → Appearance applies immediately after the existing settings store
+successfully saves a change; preferences survive restart. No environment flag or
+additional settings file is used.
+
+| Typed key | Default | Accepted persisted value |
+|---|---|---|
+| `appearance.themeMode` | `dark` | String: `light`, `dark`, `system` |
+| `appearance.seedColor` | `#6750A4` | Opaque six-digit RGB string `#RRGGBB`; case-insensitive input, normalized uppercase in memory |
+
+The default accent retains Flutter's existing Material 3 palette. Other seeds
+produce light/dark Material ColorSchemes. The UI offers Purple (default), Teal
+(`#006A6A`), Blue (`#005AC1`) and Amber (`#895100`). Seed colours are not exact
+foreground colours: Material derives readable surface/foreground pairs.
+Malformed stored values produce the existing settings diagnostic and fall back
+to the corresponding default. Reset appearance removes only these two overrides;
+audio, projection preferences and the selected module remain intact.
+
+“System” follows the brightness preference reported to Flutter, using
+MaterialApp's ThemeMode.system. No `flutter/settings` brightness forwarding was
+found in the local IHS `35a5f852` source; live desktop preference propagation is
+not verified and should not be assumed. Manual light/dark selection works
+independently. This setting does not control physical display brightness,
+headlights, vehicle night mode or Android Auto's day/night mode.
+Fullscreen projection remains opaque black, including letterboxing. Wallpaper,
+shaders and vehicle-driven day/night selection remain future work.

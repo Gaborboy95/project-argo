@@ -35,3 +35,12 @@ Report exactly which checks ran, skips and unavailable environments. Mock tests,
 compilation and accepted native submissions cannot establish phone, visible-frame
 or target-hardware acceptance. Record the revision and user-confirmed environment
 for runtime results; do not describe uncommitted changes as released.
+
+New native feature pages should use Material `ColorScheme`, `TextTheme` and
+component themes from `Theme.of(context)`. The shell supplies `ArgoBackground`;
+avoid independent full-page colour schemes or redundant background paint. Keep
+persisted appearance values Flutter-independent and resolve them in ArgoTheme.
+Never key the shell/native view by theme, and preserve opaque black fullscreen
+projection. See [appearance configuration](docs/configuration.md#appearance-preferences)
+for defaults and host-system-mode limits. Wallpaper/shader and vehicle day/night
+support require separate implementations and acceptance.

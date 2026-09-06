@@ -1,3 +1,5 @@
+import 'argo_background.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -182,38 +184,40 @@ class _AppShellState extends State<AppShell> {
       child: Scaffold(
         body: _fullscreen
             ? _buildContent(modules)
-            : SafeArea(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final useSideNavigation = constraints.maxWidth >= 1000;
+            : ArgoBackground(
+                child: SafeArea(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final useSideNavigation = constraints.maxWidth >= 1000;
 
-                    return Column(
-                      children: [
-                        const _StatusBar(),
-                        Expanded(
-                          child: useSideNavigation
-                              ? Row(
-                                  children: [
-                                    _SideNavigation(
-                                      modules: modules,
-                                      selectedIndex: _selectedIndex,
-                                      onSelected: _selectModule,
-                                    ),
-                                    const VerticalDivider(width: 1),
-                                    Expanded(child: _buildContent(modules)),
-                                  ],
-                                )
-                              : _buildContent(modules),
-                        ),
-                        if (!useSideNavigation)
-                          _BottomNavigation(
-                            modules: modules,
-                            selectedIndex: _selectedIndex,
-                            onSelected: _selectModule,
+                      return Column(
+                        children: [
+                          const _StatusBar(),
+                          Expanded(
+                            child: useSideNavigation
+                                ? Row(
+                                    children: [
+                                      _SideNavigation(
+                                        modules: modules,
+                                        selectedIndex: _selectedIndex,
+                                        onSelected: _selectModule,
+                                      ),
+                                      const VerticalDivider(width: 1),
+                                      Expanded(child: _buildContent(modules)),
+                                    ],
+                                  )
+                                : _buildContent(modules),
                           ),
-                      ],
-                    );
-                  },
+                          if (!useSideNavigation)
+                            _BottomNavigation(
+                              modules: modules,
+                              selectedIndex: _selectedIndex,
+                              onSelected: _selectModule,
+                            ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
               ),
       ),

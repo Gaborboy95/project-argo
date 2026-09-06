@@ -1,3 +1,4 @@
+import '../../core/settings/settings_service.dart';
 import '../../core/media/media_session_service.dart';
 
 import 'package:flutter/material.dart';
@@ -83,6 +84,7 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
           audio: services.get<AudioService>(),
+          settings: services.get<SettingsService>(),
           projectionSettings: services.contains<ProjectionSettingsService>()
               ? services.get<ProjectionSettingsService>()
               : null,

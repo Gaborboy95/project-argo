@@ -1,3 +1,4 @@
+import 'package:argo/app/app.dart';
 import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/media/media_state.dart';
 import 'package:argo/integrations/projection/projection_media_source.dart';
@@ -280,14 +281,12 @@ void main() {
           ),
         );
       await tester.pumpWidget(
-        MaterialApp(
-          home: AppShell(
-            environment: ArgoEnvironment(
-              services: ServiceRegistry()
-                ..register(settings)
-                ..register<ProjectionService>(service),
-              moduleRegistry: modules,
-            ),
+        ArgoApp(
+          environment: ArgoEnvironment(
+            services: ServiceRegistry()
+              ..register(settings)
+              ..register<ProjectionService>(service),
+            moduleRegistry: modules,
           ),
         ),
       );
@@ -325,6 +324,33 @@ void main() {
         Rect.fromLTWH(fitted.left, fitted.top, fitted.width, fitted.height),
       );
       expect(fitted.physicalWidth, 1600);
+      final beforeRect = tester.getRect(find.byType(PlatformViewSurface));
+      final beforeVisibility = List.of(service.visibility);
+      await settings.set(AppSettingKeys.appearanceThemeMode, 'light');
+      await settings.set(AppSettingKeys.appearanceSeedColor, '#006A6A');
+      await tester.pumpAndSettle();
+      expect(
+        tester.layers.whereType<PlatformViewLayer>().single.viewId,
+        nativeId,
+      );
+      expect(tester.layers.whereType<TextureLayer>(), isEmpty);
+      expect(tester.getRect(find.byType(PlatformViewSurface)), beforeRect);
+      expect(service.activations, ['session']);
+      expect(service.connections, isEmpty);
+      expect(service.visibility, beforeVisibility);
+      expect(find.text('ARGO'), findsNothing);
+      expect(
+        tester
+            .widgetList<ColoredBox>(
+              find.descendant(
+                of: find.byType(ProjectionPage),
+                matching: find.byType(ColoredBox),
+              ),
+            )
+            .first
+            .color,
+        Colors.black,
+      );
       final pointer = await tester.startGesture(
         Offset(
           fitted.left + (80 + 1120 * 0.25) * fitted.width / 1280,

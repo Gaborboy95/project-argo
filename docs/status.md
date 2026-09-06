@@ -347,3 +347,41 @@ fix, the user reported **“Fixed”** for the repeated Exit / AA interface-redr
 issue. This updates the pending phone result above; it is not a claim of extended
 endurance, comprehensive phone compatibility, or resolution of the earlier
 separate TLS error. The local IHS descriptor fix is committed as `35a5f852`.
+
+## Appearance foundation (working tree based on Argo `3c037d7`)
+
+Added persisted manual light/dark/system mode and accent presets in Settings,
+appearance-only reset, shared Material themes and a solid native-page background.
+Default remains the previous dark Material 3 appearance. Local IHS `35a5f852` is
+unchanged; this work does not extend its endurance acceptance.
+
+Focused automated coverage checks persistence/recovery/reset, actual selection
+and Flutter brightness changes, and the actual PlatformViewLayer ID/geometry
+across appearance changes without extra activation or connection commands.
+These are application tests, not visual or phone acceptance. The installed IHS
+source has no identified system-brightness forwarding; automatic desktop theme
+changes remain unverified. Manual modes do not depend on that support.
+
+Manual acceptance for this change remains pending:
+
+1. In Settings, select light/dark and an accent; inspect Settings and Media.
+2. Restart Argo and verify those preferences persist.
+3. Resume Home projection; check black letterboxing, input and audio.
+4. Repeat AA Exit → Media → Home and check the session remains usable.
+5. Confirm native create/dispose logs show no view recreation due to appearance.
+
+Do not infer those outcomes from widget tests. Wallpaper importing, shader
+execution and vehicle-driven day/night remain unimplemented.
+
+Validation for this working tree: Dart formatting, `flutter analyze --no-pub`,
+45 focused tests across `test/app`, `test/core/settings`,
+`test/features/projection`, `test/features/media` and `test/architecture` passed.
+After checking preservation of the exact default Material palette, the eight
+appearance/projection widget tests passed again. Documentation file links and
+`git diff --check` passed. No Rust, Engine or IHS build was run for this change.
+The documented `emb bundle --arch x86_64 --mode release --build` workflow
+successfully assembled `$HOME/dev/infotainment/bundle/argo-release-x86_64`;
+the unchanged projection-view library was staged into its `lib` directory.
+Use the existing [IHS launch workflow](../tool/projection/README.md), not the
+CLI's generic executable-name suggestion. No application was launched for
+appearance acceptance.
