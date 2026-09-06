@@ -16,6 +16,7 @@ impl VideoFeed {
             let _ = std::fs::remove_file(&path);
             return Err(e.to_string());
         }
+        crate::daemon_log!(Info, "media", "video socket {}", path.display());
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
         let task = tokio::spawn(async move {
             let mut client: Option<tokio::net::UnixStream> = None;
@@ -24,7 +25,7 @@ impl VideoFeed {
                 tokio::select! {
                     accepted=listener.accept()=>match accepted {
                         Ok((mut socket, _)) => {
-                            println!(
+                            crate::daemon_log!(Debug, "native-playback",
                                 "Native projection video socket accepted; cached_parameters={}",
                                 parameters.len()
                             );
@@ -32,7 +33,7 @@ impl VideoFeed {
                             let mut healthy = true;
 
                             for (index, bytes) in parameters.iter().enumerate() {
-                                println!(
+                                crate::daemon_log!(Debug, "native-playback",
                                     "Native projection video replay parameter {} bytes={}",
                                     index,
                                     bytes.len()
@@ -46,14 +47,14 @@ impl VideoFeed {
                                 {
                                     Ok(Ok(())) => {}
                                     Ok(Err(e)) => {
-                                        eprintln!(
+                                        crate::daemon_log!(Error, "native-playback",
                                             "Native projection parameter replay write failed: {e}"
                                         );
                                         healthy = false;
                                         break;
                                     }
                                     Err(_) => {
-                                        eprintln!(
+                                        crate::daemon_log!(Error, "native-playback",
                                             "Native projection parameter replay timed out"
                                         );
                                         healthy = false;
@@ -64,10 +65,10 @@ impl VideoFeed {
 
                             if healthy {
                                 client = Some(socket);
-                                println!("Native projection video consumer attached");
+                                crate::daemon_log!(Debug, "native-playback", "Native projection video consumer attached");
                             }
                         },
-                        Err(e)=>{eprintln!("Native video accept failed: {e}");break;}
+                        Err(e)=>{crate::daemon_log!(Error, "native-playback", "Native video accept failed: {e}");break;}
                     },
                     bytes=rx.recv()=>{
                         let Some(bytes)=bytes else {break};
@@ -79,7 +80,7 @@ impl VideoFeed {
                         }
                         if let Some(socket)=client.as_mut()
                             && !matches!(tokio::time::timeout(Duration::from_secs(1),socket.write_all(&bytes)).await,Ok(Ok(()))) {
-                            client=None; eprintln!("Native projection view detached or stalled; waiting for recreation");
+                            client=None; crate::daemon_log!(Warn, "native-playback", "Native projection view detached or stalled; waiting for recreation");
                         }
                     }
                 }
@@ -132,9 +133,13 @@ pub struct SessionMedia {
 }
 impl SessionMedia {
     pub async fn close(&mut self) {
+        if !self.audio.is_empty() {
+            crate::daemon_log!(Info, "media", "session audio streams stopped");
+        }
         self.audio.clear();
         if let Some(mut video) = self.video.take() {
             video.close().await;
+            crate::daemon_log!(Info, "media", "session video stream stopped");
         }
     }
 }

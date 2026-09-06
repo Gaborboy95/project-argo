@@ -23,6 +23,7 @@ class MediaPage extends StatefulWidget {
 
 class _MediaPageState extends State<MediaPage> {
   late ProjectionSnapshot _snapshot;
+  bool _returning = false;
   StreamSubscription<ProjectionSnapshot>? _subscription;
 
   @override
@@ -82,13 +83,20 @@ class _MediaPageState extends State<MediaPage> {
               if (stream != null &&
                   session?.state == ProjectionSessionState.streaming)
                 TextButton(
-                  onPressed: () =>
+                  onPressed: () {
+                    setState(() => _returning = true);
+                    unawaited(
                       widget.projection.setVideoVisibility(stream!.id, false),
+                    );
+                  },
                   child: const Text('Return to Argo'),
                 ),
               if (session?.state == ProjectionSessionState.suspended)
                 TextButton(
-                  onPressed: () => widget.projection.activate(session!.id),
+                  onPressed: () {
+                    setState(() => _returning = false);
+                    unawaited(widget.projection.activate(session!.id));
+                  },
                   child: const Text('Show projection'),
                 ),
             ],
@@ -103,6 +111,7 @@ class _MediaPageState extends State<MediaPage> {
                         session?.state == ProjectionSessionState.streaming
                   ? ProjectionView(
                       service: widget.projection,
+                      inputEnabled: !_returning,
                       sessionId: session!.id,
                       stream: stream,
                     )

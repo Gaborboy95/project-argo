@@ -243,7 +243,7 @@ pub async fn negotiate_version(
 ) -> Result<VersionResponse, VersionNegotiationError> {
     let request = encode_frame(&version_request_frame())?;
     transport.write_all(&request).await?;
-    println!("AA VersionRequest sent");
+    crate::daemon_log!(Debug, "session", "AA VersionRequest sent");
 
     let mut decoder = FrameDecoder::default();
     let mut input = [0_u8; 16 * 1024];
@@ -261,7 +261,7 @@ pub async fn negotiate_version(
         }
         if let Some(frame) = decoder.push(&input[..count])?.into_iter().next() {
             let response = parse_version_response(&frame)?;
-            println!("AA VersionResponse received");
+            crate::daemon_log!(Debug, "session", "AA VersionResponse received");
             return Ok(response);
         }
     }

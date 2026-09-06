@@ -15,6 +15,7 @@ pub mod identity;
 pub mod ipc;
 #[cfg(unix)]
 pub mod ipc_server;
+pub mod logging;
 pub mod media;
 #[cfg(unix)]
 pub mod native_playback;

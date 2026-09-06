@@ -29,7 +29,12 @@ pub fn bind(socket_path: &Path) -> io::Result<UnixListener> {
         remove_socket(socket_path);
         return Err(error);
     }
-    println!("argo-projectiond: control socket {}", socket_path.display());
+    crate::daemon_log!(
+        Info,
+        "ipc-server",
+        "argo-projectiond: control socket {}",
+        socket_path.display()
+    );
     Ok(listener)
 }
 
@@ -54,7 +59,7 @@ pub async fn run(
                             clients.spawn(handle_client(client, state.clone(),control.clone()));
                         }
                     }
-                    Err(error) => eprintln!("argo-projectiond: IPC accept failed: {error}"),
+                    Err(error) => crate::daemon_log!(Error, "ipc-server", "argo-projectiond: IPC accept failed: {error}"),
                 }
             }
             _ = clients.join_next(), if !clients.is_empty() => {},
@@ -71,7 +76,11 @@ fn remove_socket(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        eprintln!("argo-projectiond: could not remove control socket: {error}");
+        crate::daemon_log!(
+            Warn,
+            "ipc-server",
+            "argo-projectiond: could not remove control socket: {error}"
+        );
     }
 }
 
@@ -88,20 +97,20 @@ async fn handle_client(
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep_until(hello_deadline), if !hello_complete => return,
+            _ = tokio::time::sleep_until(hello_deadline), if !hello_complete => { crate::daemon_log!(Warn, "ipc", "client hello timeout"); return; },
             read = client.read(&mut buffer) => {
                 let count = match read {
-                    Ok(0) => return,
+                    Ok(0) => { crate::daemon_log!(Warn, "ipc", "control client disconnected"); return; },
                     Ok(count) => count,
                     Err(error) => {
-                        eprintln!("argo-projectiond: IPC client read failed: {error}");
+                        crate::daemon_log!(Error, "ipc-server", "argo-projectiond: IPC client read failed: {error}");
                         return;
                     }
                 };
                 let messages = match decoder.push(&buffer[..count]) {
                     Ok(messages) => messages,
                     Err(error) => {
-                        eprintln!("argo-projectiond: malformed IPC: {error:?}");
+                        crate::daemon_log!(Error, "ipc-server", "argo-projectiond: malformed IPC: {error:?}");
                         return;
                     }
                 };

@@ -187,6 +187,10 @@ fn opened() -> Channels {
 }
 #[test]
 fn discovery_video_setup_and_native_stream_lifecycle() {
+    use crate::logging::Level;
+    assert_eq!(Level::parse("info").unwrap(), Level::Info);
+    assert_eq!(Level::parse("trace").unwrap(), Level::Trace);
+    assert!(Level::parse("verbose").is_err());
     let mut channels = Channels::new(DisplayConfig::default());
     let effects = channels.handle(0, 5, &[]).unwrap();
     let Effect::Reply(reply) = &effects[0] else {
@@ -231,6 +235,14 @@ fn touch_uses_negotiated_pixels_and_tracks_pointer_lifecycle() {
     assert!(channels.touch(9, 1, f32::NAN, 0.5, 124).is_err());
     assert!(channels.touch(9, 2, 0.5, 0.5, 125).unwrap().is_some());
     assert!(channels.touch(9, 1, 0.5, 0.5, 126).unwrap().is_none());
+    channels.touch(9, 0, 0.5, 0.5, 127).unwrap();
+    channels.touch(10, 0, 0.5, 0.5, 128).unwrap();
+    channels.touch(9, 3, 0.5, 0.5, 129).unwrap();
+    assert!(channels.touch(10, 2, 0.5, 0.5, 130).unwrap().is_none());
+    assert!(channels.touch(9, 0, 0.5, 0.5, 131).unwrap().is_some());
+    channels.touch(10, 0, 0.5, 0.5, 132).unwrap();
+    channels.touch(9, 2, 0.5, 0.5, 133).unwrap();
+    assert!(channels.touch(10, 2, 0.5, 0.5, 134).unwrap().is_some());
 }
 #[test]
 fn audio_roles_start_stop_ack_and_fresh_session_are_independent() {
@@ -348,6 +360,12 @@ async fn phone_receive(
         let wire = rx.recv().await.expect("head unit disconnected early");
         decoder.push(&wire).unwrap();
         while let Some(packet) = decoder.packet().unwrap() {
+            if packet.flags & 8 == 0 {
+                // The working session sends routine ping requests in plaintext.
+                assert_eq!(packet.channel, 0);
+                assert_eq!(&packet.bytes[..2], &[0, 11]);
+                continue;
+            }
             phone.read_tls(&mut Cursor::new(packet.bytes)).unwrap();
             phone.process_new_packets().unwrap();
             let mut plain = Vec::new();
@@ -367,6 +385,7 @@ async fn phone_receive(
 }
 #[tokio::test]
 async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() {
+    crate::logging::init().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let fixture = IdentityFixture::new();
         let mut phone = fixture.server();

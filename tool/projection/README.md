@@ -165,7 +165,7 @@ Android Auto prompts. Then verify touch, music and a navigation announcement.
 Use **Return to Argo** / **Show projection** to switch the surface. Unplug must
 clear projection while leaving Argo alive; replug must create a fresh session.
 
-Expected stages:
+Expected stages (use `ARGO_PROJECTION_LOG_LEVEL=debug` for detailed setup messages):
 
 ```text
 AOAP protocol version 2
@@ -380,3 +380,40 @@ verified platform-view composition rather than inferring it from a widget name
 or an accepted buffer submission.
 Visible animated-bar acceptance for the composition fix remains unconfirmed;
 the earlier blank-surface observation was from the old texture-layer path.
+
+### Gesture ownership and daemon logging
+
+Accepted primary presses retain their original service/session/stream and last
+valid content coordinates. Outside DOWN is rejected. Touch movement outside
+keeps the last valid point; outside UP uses it, and CANCEL ends the entire native
+Android gesture. Mouse dragging outside the content/window conservatively cancels
+it. Hover and secondary-button activity never start a touch. Unsent moves are
+coalesced per pointer and terminal events remove pending moves, while DOWN and
+terminal ordering is retained. An already executing transport write must finish;
+there is no long-press cancellation timer. Session targets are invalidated on
+loss, including before reuse of the same session ID after reconnect.
+
+The IndexedStack now explicitly marks module input ownership. Loss of module
+ownership, Return to Argo, stream/session replacement and widget disposal cancel
+active pointers once. Flutter lifecycle/view-focus callbacks, pointer CANCEL,
+observable pointer removal, mouse exit and stale button-free mouse events also
+cancel. The platform-view controller still does not forward touches.
+
+Host limitation: this local IHS Wayland implementation sends Flutter pointer
+removal on window exit. Its keyboard-focus-leave callback clears native key/IME
+state but does not expose a Flutter view-focus or app-lifecycle notification.
+Argo handles those supported Flutter callbacks if delivered, but cannot detect an
+undelivered focus/device-removal event. A subsequent observed mouse event without
+the primary button reconciles stale tracking. No GTK-specific plugin is used.
+
+`ARGO_PROJECTION_LOG_LEVEL=error|warn|info|debug|trace` selects daemon logging at
+runtime, including release builds; the default is `info`. Invalid values fail
+startup. INFO reports startup/socket locations, session milestones and stream
+start/stop transitions. WARN/ERROR retain actionable failures and disconnections.
+DEBUG adds endpoint, channel, focus and media-consumer details. TRACE adds bounded
+packet metadata, TX begin/complete and routine ping messages. No certificate,
+key, PCM, video or arbitrary decrypted payload is logged; the raw focus-request
+hex dump was removed. Disabled levels do not construct formatted messages.
+Renderer-test diagnostics are independent and unchanged. Post-version failures
+are labelled as session failures rather than failed version negotiation, and the
+same propagated failure is logged once at the owning lifecycle boundary.

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/settings/app_setting_keys.dart';
 import '../../core/settings/settings_service.dart';
 import '../argo_environment.dart';
+import '../../features/projection/projection_input_scope.dart';
 import '../navigation/app_module.dart';
 
 class AppShell extends StatefulWidget {
@@ -83,10 +84,13 @@ class _AppShellState extends State<AppShell> {
       index: _selectedIndex,
       children: [
         for (final module in modules)
-          Builder(
+          ProjectionInputScope(
             key: ValueKey(module.id),
-            builder: (context) =>
-                module.builder(context, widget.environment.services),
+            active: module == modules[_selectedIndex],
+            child: Builder(
+              builder: (context) =>
+                  module.builder(context, widget.environment.services),
+            ),
           ),
       ],
     );

@@ -295,14 +295,20 @@ impl Channels {
         let number = |field| fields.get(&field).copied();
         if id == 7 {
             let target = number(2).ok_or("channel open missing service")?;
-            println!(
+            crate::daemon_log!(
+                Debug,
+                "aa-channels",
                 "AA channel open request: service={} via_ch={}",
-                target, channel
+                target,
+                channel
             );
             let supported = self.discovered && matches!(target, 1 | 3..=6 | 8 | 9);
-            println!(
+            crate::daemon_log!(
+                Debug,
+                "aa-channels",
                 "AA channel open response: service={} supported={}",
-                target, supported
+                target,
+                supported
             );
             if supported {
                 self.open.insert(target as u8);
@@ -315,19 +321,17 @@ impl Channels {
                     .finish(),
             )]);
         }
-        if channel == 0 && id == 0x0012 {
-            println!(
-                "AA AudioFocusRequest raw={}",
-                body.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            );
-        }
         if channel == 0 {
             return Ok(match id {
                 5 => {
+                    if !self.discovered {
+                        crate::daemon_log!(
+                            Info,
+                            "aa-channels",
+                            "AA service discovery response: input, H.264, media/speech/system audio, microphone, night/driving sensors"
+                        );
+                    }
                     self.discovered = true;
-                    println!(
-                        "AA service discovery response: input, H.264, media/speech/system audio, microphone, night/driving sensors"
-                    );
                     vec![reply(0, 6, discovery(&self.display))]
                 }
                 11 => vec![reply(0, 12, body.to_vec())],
@@ -344,9 +348,12 @@ impl Channels {
                         _ => 3, // unknown -> LOSS
                     };
 
-                    println!(
+                    crate::daemon_log!(
+                        Debug,
+                        "aa-channels",
                         "AA AudioFocusResponse: request={} response={}",
-                        focus_type, focus_state
+                        focus_type,
+                        focus_state
                     );
 
                     vec![reply(
@@ -404,7 +411,7 @@ impl Channels {
 
                     self.setup.insert(9);
 
-                    println!("AA microphone setup");
+                    crate::daemon_log!(Debug, "aa-channels", "AA microphone setup");
 
                     vec![reply(
                         9,
@@ -421,7 +428,7 @@ impl Channels {
                 0x8005 => {
                     let open = number(1).unwrap_or(0) != 0;
 
-                    println!("AA microphone open={open}");
+                    crate::daemon_log!(Debug, "aa-channels", "AA microphone open={open}");
 
                     let mut effects = vec![reply(
                         9,
@@ -461,7 +468,7 @@ impl Channels {
                         return Err("AA requested an unadvertised media codec".into());
                     }
                     self.setup.insert(channel);
-                    println!("AA AV setup: channel={channel}");
+                    crate::daemon_log!(Debug, "aa-channels", "AA AV setup: channel={channel}");
                     vec![reply(
                         channel,
                         0x8003,
@@ -476,9 +483,10 @@ impl Channels {
                     if !self.setup.contains(&channel) || number(2).unwrap_or(0) != 0 {
                         return Err("AA invalid stream configuration".into());
                     }
-                    self.sessions
-                        .insert(channel, number(1).ok_or("AA stream session missing")?);
-                    println!("AA AV start: channel={channel}");
+                    let stream_session = number(1).ok_or("AA stream session missing")?;
+                    if self.sessions.insert(channel, stream_session) != Some(stream_session) {
+                        crate::daemon_log!(Info, "aa-channels", "AA AV start: channel={channel}");
+                    }
                     if channel == 3 {
                         vec![
                             Effect::Video(true),
@@ -493,7 +501,9 @@ impl Channels {
                     }
                 }
                 0x8002 => {
-                    self.sessions.remove(&channel);
+                    if self.sessions.remove(&channel).is_some() {
+                        crate::daemon_log!(Info, "aa-channels", "AA AV stop: channel={channel}");
+                    }
                     if channel == 3 {
                         vec![Effect::Video(false)]
                     } else {
@@ -573,7 +583,9 @@ impl Channels {
             _ => 3,
         };
         touch = touch.number(2, index as u64).number(3, action);
-        if phase >= 2 {
+        if phase == 3 {
+            self.pointers.clear(); // ACTION_CANCEL ends the entire gesture.
+        } else if phase == 2 {
             self.pointers.remove(&pointer);
         }
         Ok(Some(Reply::new(

@@ -67,7 +67,11 @@ pub async fn run(
     // tried. Removal clears the entry; no retry timer can issue AOAP requests.
     let mut attempted = HashSet::new();
 
-    println!("argo-projectiond: Linux USB hotplug watching started");
+    crate::daemon_log!(
+        Info,
+        "usb-runtime",
+        "argo-projectiond: Linux USB hotplug watching started"
+    );
     let initial = tokio::select! {
         value = nusb::list_devices() => value,
         _ = shutdown.changed() => return Ok(()),
@@ -88,7 +92,11 @@ pub async fn run(
                 );
             }
         }
-        Err(error) => eprintln!("argo-projectiond: initial USB discovery failed: {error}"),
+        Err(error) => crate::daemon_log!(
+            Error,
+            "usb-runtime",
+            "argo-projectiond: initial USB discovery failed: {error}"
+        ),
     }
 
     let result = loop {
@@ -108,14 +116,14 @@ pub async fn run(
                     let waiting = matches!(lifecycle.state(), UsbConnectionState::WaitingForAccessory { .. });
                     if lifecycle.removed(&format!("{id:?}")) {
                         if waiting {
-                            println!("original USB device removed; waiting for Android accessory");
+                            crate::daemon_log!(Debug, "usb-runtime", "original USB device removed; waiting for Android accessory");
                         } else {
                             if probe.as_ref().is_some_and(|(current, _)| *current == id)
                                 && let Some((_, handle)) = probe.take() { handle.abort(); }
                             if active_session.as_ref().is_some_and(|session| session.id == id)
                                 && let Some(session) = active_session.take() { session.stop().await; }
                             state_tx.send_replace(ProjectionRuntimeSnapshot::default());
-                            println!("Android Auto USB device removed; session cleared");
+                            crate::daemon_log!(Info, "usb-runtime", "Android Auto USB device removed; session cleared");
                         }
                     }
                 }
@@ -126,7 +134,7 @@ pub async fn run(
             _ = wait_for_deadline(deadline) => {
                 if lifecycle.expire_accessory_wait(Instant::now()) {
                     let reason = "timed out waiting for Android accessory re-enumeration";
-                    eprintln!("argo-projectiond: {reason}");
+                    crate::daemon_log!(Error, "usb-runtime", "argo-projectiond: {reason}");
                     if matches!(lifecycle.state(), UsbConnectionState::Disconnected) {
                         state_tx.send_replace(ProjectionRuntimeSnapshot::default());
                     } else { publish_failure(&state_tx, reason.to_owned()); }
@@ -174,7 +182,7 @@ fn connected(
             return;
         }
         attempted.insert(info.id());
-        println!("Android accessory detected");
+        crate::daemon_log!(Info, "usb-runtime", "Android accessory detected");
         lifecycle.session_starting(&key.id);
         publish_connecting(state_tx, &info);
         *active_session = Some(start_session(
@@ -186,7 +194,9 @@ fn connected(
         ));
     } else if is_candidate(&info) && lifecycle.candidate_discovered(key.clone()) {
         attempted.insert(info.id());
-        println!(
+        crate::daemon_log!(
+            Info,
+            "usb-runtime",
             "USB candidate detected: {:04x}:{:04x}",
             info.vendor_id(),
             info.product_id()
@@ -243,9 +253,13 @@ fn handle_work_result(
             // transfer completes. Never downgrade the new accessory session.
             if matches!(lifecycle.state(), UsbConnectionState::WaitingForAccessory { original, .. } if original.id == key.id)
             {
-                eprintln!("AOAP START completion: {error}; retaining bounded accessory wait");
+                crate::daemon_log!(
+                    Warn,
+                    "usb-runtime",
+                    "AOAP START completion: {error}; retaining bounded accessory wait"
+                );
             } else if lifecycle.probe_failed(&key.id, error.clone()) {
-                eprintln!("AOAP probe/switch failed: {error}");
+                crate::daemon_log!(Error, "usb-runtime", "AOAP probe/switch failed: {error}");
                 publish_failure(state_tx, format!("AOAP probe/switch failed: {error}"));
             }
         }
@@ -255,7 +269,9 @@ fn handle_work_result(
             result: Ok((major, minor)),
         } => {
             if lifecycle.version_negotiated(&key.id, major, minor) {
-                println!(
+                crate::daemon_log!(
+                    Info,
+                    "usb-runtime",
                     "Android Auto version negotiation succeeded: phone protocol major={major} minor={minor}"
                 );
                 // TLS/session work continues inside the same transport owner.
@@ -266,11 +282,12 @@ fn handle_work_result(
             result: Err(error),
         } => {
             if lifecycle.session_failed(&key.id, error.clone()) {
-                eprintln!("Android Auto version negotiation failed: {error}");
-                publish_failure(
-                    state_tx,
-                    format!("Android Auto version negotiation failed: {error}"),
+                crate::daemon_log!(
+                    Error,
+                    "usb-runtime",
+                    "Android Auto connection failed: {error}"
                 );
+                publish_failure(state_tx, format!("Android Auto connection failed: {error}"));
             }
         }
     }
@@ -302,9 +319,14 @@ fn start_session(
                 return;
             }
         };
-        println!(
+        crate::daemon_log!(
+            Debug,
+            "usb-runtime",
             "bulk interface claimed: interface={} alternate={} in=0x{:02x} out=0x{:02x}",
-            endpoints.interface, endpoints.alternate_setting, endpoints.input, endpoints.output
+            endpoints.interface,
+            endpoints.alternate_setting,
+            endpoints.input,
+            endpoints.output
         );
         let session_id = state
             .borrow()
@@ -314,11 +336,13 @@ fn start_session(
             .unwrap_or_default();
         #[cfg(unix)]
         let mut media = crate::native_playback::SessionMedia::default();
+        let mut version_complete = false;
         let session = async {
             let response = tokio::time::timeout(SETUP_TIMEOUT, negotiate_version(&mut transport))
                 .await
                 .map_err(|_| "VersionResponse timeout".to_owned())?
                 .map_err(|e| e.to_string())?;
+            version_complete = true;
             let _ = work_tx.try_send(WorkResult::Version {
                 key: key.clone(),
                 result: Ok((response.major, response.minor)),
@@ -344,16 +368,34 @@ fn start_session(
             tokio::select! { biased; _=cancelled.changed()=>Ok(()), result=session=>result };
         let ended_normally = result.is_ok();
         if let Err(error) = result {
-            eprintln!("Android Auto session failed: {error}");
-            let _ = work_tx.try_send(WorkResult::Version {
-                key,
-                result: Err(error),
-            });
+            let stage = if version_complete {
+                "post-version session"
+            } else {
+                "version negotiation"
+            };
+            let failure = format!("{stage}: {error}");
+            if work_tx
+                .try_send(WorkResult::Version {
+                    key,
+                    result: Err(failure.clone()),
+                })
+                .is_err()
+            {
+                // Normally the lifecycle owner reports it once. Retain the
+                // failure even if its notification queue is already closed/full.
+                crate::daemon_log!(
+                    Error,
+                    "usb-runtime",
+                    "Android Auto connection failed: {failure}"
+                );
+            }
+        } else {
+            crate::daemon_log!(Info, "usb-runtime", "Android Auto session disconnected");
         }
         #[cfg(unix)]
         media.close().await;
         if let Err(error) = transport.close().await {
-            eprintln!("AA transport cleanup: {error}");
+            crate::daemon_log!(Warn, "usb-runtime", "AA transport cleanup: {error}");
         }
         state.send_modify(|snapshot| {
             snapshot.video = None;
@@ -401,7 +443,11 @@ async fn run_checkpoint(
     }
     engine.disconnect();
     if let Err(error) = transport.close().await {
-        eprintln!("AA USB transport close failed: {error}");
+        crate::daemon_log!(
+            Error,
+            "usb-runtime",
+            "AA USB transport close failed: {error}"
+        );
     }
 }
 

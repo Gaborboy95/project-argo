@@ -454,7 +454,7 @@ pub mod nusb_backend {
         if version == 0 {
             return Err("device reported unsupported AOAP protocol version 0".to_owned());
         }
-        println!("AOAP protocol version {version}");
+        crate::daemon_log!(Debug, "usb", "AOAP protocol version {version}");
         for (index, value) in IDENTITY_STRINGS.iter().enumerate() {
             let mut data = value.as_bytes().to_vec();
             data.push(0);
@@ -477,7 +477,7 @@ pub mod nusb_backend {
         if !before_start(version).await {
             return Err("AOAP attempt cancelled before START".to_owned());
         }
-        println!("AOAP accessory switch requested");
+        crate::daemon_log!(Debug, "usb", "AOAP accessory switch requested");
         device
             .control_out(
                 ControlOut {
@@ -492,7 +492,11 @@ pub mod nusb_backend {
             )
             .await
             .map_err(|error| format!("START: {error}"))?;
-        println!("AOAP START completed; waiting for accessory re-enumeration");
+        crate::daemon_log!(
+            Debug,
+            "usb",
+            "AOAP START completed; waiting for accessory re-enumeration"
+        );
         Ok(version)
     }
 

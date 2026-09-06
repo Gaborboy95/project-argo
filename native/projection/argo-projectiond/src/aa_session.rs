@@ -32,7 +32,9 @@ async fn send(
     let records = tls.encrypt(&plain)?;
     let wire = aa_wire::encrypted_frames(channel, control, &records)?;
 
-    println!(
+    crate::daemon_log!(
+        Trace,
+        "aa-session",
         "AA TX begin: ch={} id=0x{:04x} encrypted=true control={} wire_bytes={}",
         channel,
         id,
@@ -42,7 +44,13 @@ async fn send(
 
     write(transport, &wire).await?;
 
-    println!("AA TX complete: ch={} id=0x{:04x}", channel, id);
+    crate::daemon_log!(
+        Trace,
+        "aa-session",
+        "AA TX complete: ch={} id=0x{:04x}",
+        channel,
+        id
+    );
 
     Ok(())
 }
@@ -65,7 +73,9 @@ async fn send_plain(
 
     let wire = aa_wire::frame(channel, 0x03, &payload)?;
 
-    println!(
+    crate::daemon_log!(
+        Trace,
+        "aa-session",
         "AA TX begin: ch={} id=0x{:04x} encrypted=false wire_bytes={}",
         channel,
         id,
@@ -74,7 +84,13 @@ async fn send_plain(
 
     write(transport, &wire).await?;
 
-    println!("AA TX complete: ch={} id=0x{:04x}", channel, id);
+    crate::daemon_log!(
+        Trace,
+        "aa-session",
+        "AA TX complete: ch={} id=0x{:04x}",
+        channel,
+        id
+    );
 
     Ok(())
 }
@@ -93,7 +109,11 @@ pub async fn run(
     let mut messages = Messages::default();
     let mut input = [0; 16384];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    println!("AA TLS 1.2 starting with configured Argo identity");
+    crate::daemon_log!(
+        Info,
+        "aa-session",
+        "AA TLS 1.2 starting with configured Argo identity"
+    );
     loop {
         let pending = tls.pending()?;
         if !pending.is_empty() {
@@ -127,11 +147,15 @@ pub async fn run(
             decoder.push(&input[..count])?;
         }
     }
-    println!("AA TLS 1.2 established");
+    crate::daemon_log!(Info, "aa-session", "AA TLS 1.2 established");
     let mut auth = 4u16.to_be_bytes().to_vec();
     auth.extend(Proto::default().number(1, 0).finish());
     write(transport, &aa_wire::frame(0, 3, &auth)?).await?;
-    println!("AA authentication complete; awaiting service discovery");
+    crate::daemon_log!(
+        Info,
+        "aa-session",
+        "AA authentication complete; awaiting service discovery"
+    );
     let socket = config
         .media_socket
         .clone()
@@ -156,7 +180,9 @@ pub async fn run(
             let encrypted = packet.flags & 8 != 0;
 
             let decoded = if encrypted {
-                println!(
+                crate::daemon_log!(
+                    Trace,
+                    "aa-session",
                     "AA encrypted RX frame: ch={} flags=0x{:02x} cipher_bytes={}",
                     packet.channel,
                     packet.flags,
@@ -165,7 +191,9 @@ pub async fn run(
 
                 tls.receive(&packet.bytes)?
             } else {
-                println!(
+                crate::daemon_log!(
+                    Trace,
+                    "aa-session",
                     "AA plaintext RX frame: ch={} flags=0x{:02x} bytes={}",
                     packet.channel,
                     packet.flags,
@@ -186,7 +214,9 @@ pub async fn run(
             let message_id = u16::from_be_bytes([body[0], body[1]]);
             let service_discovery = packet.channel == 0 && message_id == 0x0005;
 
-            println!(
+            crate::daemon_log!(
+                Trace,
+                "aa-session",
                 "AA RX: ch={} id=0x{:04x} bytes={} encrypted={}",
                 packet.channel,
                 message_id,
@@ -263,7 +293,7 @@ pub async fn run(
                 )
                 .await?;
 
-                println!("AA PingRequest sent");
+                crate::daemon_log!(Trace, "aa-session", "AA PingRequest sent");
             }
             continue;
         }
@@ -296,7 +326,7 @@ pub async fn run(
                 )
                 .await?;
 
-                println!("AA PingRequest sent");
+                crate::daemon_log!(Trace, "aa-session", "AA PingRequest sent");
             },
             _=tokio::time::sleep_until(setup_deadline),if !streaming=>return Err("AA video setup timeout after TLS".into()),
         }
