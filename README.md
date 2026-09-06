@@ -10,11 +10,13 @@ normalized vehicle signals, CAN, events and plugin storage. On Linux, the
 separate Rust `argo-projectiond` handles wired Android Auto USB/TLS/protocol and
 native audio delivery. The IHS projection-view library decodes video with
 GStreamer and submits native frames to the existing ivi-homescreen compositor.
-Video and PCM do not pass through Dart.
+Video and PCM do not pass through Dart. AA credentials are loaded only by the
+daemon; the Flutter client reports readiness and selected/pending configuration
+through IPC v2.
 
 ## Current scope
 
-Implemented: module navigation, typed persistent settings, normalized vehicle
+Implemented: module navigation, typed persistent settings (including next-session projection preferences), normalized vehicle
 telemetry/power state, external bundle discovery, Veloce plugin lifecycle,
 simulation scenarios, opt-in SocketCAN, audio policy with default-sink
 volume/mute through `wpctl`, and opt-in systemd host power control. Media contains

@@ -5,9 +5,13 @@ import 'package:flutter/material.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/audio/audio_snapshot.dart';
 import '../../core/audio/audio_types.dart';
+import '../../core/projection/projection_settings_service.dart';
+import 'projection_settings_card.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({required this.audio, super.key});
+  const SettingsPage({required this.audio, this.projectionSettings, super.key});
+
+  final ProjectionSettingsService? projectionSettings;
 
   final AudioService audio;
 
@@ -21,6 +25,8 @@ class SettingsPage extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            if (projectionSettings != null)
+              ProjectionSettingsCard(service: projectionSettings!),
             Text('Audio', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 12),
             Text(

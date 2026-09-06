@@ -1,3 +1,10 @@
+import 'dart:async';
+
+import 'package:argo/core/diagnostics/diagnostics_service.dart';
+import 'package:argo/core/projection/projection_preferences.dart';
+import 'package:argo/core/projection/projection_configuration.dart';
+import 'package:argo/core/projection/projection_settings_service.dart';
+import 'package:argo/features/settings/projection_settings_card.dart';
 import 'package:argo/app/argo_environment.dart';
 import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
@@ -10,6 +17,85 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'projection editor recovers saved pairs and persists pending requests without changing active',
+    (tester) async {
+      final store = _MemorySettingsStore(
+        SettingsDocument(
+          values: {AppSettingKeys.projectionDisplayWidth.id: 801},
+        ),
+      );
+      final settings = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: store,
+      );
+      final diagnostics = DiagnosticsService();
+      final initial = await ProjectionSettingsService.load(
+        settings,
+        diagnostics,
+      );
+      expect(initial, ProjectionPreferences.defaults());
+      expect(diagnostics.latest?.message, contains('unsupported'));
+      final backend = _ConfigurationBackend(initial);
+      final service = ProjectionSettingsService(
+        settings: settings,
+        requested: initial,
+        backend: backend,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: ProjectionSettingsCard(service: service),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Current session selected: $initial'), findsOneWidget);
+      final dpi = find.byKey(const ValueKey('projection-dpi-160'));
+      await tester.ensureVisible(dpi);
+      await tester.enterText(dpi, '180');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(service.requested.dpi, 180);
+      expect(backend.configuration.pending?.dpi, 180);
+      expect(backend.configuration.active?.dpi, 160);
+      expect(
+        find.textContaining('Applies on next phone connection'),
+        findsOneWidget,
+      );
+      final reopened = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: store,
+      );
+      expect(ProjectionPreferences.fromSettings(reopened).dpi, 180);
+      await tester.enterText(
+        find.byKey(const ValueKey('projection-dpi-180')),
+        '79',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(service.requested.dpi, 180);
+      expect(find.text('Enter DPI within 80–640'), findsOneWidget);
+      backend.unavailable();
+      await tester.pump();
+      expect(
+        find.textContaining('Saved preferences remain visible'),
+        findsOneWidget,
+      );
+      await service.reset();
+      await tester.pump();
+      expect(service.requested, initial);
+      expect(service.notice, contains('not validated'));
+      await tester.pumpWidget(const SizedBox());
+      // Complete stream shutdown outside the widget test's fake clock.
+      await tester.runAsync(service.close);
+      await backend.close();
+      await settings.close();
+      await reopened.close();
+    },
+  );
+
   testWidgets('restores the last selected module by stable ID', (tester) async {
     final harness = await _createHarness(storedModuleId: 'climate');
 
@@ -113,4 +199,51 @@ final class _MemorySettingsStore implements SettingsStore {
     writeCount++;
     document = nextDocument;
   }
+}
+
+final class _ConfigurationBackend implements ProjectionConfigurationBackend {
+  _ConfigurationBackend(ProjectionPreferences initial)
+    : configuration = ProjectionConfigurationState(
+        readiness: ProjectionReadiness.ready,
+        message: 'Ready',
+        pending: initial,
+        active: initial,
+        sessionId: 'phone',
+        capabilities: ProjectionCapabilities(
+          resolutions: const [(1280, 720)],
+          frameRates: const [30],
+          minimumDpi: 80,
+          maximumDpi: 640,
+          defaults: initial,
+          audio: const [ProjectionAudioFormat('Media', 48000, 16, 2)],
+        ),
+      );
+  @override
+  ProjectionConfigurationState configuration;
+  final _changes = StreamController<ProjectionConfigurationState>.broadcast(
+    sync: true,
+  );
+  @override
+  Stream<ProjectionConfigurationState> get configurationChanges =>
+      _changes.stream;
+  @override
+  Future<void> requestConfiguration(ProjectionPreferences p) async {
+    configuration = ProjectionConfigurationState(
+      readiness: configuration.readiness,
+      message: 'Ready',
+      capabilities: configuration.capabilities,
+      pending: p,
+      active: configuration.active,
+      sessionId: 'phone',
+      revision: configuration.revision + 1,
+    );
+    _changes.add(configuration);
+  }
+
+  void unavailable() {
+    configuration = const ProjectionConfigurationState();
+    _changes.add(configuration);
+  }
+
+  Future<void> close() => _changes.close();
 }

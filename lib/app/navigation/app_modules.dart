@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/power/head_unit_power_service.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/projection/projection_service.dart';
+import '../../core/projection/projection_settings_service.dart';
 import '../../core/projection/projection_presentation_options.dart';
 import '../../core/projection/projection_render_test.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
@@ -73,8 +74,12 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'settings',
         label: 'Settings',
         icon: Icons.settings_outlined,
-        builder: (_, services) =>
-            SettingsPage(audio: services.get<AudioService>()),
+        builder: (_, services) => SettingsPage(
+          audio: services.get<AudioService>(),
+          projectionSettings: services.contains<ProjectionSettingsService>()
+              ? services.get<ProjectionSettingsService>()
+              : null,
+        ),
       ),
     );
 }

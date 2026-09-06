@@ -99,7 +99,8 @@ GStreamer; pass staged IHS include/library paths directly to CMake.
 ## Projection workflows
 
 - [Standalone daemon and complete wired launch](../tool/projection/README.md#one-real-device-workflow):
-  separate terminals, explicit shared socket paths and identity paths in both.
+  separate terminals, matching socket resolution and identity paths only in the
+  daemon terminal. Start homescreen with both identity variables explicitly unset.
   Argo connects to the daemon; it does not spawn or supervise it.
 - [Phone-independent renderer](../tool/projection/README.md#phone-independent-native-renderer-diagnostic):
   from the Argo root run `tool/projection/run_renderer_test.sh`. It builds a

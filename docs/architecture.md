@@ -79,10 +79,11 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v1 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
-receive-buffer bound. Device/session descriptors, commands, identity file paths,
+Control IPC v2 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
-The native video feed is separately framed/bounded. Argo connects to an already
+Identity paths and material never travel in client IPC; the daemon exclusively
+loads them from its environment. The native video feed is separately framed/bounded. Argo connects to an already
 running daemon and does not provide automatic daemon respawn supervision.
 
 The shared presentation path is:
@@ -170,3 +171,44 @@ Veloce's UI extension registries and Flutter renderer package do not automatical
 create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
+
+## Projection configuration ownership (IPC v2)
+
+Argo's ProjectionSettingsService persists the existing typed preferences; its
+optional ProjectionConfigurationBackend exposes daemon metadata independently
+of video/audio availability. The Settings card remains usable as a status view
+when identity is missing. No Flutter certificate parser or identity validator
+remains, and inherited identity environment variables are ignored by Dart.
+
+The daemon admits one control client at a time with a connection-owned permit.
+Hello is empty; v1 headers and nonempty legacy hello payloads are rejected rather
+than reinterpreted. Requests must have strictly increasing per-connection u32
+revisions. Invalid requests leave pending and active configurations intact.
+Replies carry the revision; Dart ignores stale acknowledgements. Session-state
+notifications use the same ordered bounded connection and report the current
+frozen configuration, not a settings-file echo.
+
+Wire header remains big-endian magic/version/kind/payload-length (12 bytes).
+Strings are u16 byte length followed by UTF-8. A display value is width:u16,
+height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
+
+| Kind | Payload |
+|---|---|
+| 1 hello | Empty, client request/server acknowledgement. |
+| 9 capabilities | Readiness:u8 (0 ready, 1 missing identity, 2 invalid identity, 3 backend failure), message:string; resolution count:u8 then u16 pairs; FPS count:u8 then u8 values; min/max DPI:u16; default display; audio count:u8 then role:u8, rate:u16, bits:u8, channels:u8. |
+| 28 configure | Client revision:u32 and display. No secrets or paths. |
+| 10 configuration | Revision:u32, accepted:u8, reason:string, validated next display, active session ID:string; active display follows only for a nonempty ID. Revision 0 is initial state. Session changes can notify at the last processed revision. |
+| 5 audio stream | Existing session/stream IDs, role/active/focus, then selected PCM rate:u16, bits:u8, channels:u8. |
+
+Other message kinds preserve their existing bounded control responsibilities.
+The shared hex fixture in `test/fixtures/projection/ipc_v2_capabilities.hex` is
+checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2 bundles.
+
+HostControl serializes request selection and session freezing through its watch
+state. The USB worker freezes before version negotiation; post-version TLS uses
+that same display snapshot. The session guard clears active selection even when
+its future is cancelled. Standalone sessions use validated defaults and never
+adopt a later client request in place. AA discovery, native audio construction
+and session metadata use the same fixed AudioFormat catalog. Playback pipelines,
+wire channel IDs/order, TLS compatibility, input mapping and native rendering
+are unchanged; only native endpoint resolution was adjusted.

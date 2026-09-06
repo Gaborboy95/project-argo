@@ -10,7 +10,8 @@ configuration does not necessarily expand it.
 
 Exports affect only that shell and subsequently launched children. Exporting a
 certificate or socket in terminal 1 does not configure terminal 2 or an already
-running process. Use the same explicit paths in both launch terminals.
+running process. Use the same socket paths in both launch terminals. Identity paths belong only
+to the daemon; explicitly unset both identity variables when starting Argo.
 
 ## Application and test helper
 
@@ -34,15 +35,15 @@ path exists on an OS.
 
 | Variable | Default / accepted values | Reader, timing, prerequisites and safe example |
 |---|---|---|
-| `ARGO_PROJECTION_BACKEND` | `disabled`; `disabled`, `android-auto` | App bootstrap; native view also checks test conflicts. AA requires Linux, daemon, identity and IHS for display. Example `disabled`. No wireless/test backend value. |
+| `ARGO_PROJECTION_BACKEND` | `disabled`; `disabled`, `android-auto` | App bootstrap; native view also checks test conflicts. AA requires Linux, a configured daemon and IHS for display; only the daemon loads identity. Example `disabled`. No wireless/test backend value. |
 | `ARGO_PROJECTION_RENDER_TEST` | Unset or `0`: off; exactly `1`: on | App bootstrap and native view/factory; other values rejected by Dart. Requires disabled projection backend, native library/IHS/videotestsrc. Example `1` via launcher. No phone/daemon/credentials needed. |
 | `ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS` | Off; exactly `1` enables | App bootstrap; logs geometry changes, not frames. Example `1` for measured comparison. Other values leave it off. |
 | `ARGO_PROJECTION_VIEW_LIBRARY` | `libargo_projection_view.so` | Dart registry loader at bootstrap when AA/test selected; dynamic library path. Example `$HOME/dev/infotainment/bundle/argo-render-test/lib/libargo_projection_view.so`. Matching IHS ABI required. |
 | `ARGO_PROJECTION_DRM_RENDER_NODE` | Native EGL/Vulkan device discovery | Native view allocator setup; optional DRM render-node path. Use a locally verified node; leave unset for safe default discovery, never assume renderD128 on every host. Renderer launcher preserves explicit override. |
-| `ARGO_PROJECTION_SOCKET` | **App:** `/run/argo/projection.sock`; **daemon:** `$XDG_RUNTIME_DIR/argo/projection.sock`, falling back to `/run/argo/projection.sock` | App connect and daemon bind at startup; set both explicitly to `$XDG_RUNTIME_DIR/argo/projection.sock`. Requires writable private parent, available Unix socket path. App trims blank to default; daemon treats supplied value literally. |
-| `ARGO_PROJECTION_MEDIA_SOCKET` | No default | Daemon configuration and native view creation; required for live native video, ignored in test. Set both to `$XDG_RUNTIME_DIR/argo/projection-video.sock`. Do not supply blank. |
-| `ARGO_ANDROID_AUTO_CERT_FILE` | No default | **Both app and daemon** for AA; readable PEM certificate path, example `$HOME/.config/project-argo/android-auto/argo.crt`. App validates and sends identity paths in control IPC; standalone daemon reads its own environment. |
-| `ARGO_ANDROID_AUTO_KEY_FILE` | No default | Both app and daemon for AA; matching private-key PEM, example `$HOME/.config/project-argo/android-auto/argo.key`. Keep outside repository/plugin/settings directories, restrict file permissions. |
+| `ARGO_PROJECTION_SOCKET` | Explicit path, otherwise `$XDG_RUNTIME_DIR/argo/projection.sock`, otherwise `/run/argo/projection.sock` | Same resolution in app and daemon at startup. Example `$XDG_RUNTIME_DIR/argo/projection.sock`. Explicit empty, relative, surrounding-whitespace, NUL or ≥108-byte Unix paths are rejected. New daemon-owned parent directories are private; live sockets are never automatically deleted. |
+| `ARGO_PROJECTION_MEDIA_SOCKET` | Explicit path, otherwise `$XDG_RUNTIME_DIR/argo/projection-video.sock`, otherwise `/run/argo/projection-video.sock` | Same resolution in daemon and native view; same explicit-path validation as control. Ignored by renderer-test source. Example `$XDG_RUNTIME_DIR/argo/projection-video.sock`. |
+| `ARGO_ANDROID_AUTO_CERT_FILE` | No default | **Daemon only**, startup validation and session TLS loading; external readable PEM certificate, e.g. `$HOME/.config/project-argo/android-auto/argo.crt`. Missing/invalid identity is reported through control readiness without disabling the rest of Argo. Restart daemon after correcting files. |
+| `ARGO_ANDROID_AUTO_KEY_FILE` | No default | **Daemon only**; private-key PEM, e.g. `$HOME/.config/project-argo/android-auto/argo.key`. Keep permissions restricted and files outside repository/plugin/settings directories. Dart ignores inherited identity variables and never opens/parses/transmits keys or identity paths. |
 | `ARGO_PROJECTION_LOG_LEVEL` | `info`; `error`, `warn`, `info`, `debug`, `trace` | Daemon startup, release supported; invalid value fails startup. Example `debug`. INFO transitions/socket locations; WARN/ERROR failures; DEBUG setup/focus/consumer detail; TRACE RX/TX/ping metadata without media/credential dumps. Independent of renderer logging. |
 
 The renderer launcher consumes `FLUTTER_WORKSPACE` (default
@@ -93,25 +94,56 @@ The service's `set`/`reset` is the supported in-app change path.
 | `audio.output.fader` | Number `0`, -1..1 | Saved preference; current wpctl backend cannot apply. |
 | `audio.equalizer.bassDb`, `audio.equalizer.midDb`, `audio.equalizer.trebleDb` | Each number `0`, -12..12 | Saved EQ preferences; current wpctl backend cannot apply. |
 | `audio.output.preferred` | String `""` | Requested output; current wpctl backend has no output selection mutation. |
-| `projection.display.width` | Integer `1280`, 640..3840 | Bootstrap preference sent before connection; daemon supports only paired sizes below. |
+| `projection.display.width` | Integer `1280`, 640..3840 | Validated next-session request; daemon supports only paired sizes below. |
 | `projection.display.height` | Integer `720`, 360..2160 | Same; changing preference does not resize a negotiated live stream. |
-| `projection.display.dpi` | Integer `160`, 72..640 | Bootstrap/negotiation request, not desktop DPR. |
-| `projection.display.framesPerSecond` | Integer `30`, 30 or 60 | Bootstrap/negotiation request. |
-| `projection.display.driverSide` | String `left`, `left` or `right` | Bootstrap/negotiation request. |
-| `projection.display.safeInset.left`, `.top`, `.right`, `.bottom` | Each integer `0`, 0..1000 | Saved/bootstrap model only: current hello IPC does not transmit these preferences. Runtime stream insets come from the daemon descriptor. |
+| `projection.display.dpi` | Integer `160`, 80..640 | Validated next-session request, not desktop DPR. |
+| `projection.display.framesPerSecond` | Integer `30`, 30 or 60 | Next-session negotiation request. |
+| `projection.display.driverSide` | String `left`, `left` or `right` | Next-session negotiation request. |
+| `projection.display.safeInset.left`, `.top`, `.right`, `.bottom` | Each integer `0`, 0..1000 | Stored compatibility keys only: configuration IPC does not transmit these preferences. Runtime stream insets come from the daemon descriptor. |
 
-The daemon's supported size pairs are 800×480, 1280×720 and 1920×1080; unsupported
-pairs fail even if each saved integer passes settings validation. The daemon also
-requires DPI 80..640, narrower than Dart's 72..640 setting range. Safe-inset
-preferences are loaded into ProjectionPreferences but not sent in hello IPC;
-they do not currently change AA negotiation. Presentation
-Compare size changes only the fitted destination, not AA resolution/DPI/FPS.
-The renderer pattern is fixed at 1280×720/30 independently of saved preferences.
-Only wired USB Android Auto is implemented as a real backend; `wifi`/`carPlay`
-model enum values are not selectable implementations.
+The daemon advertises supported resolution **pairs** 800×480, 1280×720 and
+1920×1080, 30/60 FPS, DPI 80..640, left/right driver, and fixed audio formats.
+Settings scalar bounds remain compatible for width/height, but ProjectionPreferences
+and daemon request validation require a catalog pair. Unsupported older stored
+pairs recover to 1280×720/30/160/left with a diagnostic and persisted defaults;
+invalid scalar values follow SettingsService's existing default recovery.
 
-Audio policy/focus state and backend capabilities determine applied behavior;
-a stored value or fake-backend test is not proof of a system mutation. Settings
-UI currently exposes audio controls, not an editor for every schema key.
+Settings → **Android Auto / Apple CarPlay** edits these preferences using the
+connected daemon's catalog, not a widget-owned mode list. CarPlay remains
+unimplemented. DPI saves on Enter; menus save on selection. The page separately
+shows saved request, daemon-validated next connection, and current session-selected
+parameters. Rejections retain the daemon's previous valid configuration. While
+the daemon is unavailable, saved values remain visible but editing is disabled;
+reset can save defaults locally with an explicit unvalidated notice. Acknowledgement
+is not phone acceptance. All negotiation-sensitive changes apply on the **next
+phone connection**, without automatic disconnection.
+
+Safe-inset keys remain compatible storage but have no applied AA mapping and no
+enabled controls. Runtime stream content/safe insets remain independent metadata;
+rendering/touch fit and physical presentation are unchanged. Compare size does
+not renegotiate source resolution, DPI or FPS. Renderer-test source stays fixed
+at 1280×720/30. Model enum values `wifi`/`carPlay` are not implemented backends.
+
+Native playback reports fixed PCM formats: media 48 kHz/16-bit/stereo;
+speech/navigation and system 16 kHz/16-bit/mono. They share the daemon's discovery,
+playback and session-metadata descriptor; there are no arbitrary audio-format
+controls. Per-stream gain is separate from system master volume. Microphone
+startup signaling remains partial scaffolding with no capture/upload pipeline.
+Selected caps and source descriptors are not observations of decoded video,
+physical refresh rate, Flutter DPR, or the host audio device's output format.
+
 Credentials, network secrets and vehicle private data do not belong in this
 settings document or plugin storage. There is no completed provisioning UI.
+
+## IPC compatibility and ownership
+
+IPC v2 is incompatible with v1: rebuild/restart both client and daemon together.
+Hello has no configuration or identity payload. One client owns control for the
+lifetime of its connection; a second receives an explicit ownership error and
+must reconnect after the first closes. There is no observer takeover or automatic
+supervisor. Capabilities/readiness work even with identity missing or invalid.
+Validated requests are revisioned, held in daemon memory and frozen when a phone
+session starts. An already-started standalone session keeps its selected defaults
+when Argo attaches; different saved preferences become pending for its next
+connection. The daemon has no user-settings database; restart restores daemon
+defaults until Argo sends its saved request. See the [wire contract](architecture.md).

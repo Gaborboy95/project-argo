@@ -22,6 +22,7 @@ final class ProjectionSettingsService {
   String? notice;
   bool saving = false;
   bool _closed = false;
+  Future<void>? _operation;
   StreamSubscription<ProjectionConfigurationState>? _subscription;
   final _changes = StreamController<void>.broadcast(sync: true);
   Stream<void> get changes => _changes.stream;
@@ -61,7 +62,40 @@ final class ProjectionSettingsService {
     await settings.set(AppSettingKeys.projectionDriverSide, p.driverSide.name);
   }
 
-  Future<void> update(ProjectionPreferences value) async {
+  Future<void> reset() {
+    if (_closed || saving) return _operation ?? Future<void>.value();
+    return _operation = _reset();
+  }
+
+  Future<void> _reset() async {
+    if (_closed || saving) return;
+    final defaults =
+        current.capabilities?.defaults ?? ProjectionPreferences.defaults();
+    if (current.capabilities != null) {
+      await update(defaults);
+      return;
+    }
+    saving = true;
+    _notify();
+    try {
+      await persist(settings, defaults);
+      requested = defaults;
+      notice =
+          'Defaults saved locally; not validated against a connected daemon.';
+    } on Object catch (error) {
+      notice = 'Could not save projection defaults: $error';
+    } finally {
+      saving = false;
+      _notify();
+    }
+  }
+
+  Future<void> update(ProjectionPreferences value) {
+    if (_closed || saving) return _operation ?? Future<void>.value();
+    return _operation = _update(value);
+  }
+
+  Future<void> _update(ProjectionPreferences value) async {
     if (_closed || saving) return;
     final caps = current.capabilities;
     if (caps == null || !caps.supports(value)) {
@@ -92,6 +126,7 @@ final class ProjectionSettingsService {
   Future<void> close() async {
     _closed = true;
     await _subscription?.cancel();
+    if (saving) await _operation;
     await _changes.close();
   }
 }

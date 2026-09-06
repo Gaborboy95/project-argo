@@ -78,8 +78,8 @@ USB accessory re-enumeration changes device identity; VMware forwarding and
 udev permissions must cover both normal and accessory devices. Use exact
 VID/PID-scoped permissions and a non-root process. Follow the
 [projection runbook](../tool/projection/README.md) rather than deleting sockets
-or opening broad USB access. Set the control/media paths explicitly in both
-terminals: app and daemon control defaults differ. Check listener ownership
+or opening broad USB access. Control/media defaults now match across app, daemon and native consumer; explicit
+paths in the runbook remain useful for two-terminal verification. Check listener ownership
 before removing stale sockets. Start the daemon before connecting the phone and
 before Argo's initial sidecar connection; there is no automatic daemon supervisor
 or robust sidecar reconnect loop. Unplug/replug handling exists, but repeated
@@ -91,9 +91,11 @@ logging; this variable does not silence `[ihs_pv]` warnings. Geometry and render
 logs are independently opt-in. Share relevant stages/metadata after reviewing
 for private identifiers; never share private keys or media payload dumps.
 
-Both Dart and daemon currently require configured AA identity paths. Dart
-validates and transmits paths through local IPC; daemon-only provisioning is not
-implemented. TLS is 1.2 with resumption disabled. The USB-specific permissive
+Identity ownership is now exclusively in argo-projectiond. Flutter ignores inherited
+identity variables, never opens/parses a private key, and sends no identity paths
+or contents through IPC v2. Missing/invalid daemon identity leaves control readiness
+and capability reporting available; restart the daemon after correcting files.
+TLS is 1.2 with resumption disabled. The USB-specific permissive
 peer verifier does not provide WebPKI chain/hostname/signature authentication;
 TLS Finished is still required. A self-generated RSA pair passing parsing or an
 in-memory fixture is not real-phone acceptance or product certification. Keep
@@ -128,13 +130,11 @@ microphone capture are future work. `wifi`/`carPlay` enums and Veloce's broader 
 APIs are scaffolding/capabilities, not present usage instructions. No such feature
 or IHS/Veloce change is implemented by this documentation update.
 
-## Follow-up code questions, not changes in this task
+## Remaining follow-up work
 
-- Align Dart/daemon default control socket paths or retain explicit dual-process
-  configuration as a documented requirement.
-- Reconcile settings validation with daemon DPI bounds (Dart 72..640 versus
-  daemon 80..640), and decide whether to wire or remove saved safe-inset
-  preferences currently absent from hello IPC. Runtime stream insets are separate.
+- Saved safe-inset preferences remain deliberately unsupported, without enabled
+  controls or invented AA fields. Implement a mapping only with verified protocol
+  evidence; source content insets and Flutter presentation are distinct.
 - Reconcile microphone advertisement/open success with the absent capture path.
 - Correct host GL release-eventfd retirement only in a separately authorized IHS
   task, then perform an FD-count/endurance run. No workaround here changes buffer
@@ -143,7 +143,7 @@ or IHS/Veloce change is implemented by this documentation update.
   phone; target hardware and undelivered host focus events remain unverified.
 
 
-These mismatches are documented rather than silently resolved or presented as
+These remaining limitations are documented rather than silently resolved or presented as
 future features already available. Exact target-hardware support, tested phone
 model/OS breadth, and a complete compatibility/provisioning policy remain
 unestablished by the supplied acceptance.
@@ -170,3 +170,36 @@ changing working directories. Earlier 1920×720 window measurements are historic
 not post-change window acceptance. The fake-systemctl helper was reviewed and
 retains its restricted suspend/poweroff logging behavior. Script validation uses
 isolated command stubs and the fake helper, not real host power or a hardware run.
+
+## Projection ownership/configuration update
+
+Implementation baseline was `a373c255a57158c3724a3b40509c7b4f8725115a` (newer than
+the original documentation audit). Contract commit `169e0fc` introduces IPC v2,
+daemon-only identity ownership, one-client control ownership, backend capabilities,
+revisioned configuration and frozen per-phone selection. The subsequent settings
+UI exposes only supported video requests, read-only audio caps and explicit
+current/next status. Both are local changes, not a product release claim.
+
+Automated evidence includes a shared Dart/Rust capability fixture, credential-free
+hello even with inherited obsolete paths, rejection preserving valid state,
+second-client refusal, frozen current/next-session selection, stale-reply handling,
+legacy settings fallback, persisted UI changes and disabled renderer-test coverage.
+These checks are not phone, audible-output or visible-rendering acceptance.
+The existing IHS eventfd problem and TLS compatibility policy remain unchanged.
+Follow the [bounded two-terminal acceptance workflow](../tool/projection/README.md#configuration-ownership-acceptance-ipc-v2)
+with driver side or DPI first. Live-phone configuration/persistence/reconnect and
+unchanged picture/audio/touch for this patch are **not yet user-verified**.
+
+Checks for this configuration pass: Flutter formatting/analyzer and 44 focused
+projection/settings tests passed; the 12 IPC/backend tests were rerun after the
+final readiness-error fix. Another 32 existing composition, lifecycle and dependency
+boundary tests passed (overlapping the focused selection). All 40 Rust tests passed with all features, and the
+standalone-session regression was rerun after extending its assertion. Strict
+all-target/all-feature Clippy passed. The release daemon, native view against the
+installed matching IHS prefix (GStreamer 1.24.2), and x86_64 release Argo bundle
+built on this Linux VM. Markdown links and documented shell syntax were checked.
+No Flutter Engine or IHS rebuild was performed.
+
+This pass did not launch a phone or a manual renderer session. Renderer-test
+independence and PlatformViewLayer composition retain automated coverage; visible
+acceptance here refers only to the earlier user reports, not a new endurance run.

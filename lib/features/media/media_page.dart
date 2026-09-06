@@ -227,7 +227,8 @@ class _ProjectionStatus extends StatelessWidget {
           ProjectionSessionState.failed =>
             session?.failureMessage ?? 'Projection failed',
           ProjectionSessionState.disconnected => 'Device disconnected',
-          null when !snapshot.backendAvailable => 'Projection is disabled',
+          null when !snapshot.backendAvailable =>
+            snapshot.failureMessage ?? 'Projection is disabled',
           null when snapshot.devices.isEmpty => 'No device',
           null => 'Device discovered',
         };

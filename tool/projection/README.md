@@ -70,7 +70,8 @@ export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.
 chmod 600 "$ARGO_ANDROID_AUTO_KEY_FILE"
 ```
 
-The files are parsed and checked for a matching key pair. TLS is restricted to
+The daemon parses the files using the existing TLS compatibility implementation;
+this patch does not strengthen or replace its current identity checks. TLS is restricted to
 1.2; resumption is disabled. The AA-only USB peer verifier does **not** claim
 WebPKI certificate-chain, hostname, or signature authentication: some AA peers
 use legacy certificates. This permissive policy is isolated in `aa_tls.rs`,
@@ -165,8 +166,7 @@ export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
 source "$FLUTTER_WORKSPACE/setup_env.sh"
 export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
 : "${XDG_RUNTIME_DIR:?Run in your desktop login session}"
-export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
-export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
+unset ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
 export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock"
 export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo/projection-video.sock"
 export ARGO_PROJECTION_RENDER_TEST=0
@@ -189,11 +189,13 @@ VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
   2>&1 | tee /tmp/argo-homescreen.log
 ```
 
-The example deliberately uses generic identity and an empty plugin root. Android
-Auto does not depend on a vehicle profile. Both terminals need the same explicit
-socket and certificate paths: Dart still validates and transmits identity paths,
-while the standalone daemon loads its own environment. The default control paths
-differ between processes, so do not rely on implicit matching.
+The example uses the generic vehicle profile and an empty plugin root. Android
+Auto does not depend on a vehicle profile. Identity paths are configured **only
+on the daemon**; both variables are explicitly unset for homescreen above. Argo
+never opens/parses the key and IPC v2 has no client identity fields. Inherited
+identity variables are ignored by Dart. Both processes resolve the same control
+and media defaults from XDG_RUNTIME_DIR, or /run/argo without it; explicit paths
+above make the two-terminal relationship clear. Empty/invalid overrides fail.
 Select **Media** in Argo, unlock the phone, and plug it in. Accept any phone-side
 Android Auto prompts. Then verify touch, music and a navigation announcement.
 Use **Return to Argo** / **Show projection** to switch the surface. Unplug must
@@ -228,7 +230,7 @@ focus/duck gains via metadata IPC; it never rewrites master volume for ducking.
 Existing non-projection backend routing capabilities remain unchanged.
 
 Only H.264 and PCM are advertised. Defaults are 1280x720, 30 FPS, 160 DPI;
-the existing Argo preferences supplied before connection select supported
+the daemon-validated Argo preferences queued for the next connection select supported
 800x480/1280x720/1920x1080 and 30/60 FPS. Unsupported sizes fail explicitly.
 Only night/driving-status sensors are currently advertised: absent vehicle
 inputs mean day mode and conservative driving restrictions, never fictitious
@@ -308,8 +310,8 @@ a failing shell exit status through `tee`.
 `ARGO_PROJECTION_RENDER_TEST=1` is a process-environment flag, supported in AOT.
 Unset or `0` preserves normal selection; other values are rejected. Test mode
 requires the disabled projection backend (also the default); combining it with
-`ARGO_PROJECTION_BACKEND=android-auto` fails before identity validation or backend
-construction. No AA session or public test protocol is created. The launcher
+`ARGO_PROJECTION_BACKEND=android-auto` fails before real-backend construction. Identity validation exists only in the
+daemon, which test mode never contacts. No AA session or public test protocol is created. The launcher
 sets simulation, generic vehicle profile, and disabled projection/audio/host
 power backends. It clears inherited Argo/Veloce integration and scenario settings,
 projection sockets and certificates, and uses isolated empty plugin/integration
@@ -518,3 +520,47 @@ Validation for this change passed: analyzer, 38 focused Flutter tests, 38 Rust
 tests, Clippy with warnings denied, and the release daemon build. The existing
 wire fixture emitted no routine packet/ping metadata at default/INFO and restored
 that metadata at TRACE. Flutter Engine and IHS were not rebuilt.
+
+## Configuration ownership acceptance (IPC v2)
+
+Rebuild the daemon and bundle using the commands above. Stop previous owned
+processes before staging; this is an incompatible v1→v2 control change. Do not
+regenerate credentials. Use the **same existing identity** only in terminal 1;
+terminal 2 explicitly unsets both identity variables. No phone session may have
+started before the request if you want it to use Argo's saved configuration;
+a standalone session already in progress keeps its initial selection.
+
+1. Start terminal 1's daemon, then terminal 2's homescreen with identity variables
+   unset. Open Settings → Android Auto / Apple CarPlay. Verify readiness and
+   supported modes. With no session, Current session says none and Next connection
+   shows the acknowledged default/saved values; it is not labelled active.
+2. Connect the phone deliberately. Check the selected session configuration and
+   actual picture/audio/touch. Use default 1280×720/30 first. Backend Ready and
+   acknowledgement alone do not establish phone acceptance.
+3. During projection, change **driver side** (or DPI 160→180, pressing Enter).
+   Saved request and validated Next connection should change; Current session
+   selected and its ID should retain the old configuration. Check that picture,
+   audio and input remain on that session. There is no automatic disconnect.
+4. Deliberately unplug/replug. The new session should select the acknowledged
+   preference. Check phone picture/audio/touch again, not just the metadata label.
+   Higher resolution/FPS is a separate phone/performance experiment.
+5. Close Argo normally, restart terminal 2 with both identity variables still
+   unset, and verify Saved request survived. If a standalone phone session stayed
+   active, Argo must show its actual selection and queue any differing preference.
+6. Stop owned homescreen/daemon processes. Run `tool/projection/run_renderer_test.sh`
+   from the Argo root; it explicitly disables projection backend and clears identity
+   and socket variables. Select Media and check moving native bars inside Argo.
+
+Keep each manual rendering check short. The known IHS eventfd leak is unchanged:
+if `dup(release eventfd)`/FD-exhaustion failures appear, capture the log and stop
+that run immediately. Do not raise limits, hide warnings, or infer endurance from
+short success. New-session settings, live input and audio acceptance for this
+configuration patch remain manual; record the revision and phone/VM environment.
+
+The Settings card reports fixed read-only native PCM formats. Safe-area saved
+keys are retained but not applied; no enabled control pretends otherwise. Source
+FPS/DPI, Flutter DPR, physical refresh and presentation scale have distinct labels.
+Missing/invalid daemon identity still permits the control UI to report capabilities
+and an actionable error. Correct daemon configuration and restart it; there is no
+automatic daemon spawning/reconnect supervisor. A second control client receives
+an ownership error instead of racing the first client's preferences.
