@@ -245,6 +245,9 @@ pub async fn run(
                 match effect {
                     Effect::Reply(reply) => send(transport, &mut tls, reply).await?,
                     Effect::End => return Ok(()),
+                    Effect::Metadata(update) => {
+                        state.send_if_modified(|snapshot| snapshot.update_metadata(&id, update));
+                    }
                     Effect::Media(3, bytes) => media
                         .video
                         .as_ref()

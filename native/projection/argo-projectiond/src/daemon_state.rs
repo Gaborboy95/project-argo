@@ -51,6 +51,7 @@ pub struct ProjectionRuntimeSnapshot {
     pub session: Option<ProjectionSessionStatusSnapshot>,
     pub video: Option<(crate::aa_channels::DisplayConfig, bool)>,
     pub audio: [bool; 3],
+    pub metadata: crate::metadata::Snapshot,
 }
 
 impl ProjectionRuntimeSnapshot {
@@ -68,7 +69,19 @@ impl ProjectionRuntimeSnapshot {
             }),
             video: None,
             audio: [false; 3],
+            metadata: Default::default(),
         }
+    }
+
+    pub fn update_metadata(&mut self, id: &str, update: crate::metadata::Update) -> bool {
+        if !self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id == id && s.state != ProjectionSessionStatus::Failed)
+        {
+            return false;
+        }
+        self.metadata.apply(update)
     }
 
     pub fn ready(mut self) -> Self {
@@ -80,6 +93,7 @@ impl ProjectionRuntimeSnapshot {
     }
 
     pub fn failed(mut self, failure: impl Into<String>) -> Self {
+        self.metadata = Default::default();
         self.video = None;
         self.audio = [false; 3];
         if let Some(session) = self.session.as_mut() {
@@ -118,6 +132,11 @@ pub fn snapshot_messages(
         messages.push(session_message(session)?);
     }
     if let Some(session) = current.session.as_ref() {
+        if previous.metadata != current.metadata
+            || previous.session.as_ref().map(|s| &s.id) != Some(&session.id)
+        {
+            messages.push(current.metadata.message(&session.id, &session.device_id)?);
+        }
         if let Some((display, visible)) = &current.video
             && (previous.video != current.video || previous.session != current.session)
         {
@@ -213,7 +232,7 @@ mod tests {
                 .iter()
                 .map(|message| message.kind)
                 .collect::<Vec<_>>(),
-            vec![IPC_DEVICE, IPC_SESSION]
+            vec![IPC_DEVICE, IPC_SESSION, 11]
         );
 
         let ready = connecting.clone().ready();

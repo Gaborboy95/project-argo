@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 abstract final class ProjectionIpcProtocol {
   static const int magic = 0x4152474f; // ARGO
-  static const int version = 2;
+  static const int version = 3;
   static const int headerBytes = 12;
   static const int maximumPayloadBytes = 64 * 1024;
   static const int maximumBufferedBytes = 256 * 1024;
@@ -22,6 +22,7 @@ enum ProjectionIpcKind {
   sessionRemoved(8),
   capabilities(9),
   configuration(10),
+  metadata(11),
   configure(28),
   connect(20),
   disconnect(21),
@@ -96,7 +97,7 @@ final class ProjectionIpcDecoder {
       if (header.getUint16(4) != ProjectionIpcProtocol.version) {
         _buffer.clear();
         throw const FormatException(
-          'Incompatible projection IPC version; use matching Argo/daemon IPC v2 builds.',
+          'Incompatible projection IPC version; use matching Argo/daemon IPC v3 builds.',
         );
       }
       final kind = ProjectionIpcKind.tryParse(header.getUint16(6));
@@ -237,6 +238,7 @@ final class ProjectionIpcReader {
   int _offset = 0;
 
   int uint8() => _read(1).getUint8(0);
+  int uint64() => _read(8).getUint64(0);
   int uint32() => _read(4).getUint32(0);
   int uint16() => _read(2).getUint16(0);
   int int16() => _read(2).getInt16(0);

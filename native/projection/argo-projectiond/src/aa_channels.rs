@@ -220,6 +220,12 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
         .number(1, display.width as u64)
         .number(2, display.height as u64);
 
+    response = response.nested(
+        1,
+        Proto::default()
+            .number(1, u64::from(crate::metadata::CHANNEL))
+            .nested(9, Proto::default()),
+    );
     response
         .nested(
             1,
@@ -251,6 +257,7 @@ pub enum Effect {
     Audio(u8, bool),
     Media(u8, Vec<u8>),
     End,
+    Metadata(crate::metadata::Update),
 }
 pub struct Channels {
     display: DisplayConfig,
@@ -259,6 +266,7 @@ pub struct Channels {
     sessions: BTreeMap<u8, u64>,
     pointers: BTreeMap<u16, (u32, u32)>,
     discovered: bool,
+    metadata_warnings: BTreeSet<(u8, u16)>,
 }
 impl Channels {
     pub fn new(display: DisplayConfig) -> Self {
@@ -269,6 +277,7 @@ impl Channels {
             sessions: BTreeMap::new(),
             pointers: BTreeMap::new(),
             discovered: false,
+            metadata_warnings: BTreeSet::new(),
         }
     }
     pub fn handle(&mut self, channel: u8, id: u16, body: &[u8]) -> Result<Vec<Effect>, String> {
@@ -295,6 +304,44 @@ impl Channels {
                 ),
             ]);
         }
+        if (channel == 0 && matches!(id, 5 | 23))
+            || (channel == crate::metadata::CHANNEL && matches!(id, 0x8001 | 0x8003))
+        {
+            let permitted = channel == 0 || self.open.contains(&channel);
+            let update = if permitted {
+                crate::metadata::parse(channel, id, body)
+            } else {
+                Err("metadata channel not open".into())
+            };
+            let mut effects = match update {
+                Ok(value) => vec![Effect::Metadata(value)],
+                Err(error) => {
+                    if self.metadata_warnings.insert((channel, id)) {
+                        crate::daemon_log!(
+                            Warn,
+                            "metadata",
+                            "discarded optional message ch={channel} id={id:#x}: {error} (further failures suppressed for this session/type)"
+                        );
+                    }
+                    vec![]
+                }
+            };
+            if channel == 0 && id == 5 {
+                if !self.discovered {
+                    crate::daemon_log!(
+                        Info,
+                        "aa-channels",
+                        "AA service discovery: existing media/input services plus read-only media status"
+                    );
+                }
+                self.discovered = true;
+                effects.insert(0, reply(0, 6, discovery(&self.display)));
+            }
+            return Ok(effects);
+        }
+        if channel == crate::metadata::CHANNEL && id != 7 {
+            return Ok(vec![]);
+        }
         let fields = numbers(body)?;
         let number = |field| fields.get(&field).copied();
         if id == 7 {
@@ -306,7 +353,7 @@ impl Channels {
                 target,
                 channel
             );
-            let supported = self.discovered && matches!(target, 1 | 3..=6 | 8 | 9);
+            let supported = self.discovered && matches!(target, 1 | 3..=6 | 8 | 9 | 10);
             crate::daemon_log!(
                 Debug,
                 "aa-channels",

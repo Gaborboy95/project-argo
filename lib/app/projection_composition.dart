@@ -1,3 +1,5 @@
+import '../core/media/media_session_service.dart';
+import '../integrations/projection/projection_media_source.dart';
 import '../core/audio/audio_service.dart';
 import '../core/diagnostics/diagnostics_service.dart';
 import '../core/lifecycle/app_lifecycle_coordinator.dart';
@@ -48,6 +50,9 @@ Future<ProjectionService> registerProjectionServices({
     phase: AppShutdownPhase.stopActivity,
     shutdown: projectionSettings.close,
   );
+  final media = CachedMediaSessionService();
+  services.register<MediaSessionService>(media);
+  lifecycle.registerShutdown(name: 'media.sessions', shutdown: media.close);
   final backendType = ProjectionBackendType.fromEnvironment(environment);
   ProjectionViewRegistry? viewRegistry;
   if (renderTest.enabled || backendType == ProjectionBackendType.androidAuto) {
@@ -74,6 +79,12 @@ Future<ProjectionService> registerProjectionServices({
     backend: backend,
     audio: services.get<AudioService>(),
     diagnostics: diagnostics,
+  );
+  final mediaSource = ProjectionMediaSource(projection, media);
+  lifecycle.registerShutdown(
+    name: 'projection.mediaSource',
+    phase: AppShutdownPhase.stopActivity,
+    shutdown: mediaSource.close,
   );
   lifecycle.registerShutdown(
     name: 'projection.service',

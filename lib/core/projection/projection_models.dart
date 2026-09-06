@@ -1,5 +1,7 @@
 import 'dart:collection';
 
+import '../media/media_state.dart';
+
 import 'projection_types.dart';
 
 final class ProjectionDevice {
@@ -154,6 +156,7 @@ final class ProjectionSession {
     Iterable<ProjectionVideoStream> videoStreams = const [],
     Iterable<ProjectionAudioStream> audioStreams = const [],
     this.failureMessage,
+    this.metadata,
   }) : videoStreams = List.unmodifiable(videoStreams),
        audioStreams = List.unmodifiable(audioStreams);
 
@@ -162,6 +165,7 @@ final class ProjectionSession {
   final ProjectionSessionState state;
   final List<ProjectionVideoStream> videoStreams;
   final List<ProjectionAudioStream> audioStreams;
+  final ProjectionSessionMetadata? metadata;
   final String? failureMessage;
 
   @override
@@ -171,6 +175,7 @@ final class ProjectionSession {
       device == other.device &&
       state == other.state &&
       failureMessage == other.failureMessage &&
+      metadata == other.metadata &&
       _listEquals(videoStreams, other.videoStreams) &&
       _listEquals(audioStreams, other.audioStreams);
 
@@ -180,6 +185,7 @@ final class ProjectionSession {
     device,
     state,
     failureMessage,
+    metadata,
     Object.hashAll(videoStreams),
     Object.hashAll(audioStreams),
   );

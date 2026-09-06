@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+
+import '../../core/media/media_state.dart';
 
 import '../../core/diagnostics/diagnostics_service.dart';
 import '../../core/projection/projection_backend.dart';
@@ -26,6 +29,7 @@ final class AndroidAutoProjectionBackend
       StreamController<ProjectionConfigurationState>.broadcast(sync: true);
   int _revision = 0;
   bool _hello = false;
+  bool _metadataWarning = false;
   @override
   ProjectionConfigurationState get configuration => _configuration;
   @override
@@ -105,6 +109,20 @@ final class AndroidAutoProjectionBackend
         case ProjectionIpcKind.configuration:
           _handleConfiguration(reader);
           return;
+        case ProjectionIpcKind.metadata:
+          try {
+            _handleMetadata(reader);
+          } on Object {
+            // Optional metadata cannot tear down otherwise valid native media.
+            if (!_metadataWarning) {
+              _metadataWarning = true;
+              diagnostics.warning(
+                'projection.metadata',
+                'Discarded malformed optional metadata; further warnings suppressed for this connection.',
+              );
+            }
+          }
+          return;
         case ProjectionIpcKind.configure:
           throw const FormatException(
             'Daemon sent client configuration request.',
@@ -142,6 +160,11 @@ final class AndroidAutoProjectionBackend
             id: id,
             device: device,
             state: state,
+            metadata:
+                state == ProjectionSessionState.failed ||
+                    state == ProjectionSessionState.disconnected
+                ? null
+                : previous?.metadata,
             videoStreams: previous?.videoStreams ?? const [],
             audioStreams: previous?.audioStreams ?? const [],
             failureMessage: failure.isEmpty ? null : failure,
@@ -303,6 +326,86 @@ final class AndroidAutoProjectionBackend
     );
   }
 
+  void _handleMetadata(ProjectionIpcReader r) {
+    final sessionId = r.string(), deviceId = r.string();
+    final session = _sessions[sessionId];
+    if (session == null ||
+        session.device.id != deviceId ||
+        session.state == ProjectionSessionState.failed ||
+        session.state == ProjectionSessionState.disconnected) {
+      return;
+    }
+    final revision = r.uint32(), timestamp = r.uint64();
+    bool present() {
+      final v = r.uint8();
+      if (v > 1) throw const FormatException('Invalid presence');
+      return v == 1;
+    }
+
+    String? text() {
+      if (!present()) return null;
+      final value = r.string();
+      if (utf8.encode(value).length > 1024 || value.contains('\u0000')) {
+        throw const FormatException('Invalid text');
+      }
+      return value;
+    }
+
+    int? millis() {
+      if (!present()) return null;
+      final value = r.uint64();
+      if (value > 9007199254740991) throw const FormatException('Invalid time');
+      return value;
+    }
+
+    final received = present();
+    final title = text(), artist = text(), album = text();
+    final playback = _enumAt(MediaPlaybackState.values, r.uint8());
+    final application = text(), position = millis(), duration = millis();
+    final name = text(), manufacturer = text(), model = text();
+    final battery = r.uint8(), critical = r.uint8();
+    _requireDone(r);
+    if ((battery > 100 && battery != 255) ||
+        critical > 2 ||
+        timestamp > 9007199254740991) {
+      throw const FormatException('Invalid phone state');
+    }
+    if (session.metadata != null && revision <= session.metadata!.revision) {
+      return;
+    }
+    _sessions[sessionId] = ProjectionSession(
+      id: session.id,
+      device: session.device,
+      state: session.state,
+      videoStreams: session.videoStreams,
+      audioStreams: session.audioStreams,
+      failureMessage: session.failureMessage,
+      metadata: ProjectionSessionMetadata(
+        revision: revision,
+        updatedAtMs: timestamp,
+        media: received
+            ? MediaDetails(
+                title: title,
+                artist: artist,
+                album: album,
+                playback: playback,
+                application: application,
+                positionMs: position,
+                durationMs: duration,
+              )
+            : null,
+        phone: PhoneDetails(
+          displayName: name,
+          manufacturer: manufacturer,
+          model: model,
+          batteryPercent: battery == 255 ? null : battery,
+          criticalBattery: critical == 0 ? null : critical == 2,
+        ),
+      ),
+    );
+    _publish();
+  }
+
   void _handleVideoStream(ProjectionIpcReader reader) {
     final sessionId = reader.string();
     final session = _sessions[sessionId];
@@ -342,6 +445,7 @@ final class AndroidAutoProjectionBackend
       id: session.id,
       device: session.device,
       state: session.state,
+      metadata: session.metadata,
       videoStreams: streams,
       audioStreams: session.audioStreams,
       failureMessage: session.failureMessage,
@@ -375,6 +479,7 @@ final class AndroidAutoProjectionBackend
       id: session.id,
       device: session.device,
       state: session.state,
+      metadata: session.metadata,
       videoStreams: session.videoStreams,
       audioStreams: streams,
       failureMessage: session.failureMessage,

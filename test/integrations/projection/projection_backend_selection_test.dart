@@ -1,3 +1,8 @@
+import 'package:argo/core/media/media_session_service.dart';
+import 'package:argo/core/projection/projection_service.dart';
+import 'package:argo/core/projection/projection_models.dart';
+import 'package:argo/integrations/projection/projection_media_source.dart';
+
 import 'dart:async';
 import 'dart:io';
 
@@ -21,6 +26,87 @@ void main() {
     driverSide: ProjectionDriverSide.left,
     safeInsets: const ProjectionInsets(),
   );
+
+  test('shared metadata snapshot is current, deduplicated and scoped to its originating session', () async {
+    final transport = _FakeTransport();
+    final backend = AndroidAutoProjectionBackend(
+      socketPath: '/tmp/test.sock',
+      preferences: preferences,
+      diagnostics: DiagnosticsService(),
+      transportFactory: (_) async => transport,
+    );
+    await backend.start();
+    transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+    transport.emit(_capabilities());
+    transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.device,
+        (ProjectionIpcWriter()
+              ..string('device')
+              ..string('Android phone')
+              ..uint8(0)
+              ..uint8(0))
+            .takeBytes(),
+      ),
+    );
+    void session(String id) => transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.session,
+        (ProjectionIpcWriter()
+              ..string(id)
+              ..string('device')
+              ..uint8(1)
+              ..string(''))
+            .takeBytes(),
+      ),
+    );
+    session('aa-wired:device');
+    final hex = File('test/fixtures/projection/ipc_v3_metadata.hex')
+        .readAsStringSync()
+        .trim();
+    final packet = ProjectionIpcDecoder().add([
+      for (var i = 0; i < hex.length; i += 2)
+        int.parse(hex.substring(i, i + 2), radix: 16),
+    ]).single;
+    transport.emit(
+      packet,
+    ); // already connected before the application media adapter attaches
+    final media = CachedMediaSessionService();
+    final source = ProjectionMediaSource(_BackendProjection(backend), media);
+    expect(media.current.activeSource!.details.title, 'Song');
+    expect(media.current.activeSource!.details.positionMs, 12000);
+    expect(media.current.activeSource!.details.durationMs, isNull);
+    expect(
+      backend.current.sessions.single.metadata!.phone.batteryPercent,
+      isNull,
+    );
+    expect(
+      backend.current.activeSessionId,
+      isNull,
+    ); // media selection is independent
+    var changes = 0;
+    final subscription = media.changes.listen((_) => changes++);
+    transport.emit(packet);
+    expect(changes, 0);
+    transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.sessionRemoved,
+        (ProjectionIpcWriter()..string('aa-wired:device')).takeBytes(),
+      ),
+    );
+    expect(media.current.activeSource, isNull);
+    session('replacement');
+    transport.emit(
+      packet,
+    ); // late update from old session cannot populate replacement
+    expect(media.current.activeSource, isNull);
+    expect(backend.current.sessions.single.metadata, isNull);
+    expect(changes, 1);
+    await subscription.cancel();
+    await source.close();
+    await media.close();
+    await backend.close();
+  });
 
   test('disabled backend is safe and default', () async {
     final backend = await selectProjectionBackend(
@@ -240,7 +326,7 @@ final class _FakeTransport implements ProjectionControlTransport {
 }
 
 ProjectionIpcMessage _capabilities() {
-  final hex = File('test/fixtures/projection/ipc_v2_capabilities.hex')
+  final hex = File('test/fixtures/projection/ipc_v3_capabilities.hex')
       .readAsStringSync()
       .trim();
   final bytes = [
@@ -273,4 +359,15 @@ ProjectionIpcMessage _configuration(
   w.string(active == null ? '' : 'session');
   if (active != null) display(active);
   return ProjectionIpcMessage(ProjectionIpcKind.configuration, w.takeBytes());
+}
+
+final class _BackendProjection implements ProjectionService {
+  _BackendProjection(this.backend);
+  final AndroidAutoProjectionBackend backend;
+  @override
+  ProjectionSnapshot get current => backend.current;
+  @override
+  Stream<ProjectionSnapshot> get changes => backend.changes;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -28,7 +28,7 @@ void main() {
         isA<FormatException>().having(
           (e) => e.message,
           'message',
-          contains('matching Argo/daemon IPC v2'),
+          contains('matching Argo/daemon IPC v3'),
         ),
       ),
     );

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 pub const MAGIC: u32 = 0x4152_474f;
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 12;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 pub const MAX_BUFFERED: usize = 256 * 1024;
@@ -99,6 +99,9 @@ pub struct PayloadWriter {
 }
 
 impl PayloadWriter {
+    pub fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
     pub fn u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }

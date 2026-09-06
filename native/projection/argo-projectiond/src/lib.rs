@@ -26,3 +26,5 @@ pub mod usb;
 pub mod usb_runtime;
 #[cfg(all(test, unix))]
 mod wired_tests;
+
+pub mod metadata;
