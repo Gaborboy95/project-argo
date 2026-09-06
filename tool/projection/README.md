@@ -276,15 +276,13 @@ directories and temporary settings. An explicit
 `ARGO_PROJECTION_DRM_RENDER_NODE` is preserved; otherwise native device discovery
 is used. No daemon, phone, USB inspection or media-socket connection is needed.
 
-The presentation path is unchanged: `ProjectionView` creates `AndroidView` with
-`argo.projection.view` and `StandardMessageCodec`, using Flutter's existing
-platform-view ID, create, layout and dispose messages. In the installed Flutter
-framework this is `PlatformViewsService.initAndroidView()` →
-`TextureAndroidViewController` → `RenderAndroidView`/`TextureLayer` composition.
-It is not switched to a hybrid/surface controller. The same dynamically loaded
-`libargo_projection_view.so` registers the same IHS factory. Only native source
-selection changes: `videotestsrc` feeds the existing bounded `projection_sink`
-appsink, `OnSample()` and `SubmitRgb()`. All pixels remain native.
+Both the renderer test and live projection use `ProjectionView` →
+`IhsProjectionSurface` → `PlatformViewLink` → `PlatformViewSurface` →
+`PlatformViewLayer`. The layer identifies the native `argo.projection.view`
+instance; it does not reference an external texture. The same dynamically loaded
+`libargo_projection_view.so` registers the same IHS factory. `videotestsrc` feeds
+the existing bounded `projection_sink` appsink, `OnSample()` and `SubmitRgb()`.
+All pixels remain native.
 
 Logs include factory/create results, platform-view ID and native view pointer
 (the IHS create ID is the platform-view ID; no separate native numeric ID is
@@ -306,7 +304,7 @@ moving native bars visibly displayed inside Argo through the existing, unmodifie
 ivi-homescreen executable. A blank surface with accepted submissions reproduces
 the presentation problem independently of Android Auto.
 
-Validation of this diagnostic in the Linux VM: formatting, analyzer and all 30
+Initial validation before the composition fix in the Linux VM: formatting, analyzer and all 30
 focused projection/Media tests passed (two new checks). The C++ library built
 against the installed IHS, and the launcher built/staged the release bundle and
 ran the existing wayland-egl homescreen. GStreamer 1.24.2 supplied 1280×720 BGRx
@@ -316,3 +314,69 @@ The process environment had no projection socket/certificate variables. Stopping
 the launched homescreen logged native-view destruction and the final counters.
 The user observed a **blank surface** on Media. This reproduces the presentation
 failure without Android Auto; visible renderer acceptance has **not** passed.
+
+
+### Flutter/IHS composition contract
+
+Checked against local Flutter commit `d3b14c87690` and IHS commit `50cbfb5b`
+(the installed homescreen reports v3.0 at that commit):
+
+- Flutter `packages/flutter/lib/src/widgets/platform_view.dart` constructs a
+  `TextureAndroidViewController` through `initAndroidView`. In
+  `services/platform_views.dart`, that controller stores the integer create
+  reply as `textureId`. `RenderAndroidView` then paints a `TextureLayer`.
+- IHS `shell/platform/homescreen/platform_views/platform_views_handler.cc`
+  parses `id`, `viewType`, `direction`, double `width`/`height`, optional
+  `left`/`top`, and encoded `params`. Its runtime-factory create reply is the
+  requested **platform-view ID**, not a Flutter external-texture ID.
+- `platform_view_host.cc::HostRegisterFactory` constructs `IhsPluginView`, an
+  `ICompositorSurface`, and registers it with `RegisterCompositorSurface` under
+  that ID after factory success. This path does **not** call Flutter external
+  texture registration. Its imported GL texture belongs to the IHS compositor;
+  neither that GL name nor a DMA-BUF fd is a Flutter texture identifier.
+- `shell/backend/wayland_egl/wayland_egl.cc` resolves each platform-view layer's
+  identifier in the compositor-surface map before calling `OnPresent` and
+  sampling the surface. A Flutter texture layer does not perform that lookup.
+
+The shared Argo widget now uses a small IHS-specific `PlatformViewController`.
+`PlatformViewLink` allocates the stable ID, supplies the first nonempty logical
+layout size, and owns disposal. Argo sends that ID and valid double dimensions
+in `create`, preserving `StandardMessageCodec` creation parameters. It validates
+the channel reply against that ID before notifying the link. `PlatformViewSurface`
+then emits `PlatformViewLayer` using the **same ID**. Resize messages remain in
+logical pixels; Flutter scales the layer for device pixel ratio and the native
+frame dimensions remain independent. Rebuilds do not allocate another view.
+
+Stock `initExpensiveAndroidView` was not used: its create implementation omits
+size and its hybrid controller rejects `setSize`. `initSurfaceAndroidView` can
+still select texture composition. A generic `PlatformViewSurface` with the IHS
+controller avoids both mismatches. Input remains exclusively in ProjectionView's
+existing mapped-touch listener; platform-view touch dispatch is a no-op.
+
+Creation/resize channel failures are logged and show an unavailable surface,
+including on a standard GTK runner without this IHS channel. Disposal waits for
+pending creation and sends one cleanup request; late completion does not notify
+an unmounted link. Native factory registration still occurs during application
+composition, before the widget tree requests native creation.
+
+**Installed-host limitation:** IHS's create handler acknowledges the requested ID
+even when `CreateViaFactory` logs a factory refusal. The public channel has no
+query that distinguishes this case. Argo can validate channel completion/errors
+but cannot independently confirm factory success from that reply. Native factory
+logs remain authoritative; this patch does not change IHS or the native factory.
+
+Regression coverage inspects the actual Flutter layer tree for the matching
+`PlatformViewLayer` and absence of `TextureLayer`, checks logical sizing at DPR 2,
+resize without recreation, preserved creation parameters and single input
+forwarding. One additional lifecycle test covers asynchronous creation/disposal
+and an unavailable channel.
+
+Composition-fix validation: formatting, analyzer, and 31 focused tests passed.
+The unchanged renderer-test launcher rebuilt the x86_64 release bundle and ran
+against the same installed homescreen and `libihs_shared.so` (SHA-256 checked
+before and after). Native creation succeeded for ID 0 with logical dimensions
+1031.11×580; frames remained 1280×720 BGRx, stride 5120. The layer-tree regression
+verified platform-view composition rather than inferring it from a widget name
+or an accepted buffer submission.
+Visible animated-bar acceptance for the composition fix remains unconfirmed;
+the earlier blank-surface observation was from the old texture-layer path.

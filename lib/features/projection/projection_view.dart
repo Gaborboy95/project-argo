@@ -1,12 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../core/projection/projection_models.dart';
 import '../../core/projection/projection_service.dart';
 import '../../core/projection/projection_touch_mapper.dart';
 import '../../core/projection/projection_types.dart';
+import 'ihs_projection_surface.dart';
 
 typedef ProjectionNativeViewBuilder = Widget Function(
   BuildContext context,
@@ -99,17 +99,12 @@ class _ProjectionViewState extends State<ProjectionView> {
     if (builder != null) {
       return builder(context, widget.stream?.id ?? 'renderer-diagnostic');
     }
-    return AndroidView(
+    return IhsProjectionSurface(
       viewType: ProjectionView.viewType,
       creationParams: <String, Object?>{
         if (widget.stream != null) 'streamId': widget.stream!.id,
       },
-      onPlatformViewCreated: widget.isRendererTest
-          ? (id) => debugPrint(
-              'Argo renderer test: Flutter platform-view created id=$id',
-            )
-          : null,
-      creationParamsCodec: const StandardMessageCodec(),
+      diagnostics: widget.isRendererTest,
     );
   }
 

@@ -97,7 +97,7 @@ void main() {
       SystemChannels.platform_views,
       (call) async {
         calls.add(call);
-        return call.method == 'create' ? 42 : null;
+        return call.method == 'create' ? (call.arguments as Map)['id'] : null;
       },
     );
     addTearDown(
@@ -117,7 +117,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Native renderer test — no phone'), findsOneWidget);
     expect(find.byType(ProjectionView), findsOneWidget);
-    expect(find.byType(AndroidView), findsOneWidget);
+    expect(find.byType(PlatformViewSurface), findsOneWidget);
     final create = calls.singleWhere((call) => call.method == 'create');
     expect((create.arguments as Map)['viewType'], ProjectionView.viewType);
     await tester.pumpWidget(const SizedBox());
