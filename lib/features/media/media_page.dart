@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/projection/projection_models.dart';
 import '../../core/projection/projection_service.dart';
 import '../../core/projection/projection_types.dart';
+import '../../core/projection/projection_touch_mapper.dart';
+import '../projection/projection_presentation_scope.dart';
 import '../projection/projection_view.dart';
 
 class MediaPage extends StatefulWidget {
@@ -12,10 +14,12 @@ class MediaPage extends StatefulWidget {
     super.key,
     required this.projection,
     this.rendererTest = false,
+    this.geometryDiagnostics = false,
   });
 
   final ProjectionService projection;
   final bool rendererTest;
+  final bool geometryDiagnostics;
 
   @override
   State<MediaPage> createState() => _MediaPageState();
@@ -24,6 +28,7 @@ class MediaPage extends StatefulWidget {
 class _MediaPageState extends State<MediaPage> {
   late ProjectionSnapshot _snapshot;
   bool _returning = false;
+  final _surfaceKey = GlobalKey();
   StreamSubscription<ProjectionSnapshot>? _subscription;
 
   @override
@@ -65,21 +70,108 @@ class _MediaPageState extends State<MediaPage> {
       }
     }
 
+    final presentation = ProjectionPresentationScope.of(context);
+    final expanded = presentation?.expanded ?? false;
+    final hasVideo =
+        widget.rendererTest ||
+        (stream != null && session?.state == ProjectionSessionState.streaming);
+    final Widget surface = widget.rendererTest
+        ? ProjectionView.rendererTest(
+            key: _surfaceKey,
+            geometryDiagnostics: widget.geometryDiagnostics,
+            preferPhysicalPixels: expanded,
+          )
+        : hasVideo
+        ? ProjectionView(
+            key: _surfaceKey,
+            service: widget.projection,
+            sessionId: session!.id,
+            stream: stream!,
+            inputEnabled: !_returning,
+            geometryDiagnostics: widget.geometryDiagnostics,
+            preferPhysicalPixels: expanded,
+          )
+        : _ProjectionStatus(
+            snapshot: _snapshot,
+            session: session,
+            onConnect: _snapshot.devices.isEmpty
+                ? null
+                : () => widget.projection.connect(_snapshot.devices.first.id),
+          );
+    if (expanded) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final geometry = hasVideo
+              ? ProjectionViewGeometry(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  devicePixelRatio: View.of(context).devicePixelRatio,
+                  preferPhysicalPixels: true,
+                ).fit(stream?.width ?? 1280, stream?.height ?? 720)
+              : null;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              surface,
+              Positioned(
+                top: 8,
+                left: 8,
+                right: 8,
+                child: SafeArea(
+                  child: Material(
+                    color: Theme.of(context).colorScheme.surface
+                        .withValues(alpha: 0.9),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => presentation!.setExpanded(false),
+                            icon: const Icon(Icons.close_fullscreen),
+                            label: const Text('Back to Argo'),
+                          ),
+                          if (geometry != null)
+                            Text(
+                              '${geometry.physicalWidth.toStringAsFixed(1)} × ${geometry.physicalHeight.toStringAsFixed(1)} px'
+                              ' · ${geometry.isOneToOne ? "1:1 physical pixels" : "scaled to fit"}'
+                              '${widget.rendererTest ? " · no phone" : ""}',
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Expanded(
-                child: Text(
-                  widget.rendererTest
-                      ? 'Native renderer test — no phone'
-                      : 'Projection',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
+              Text(
+                widget.rendererTest
+                    ? 'Native renderer test — no phone'
+                    : 'Projection',
+                style: Theme.of(context).textTheme.headlineMedium,
               ),
+              if (hasVideo && presentation != null)
+                TextButton.icon(
+                  onPressed: () => presentation.setExpanded(true),
+                  icon: const Icon(Icons.open_in_full),
+                  label: const Text('Compare size'),
+                ),
               if (stream != null &&
                   session?.state == ProjectionSessionState.streaming)
                 TextButton(
@@ -103,28 +195,7 @@ class _MediaPageState extends State<MediaPage> {
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: Card(
-              clipBehavior: Clip.antiAlias,
-              child: widget.rendererTest
-                  ? const ProjectionView.rendererTest()
-                  : stream != null &&
-                        session?.state == ProjectionSessionState.streaming
-                  ? ProjectionView(
-                      service: widget.projection,
-                      inputEnabled: !_returning,
-                      sessionId: session!.id,
-                      stream: stream,
-                    )
-                  : _ProjectionStatus(
-                      snapshot: _snapshot,
-                      session: session,
-                      onConnect: _snapshot.devices.isEmpty
-                          ? null
-                          : () => widget.projection.connect(
-                              _snapshot.devices.first.id,
-                            ),
-                    ),
-            ),
+            child: Card(clipBehavior: Clip.antiAlias, child: surface),
           ),
         ],
       ),

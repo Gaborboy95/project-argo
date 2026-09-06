@@ -26,18 +26,26 @@ class ProjectionView extends StatefulWidget {
     required ProjectionVideoStream this.stream,
     this.nativeViewBuilder,
     this.inputEnabled = true,
+    this.geometryDiagnostics = false,
+    this.preferPhysicalPixels = false,
   });
 
-  const ProjectionView.rendererTest({super.key, this.nativeViewBuilder})
-    : inputEnabled = false,
-      service = null,
-      sessionId = null,
-      stream = null;
+  const ProjectionView.rendererTest({
+    super.key,
+    this.nativeViewBuilder,
+    this.geometryDiagnostics = false,
+    this.preferPhysicalPixels = false,
+  }) : inputEnabled = false,
+       service = null,
+       sessionId = null,
+       stream = null;
 
   bool get isRendererTest => service == null;
 
   static const viewType = 'argo.projection.view';
 
+  final bool geometryDiagnostics;
+  final bool preferPhysicalPixels;
   final bool inputEnabled;
   final ProjectionService? service;
   final String? sessionId;
@@ -61,6 +69,7 @@ class _ProjectionViewState extends State<ProjectionView>
   bool _ownsInput = true;
   bool _focused = true;
   int? _viewId;
+  String? _lastGeometry;
 
   @override
   void didChangeDependencies() {
@@ -202,6 +211,9 @@ class _ProjectionViewState extends State<ProjectionView>
   @override
   void didUpdateWidget(ProjectionView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.preferPhysicalPixels != widget.preferPhysicalPixels) {
+      _cancelAll();
+    }
     if (oldWidget.stream?.id == widget.stream?.id &&
         oldWidget.sessionId == widget.sessionId &&
         oldWidget.service == widget.service) {
@@ -237,7 +249,15 @@ class _ProjectionViewState extends State<ProjectionView>
       final geometry = ProjectionViewGeometry(
         width: constraints.maxWidth,
         height: constraints.maxHeight,
+        devicePixelRatio: View.of(context).devicePixelRatio,
+        preferPhysicalPixels: widget.preferPhysicalPixels,
       );
+      final fitted = geometry.fit(
+        widget.stream?.width ?? 1280,
+        widget.stream?.height ?? 720,
+      );
+      if (fitted == null) return const SizedBox();
+      _reportGeometry(geometry, fitted);
       return MouseRegion(
         onExit: (_) {
           if (_pointers.values.any((p) => p.kind == PointerDeviceKind.mouse)) {
@@ -254,18 +274,44 @@ class _ProjectionViewState extends State<ProjectionView>
               _send(event, ProjectionTouchPhase.up, geometry),
           onPointerCancel: (event) =>
               _send(event, ProjectionTouchPhase.cancel, geometry),
-          child: Center(
-            child: AspectRatio(
-              aspectRatio:
-                  (widget.stream?.width ?? 1280) /
-                  (widget.stream?.height ?? 720),
-              child: IgnorePointer(child: _nativeView(context)),
-            ),
+          child: Stack(
+            children: [
+              Positioned(
+                left: fitted.left,
+                top: fitted.top,
+                width: fitted.width,
+                height: fitted.height,
+                child: IgnorePointer(child: _nativeView(context)),
+              ),
+            ],
           ),
         ),
       );
     },
   );
+
+  void _reportGeometry(
+    ProjectionViewGeometry view,
+    ProjectionFittedGeometry fitted,
+  ) {
+    if (!widget.geometryDiagnostics) return;
+    final content = widget.stream?.contentInsets ?? const ProjectionInsets();
+    final safe = widget.stream?.safeInsets ?? const ProjectionInsets();
+    final description =
+        'source=${fitted.sourceWidth}x${fitted.sourceHeight} '
+        'viewportLogical=${view.width}x${view.height} '
+        'fittedLogical=${fitted.width}x${fitted.height} offset=${fitted.left},${fitted.top} '
+        'dpr=${view.devicePixelRatio} destinationPhysical=${fitted.physicalWidth}x${fitted.physicalHeight} '
+        'scale=${fitted.scaleX},${fitted.scaleY} '
+        'contentInsets=${content.left},${content.top},${content.right},${content.bottom} '
+        'safeInsets=${safe.left},${safe.top},${safe.right},${safe.bottom} '
+        'oneToOne=${fitted.isOneToOne}';
+    if (description == _lastGeometry) return;
+    _lastGeometry = description;
+    if (widget.geometryDiagnostics) {
+      debugPrint('Argo projection geometry: $description');
+    }
+  }
 
   Widget _nativeView(BuildContext context) {
     final builder = widget.nativeViewBuilder;

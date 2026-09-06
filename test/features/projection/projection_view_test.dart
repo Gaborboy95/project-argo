@@ -6,6 +6,16 @@ import 'package:argo/core/projection/projection_service.dart';
 import 'package:argo/core/projection/projection_types.dart';
 import 'package:argo/features/projection/projection_view.dart';
 import 'package:argo/features/projection/projection_input_scope.dart';
+import 'package:argo/app/argo_environment.dart';
+import 'package:argo/app/navigation/app_module.dart';
+import 'package:argo/app/navigation/app_module_registry.dart';
+import 'package:argo/app/shell/app_shell.dart';
+import 'package:argo/core/services/service_registry.dart';
+import 'package:argo/core/settings/app_setting_keys.dart';
+import 'package:argo/core/settings/settings_service.dart';
+import 'package:argo/core/settings/settings_store.dart';
+import 'package:argo/features/media/media_page.dart';
+import 'package:argo/core/projection/projection_touch_mapper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
@@ -204,6 +214,118 @@ void main() {
   );
 
   testWidgets(
+    'expanded render and touch share a fitted rectangle at non-unit DPR',
+    (tester) async {
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(1600, 1200);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views,
+        (call) async {
+          calls.add(call);
+          return call.method == 'create' ? (call.arguments as Map)['id'] : null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform_views,
+          null,
+        ),
+      );
+      final stream = ProjectionVideoStream(
+        id: 'main',
+        sessionId: 'session',
+        role: ProjectionVideoRole.main,
+        codec: ProjectionVideoCodec.h264,
+        width: 1280,
+        height: 720,
+        framesPerSecond: 30,
+        contentInsets: const ProjectionInsets(left: 80, right: 80),
+        safeInsets: const ProjectionInsets(left: 40, top: 20),
+      );
+      final backend = InMemoryProjectionBackend(
+        initial: _liveSnapshot(stream: stream),
+      );
+      final service = _DirectProjectionService(backend);
+      late SettingsService settings;
+      await tester.runAsync(() async {
+        settings = await SettingsService.load(
+          schema: AppSettingKeys.createSchema(),
+          store: _GeometryStore(),
+        );
+      });
+      final modules = AppModuleRegistry()
+        ..register(
+          AppModule(
+            id: 'media',
+            label: 'Media',
+            icon: Icons.music_note,
+            builder: (_, _) => MediaPage(projection: service),
+          ),
+        );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(
+            environment: ArgoEnvironment(
+              services: ServiceRegistry()..register(settings),
+              moduleRegistry: modules,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('ARGO'), findsOneWidget);
+      await tester.tap(find.text('Compare size'));
+      await tester.pumpAndSettle();
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      expect(find.text('ARGO'), findsNothing);
+      final fitted = const ProjectionViewGeometry(
+        width: 800,
+        height: 600,
+        devicePixelRatio: 2,
+        preferPhysicalPixels: true,
+      ).fit(1280, 720)!;
+      expect(fitted.isOneToOne, isTrue);
+      expect(
+        tester.getRect(find.byType(PlatformViewSurface)),
+        Rect.fromLTWH(fitted.left, fitted.top, fitted.width, fitted.height),
+      );
+      expect(fitted.physicalWidth, 1280);
+      expect(fitted.physicalHeight, 720);
+      expect(find.textContaining('1:1 physical pixels'), findsOneWidget);
+      final pointer = await tester.startGesture(
+        Offset(fitted.left + (80 + 1120 * 0.25) / 2, fitted.top + 360 / 2),
+      );
+      await pointer.up();
+      await tester.pump();
+      expect(backend.touches.first.x, closeTo(0.25, 0.0001));
+      expect(backend.touches.first.y, closeTo(0.5, 0.0001));
+      final bars = await tester.startGesture(const Offset(790, 590));
+      await bars.up();
+      await tester.pump();
+      expect(backend.touches, hasLength(2));
+      tester.view.physicalSize = const Size(1000, 700);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('1:1 physical pixels'), findsNothing);
+      expect(find.textContaining('scaled to fit'), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(PlatformViewSurface)),
+        const Size(500, 281.25),
+      );
+      await tester.tap(find.text('Back to Argo'));
+      await tester.pumpAndSettle();
+      expect(find.text('Compare size'), findsOneWidget);
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      await backend.close();
+      await tester.runAsync(settings.close);
+    },
+  );
+
+  testWidgets(
     'IHS cleans up delayed creation and reports unavailable channels',
     (tester) async {
       final pending = Completer<Object?>();
@@ -301,23 +423,24 @@ ProjectionVideoStream _mainStream() => ProjectionVideoStream(
   height: 720,
   framesPerSecond: 30,
 );
-ProjectionSnapshot _liveSnapshot() => ProjectionSnapshot(
-  backendAvailable: true,
-  activeSessionId: 'session',
-  sessions: [
-    ProjectionSession(
-      id: 'session',
-      device: const ProjectionDevice(
-        id: 'phone',
-        displayName: 'Phone',
-        protocol: ProjectionProtocol.androidAuto,
-        transport: ProjectionTransport.usb,
-      ),
-      state: ProjectionSessionState.streaming,
-      videoStreams: [_mainStream()],
-    ),
-  ],
-);
+ProjectionSnapshot _liveSnapshot({ProjectionVideoStream? stream}) =>
+    ProjectionSnapshot(
+      backendAvailable: true,
+      activeSessionId: 'session',
+      sessions: [
+        ProjectionSession(
+          id: 'session',
+          device: const ProjectionDevice(
+            id: 'phone',
+            displayName: 'Phone',
+            protocol: ProjectionProtocol.androidAuto,
+            transport: ProjectionTransport.usb,
+          ),
+          state: ProjectionSessionState.streaming,
+          videoStreams: [stream ?? _mainStream()],
+        ),
+      ],
+    );
 Widget _gesturePage(ProjectionService service, {bool active = true}) =>
     MaterialApp(
       home: Center(
@@ -337,3 +460,13 @@ Widget _gesturePage(ProjectionService service, {bool active = true}) =>
         ),
       ),
     );
+
+class _GeometryStore implements SettingsStore {
+  SettingsDocument document = SettingsDocument();
+  @override
+  Future<SettingsDocument> read() async => document;
+  @override
+  Future<void> write(SettingsDocument value) async {
+    document = value;
+  }
+}

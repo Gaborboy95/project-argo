@@ -6,6 +6,7 @@ import '../../core/settings/app_setting_keys.dart';
 import '../../core/settings/settings_service.dart';
 import '../argo_environment.dart';
 import '../../features/projection/projection_input_scope.dart';
+import '../../features/projection/projection_presentation_scope.dart';
 import '../navigation/app_module.dart';
 
 class AppShell extends StatefulWidget {
@@ -19,6 +20,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   late int _selectedIndex;
+  bool _expandedProjection = false;
+  final _contentKey = GlobalKey();
 
   SettingsService get _settings =>
       widget.environment.services.get<SettingsService>();
@@ -41,46 +44,53 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final modules = widget.environment.moduleRegistry.modules;
 
-    return Scaffold(
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final useSideNavigation = constraints.maxWidth >= 1000;
+    return ProjectionPresentationScope(
+      expanded: _expandedProjection,
+      setExpanded: (value) => setState(() => _expandedProjection = value),
+      child: Scaffold(
+        body: _expandedProjection
+            ? _buildContent(modules)
+            : SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final useSideNavigation = constraints.maxWidth >= 1000;
 
-            return Column(
-              children: [
-                const _StatusBar(),
-                Expanded(
-                  child: useSideNavigation
-                      ? Row(
-                          children: [
-                            _SideNavigation(
-                              modules: modules,
-                              selectedIndex: _selectedIndex,
-                              onSelected: _selectModule,
-                            ),
-                            const VerticalDivider(width: 1),
-                            Expanded(child: _buildContent(modules)),
-                          ],
-                        )
-                      : _buildContent(modules),
+                    return Column(
+                      children: [
+                        const _StatusBar(),
+                        Expanded(
+                          child: useSideNavigation
+                              ? Row(
+                                  children: [
+                                    _SideNavigation(
+                                      modules: modules,
+                                      selectedIndex: _selectedIndex,
+                                      onSelected: _selectModule,
+                                    ),
+                                    const VerticalDivider(width: 1),
+                                    Expanded(child: _buildContent(modules)),
+                                  ],
+                                )
+                              : _buildContent(modules),
+                        ),
+                        if (!useSideNavigation)
+                          _BottomNavigation(
+                            modules: modules,
+                            selectedIndex: _selectedIndex,
+                            onSelected: _selectModule,
+                          ),
+                      ],
+                    );
+                  },
                 ),
-                if (!useSideNavigation)
-                  _BottomNavigation(
-                    modules: modules,
-                    selectedIndex: _selectedIndex,
-                    onSelected: _selectModule,
-                  ),
-              ],
-            );
-          },
-        ),
+              ),
       ),
     );
   }
 
   Widget _buildContent(List<AppModule> modules) {
     return IndexedStack(
+      key: _contentKey,
       index: _selectedIndex,
       children: [
         for (final module in modules)
@@ -103,6 +113,7 @@ class _AppShellState extends State<AppShell> {
 
     setState(() {
       _selectedIndex = index;
+      _expandedProjection = false;
     });
     final moduleId = widget.environment.moduleRegistry.modules[index].id;
     unawaited(

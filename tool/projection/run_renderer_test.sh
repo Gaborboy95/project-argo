@@ -51,9 +51,9 @@ for library in libapp.so libflutter_engine.so libargo_projection_view.so libvelo
   [[ -f "$renderer_bundle/lib/$library" ]] || fail "Missing bundled library: $library"
 done
 # Clear inherited Argo/Veloce integrations, scenarios, sockets and credentials.
-# Preserve only the user's explicit DRM selection; otherwise native discovery wins.
+# Preserve explicit DRM selection and opt-in geometry logging; otherwise native discovery wins.
 for variable in ${!ARGO_@} ${!VELOCE_@}; do
-  [[ "$variable" == ARGO_PROJECTION_DRM_RENDER_NODE ]] || unset "$variable"
+  [[ "$variable" == ARGO_PROJECTION_DRM_RENDER_NODE || "$variable" == ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS ]] || unset "$variable"
 done
 renderer_state=$(mktemp -d /tmp/argo-renderer-test.XXXXXX)
 trap 'rm -rf -- "$renderer_state"' EXIT

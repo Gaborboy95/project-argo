@@ -4,6 +4,7 @@ import '../core/lifecycle/app_lifecycle_coordinator.dart';
 import '../core/projection/projection_backend.dart';
 import '../core/projection/projection_backend_type.dart';
 import '../core/projection/projection_preferences.dart';
+import '../core/projection/projection_presentation_options.dart';
 import '../core/projection/projection_render_test.dart';
 import '../core/projection/projection_service.dart';
 import '../core/services/service_registry.dart';
@@ -67,6 +68,12 @@ Future<ProjectionService> registerProjectionServices({
     shutdown: projection.close,
   );
   services
+    ..register<ProjectionPresentationOptions>(
+      ProjectionPresentationOptions(
+        geometryDiagnostics:
+            environment['ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS'] == '1',
+      ),
+    )
     ..register<ProjectionRenderTest>(renderTest)
     ..register<ProjectionBackend>(backend)
     ..register<ProjectionService>(projection);

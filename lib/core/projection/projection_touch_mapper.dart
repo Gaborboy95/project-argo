@@ -2,10 +2,76 @@ import 'projection_models.dart';
 import 'projection_types.dart';
 
 final class ProjectionViewGeometry {
-  const ProjectionViewGeometry({required this.width, required this.height});
+  const ProjectionViewGeometry({
+    required this.width,
+    required this.height,
+    this.devicePixelRatio = 1,
+    this.preferPhysicalPixels = false,
+  });
 
   final double width;
   final double height;
+  final double devicePixelRatio;
+  final bool preferPhysicalPixels;
+
+  ProjectionFittedGeometry? fit(int sourceWidth, int sourceHeight) {
+    if (!width.isFinite ||
+        !height.isFinite ||
+        width <= 0 ||
+        height <= 0 ||
+        !devicePixelRatio.isFinite ||
+        devicePixelRatio <= 0 ||
+        sourceWidth <= 0 ||
+        sourceHeight <= 0) {
+      return null;
+    }
+    var scale = width / sourceWidth < height / sourceHeight
+        ? width / sourceWidth
+        : height / sourceHeight;
+    if (preferPhysicalPixels && scale > 1 / devicePixelRatio) {
+      scale = 1 / devicePixelRatio;
+    }
+    final fittedWidth = sourceWidth * scale;
+    final fittedHeight = sourceHeight * scale;
+    var left = (width - fittedWidth) / 2;
+    var top = (height - fittedHeight) / 2;
+    if (preferPhysicalPixels) {
+      // Align the 1:1 comparison to physical pixel boundaries when possible.
+      left = (left * devicePixelRatio).floorToDouble() / devicePixelRatio;
+      top = (top * devicePixelRatio).floorToDouble() / devicePixelRatio;
+    }
+    return ProjectionFittedGeometry(
+      left: left,
+      top: top,
+      width: fittedWidth,
+      height: fittedHeight,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      devicePixelRatio: devicePixelRatio,
+    );
+  }
+}
+
+/// One fitted source rectangle shared by native layout, measurements and input.
+final class ProjectionFittedGeometry {
+  const ProjectionFittedGeometry({
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.sourceWidth,
+    required this.sourceHeight,
+    required this.devicePixelRatio,
+  });
+  final double left, top, width, height, devicePixelRatio;
+  final int sourceWidth, sourceHeight;
+  double get physicalWidth => width * devicePixelRatio;
+  double get physicalHeight => height * devicePixelRatio;
+  double get scaleX => physicalWidth / sourceWidth;
+  double get scaleY => physicalHeight / sourceHeight;
+  bool get isOneToOne =>
+      (physicalWidth - sourceWidth).abs() < 0.01 &&
+      (physicalHeight - sourceHeight).abs() < 0.01;
 }
 
 /// Maps view-local Flutter coordinates into the active phone content region.
@@ -31,13 +97,11 @@ final class ProjectionTouchMapper {
 
     final sourceWidth = stream.width.toDouble();
     final sourceHeight = stream.height.toDouble();
-    final scale = _min(view.width / sourceWidth, view.height / sourceHeight);
-    final renderedWidth = sourceWidth * scale;
-    final renderedHeight = sourceHeight * scale;
-    final offsetX = (view.width - renderedWidth) / 2;
-    final offsetY = (view.height - renderedHeight) / 2;
-    final sourceX = (localX - offsetX) / scale;
-    final sourceY = (localY - offsetY) / scale;
+    final fitted = view.fit(stream.width, stream.height);
+    if (fitted == null) return null;
+    final scale = fitted.width / sourceWidth;
+    final sourceX = (localX - fitted.left) / scale;
+    final sourceY = (localY - fitted.top) / scale;
 
     final content = stream.contentInsets;
     final contentWidth = sourceWidth - content.left - content.right;
@@ -60,6 +124,4 @@ final class ProjectionTouchMapper {
     touch.validate();
     return touch;
   }
-
-  static double _min(double left, double right) => left < right ? left : right;
 }

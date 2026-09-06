@@ -417,3 +417,61 @@ hex dump was removed. Disabled levels do not construct formatted messages.
 Renderer-test diagnostics are independent and unchanged. Post-version failures
 are labelled as session failures rather than failed version negotiation, and the
 same propagated failure is logged once at the owning lifecycle boundary.
+
+### Presentation-size comparison
+
+On Media, **Compare size** expands the existing native surface without page
+padding, heading, rounded Card, status bar or navigation chrome. **Back to Argo**
+restores the embedded layout. Global keys retain the same native platform-view
+ID across the layout change; no Android Auto session is created or renegotiated.
+The renderer test uses the same controls and surface. Input is cancelled when
+switching presentation geometry, and the overlay control intercepts its own taps.
+
+Expanded layout targets source width/height divided by Flutter's reported
+`devicePixelRatio`, centred on physical-pixel-aligned offsets. If the viewport is
+too small, it fits the full source with preserved aspect ratio. The overlay shows
+physical destination dimensions and says **1:1 physical pixels** only when both
+match the source within 0.01 pixel; otherwise it says **scaled to fit**. This
+measures Flutter's physical destination, not an unobservable subsequent resample
+by the desktop compositor/monitor. No crop, stretch, AA DPI/resolution/bitrate,
+native filtering or buffer-allocation settings change.
+
+Enable bounded geometry logs for live projection with
+`ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1`, or run the phone-independent comparison:
+
+```bash
+ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1 tool/projection/run_renderer_test.sh
+```
+
+Geometry logging is off by default and remains independent of renderer-test
+logging. Each new layout reports source descriptor dimensions, viewport and
+fitted logical dimensions, fitted offset, DPR, physical destination size, X/Y
+scale and content/safe insets. The existing native first-sample log supplies the
+actual decoded dimensions/format/stride for comparison with the descriptor.
+Rendering and touch mapping use the same fit calculation. Content insets are
+removed once for input normalisation; safe insets are reported as metadata and
+are not subtracted again. Pointer positions are logical, so mapping does not
+multiply them by DPR. The full source image remains visible.
+
+Validation: three focused regressions cover outside terminals/subsequent input,
+ownership loss without duplicate cancellation or pending-move backlog, and the
+shared fitted render/touch rectangle with letterboxing, content/safe insets and
+DPR 2. The comparison test exercises the actual shell, verifies chrome removal,
+1:1 versus smaller-window fallback, and unchanged native creation count. Existing
+Rust pointer coverage verifies gesture-wide CANCEL versus single-pointer UP.
+Code/test acceptance is separate from VM mouse/focus/unplug acceptance and from
+whether live-image artifacts persist at a measured 1:1 destination.
+
+VM comparison result: the rebuilt release bundle ran through the existing IHS
+executable with one native view across embedded/expanded transitions. At DPR 1,
+the embedded destination measured 1031.11 × 580 pixels (0.80556× source), and
+Compare size measured 1280 × 720 pixels (1:1), centred in a 1920 × 720 viewport.
+The user confirmed the moving native bars look clean at 1:1. This establishes
+the pattern's visual result, not live Android Auto image quality at that size.
+Live-phone outside-release and module-switch gesture acceptance has not yet been
+tested. The diagnostic instance was stopped after the comparison.
+
+Validation for this change passed: analyzer, 38 focused Flutter tests, 38 Rust
+tests, Clippy with warnings denied, and the release daemon build. The existing
+wire fixture emitted no routine packet/ping metadata at default/INFO and restored
+that metadata at TRACE. Flutter Engine and IHS were not rebuilt.
