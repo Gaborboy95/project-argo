@@ -75,6 +75,8 @@ struct ViewState {
   int allocator_fd = -1;
   bool owns_allocator = false;
   bool reported_submit_error = false;
+  bool reported_first_decoded_frame = false;
+  bool reported_first_submit = false; 
 
   ~ViewState() {
     StopPipeline();
@@ -164,6 +166,14 @@ struct ViewState {
 
   bool FindAllocator() {
     if (allocator != nullptr) return true;
+
+    const char* forced_node =
+        std::getenv("ARGO_PROJECTION_DRM_RENDER_NODE");
+
+    if (forced_node != nullptr && forced_node[0] != '\0') {
+      return OpenAllocatorNode(forced_node);
+    }
+
     IhsEglContext context{};
     context.struct_size = sizeof(context);
     if (ihs_pv_egl_context(&context) != IHS_PV_OK) return FindVulkanAllocator();
@@ -225,10 +235,38 @@ struct ViewState {
 
   bool CanExportLinear() {
     if (!FindAllocator()) return false;
-    gbm_bo* probe = gbm_bo_create(allocator, 64, 64, GBM_FORMAT_XRGB8888,
-                                GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
-    if (probe == nullptr) return false;
-    const bool linear = gbm_bo_get_modifier(probe) == 0;
+
+    gbm_bo* probe = gbm_bo_create(
+        allocator,
+        64,
+        64,
+        GBM_FORMAT_XRGB8888,
+        GBM_BO_USE_LINEAR);
+
+    if (probe == nullptr) {
+      std::fprintf(
+          stderr,
+          "Argo projection: GBM linear XRGB8888 allocation probe failed\n");
+      return false;
+    }
+
+    const std::uint64_t modifier = gbm_bo_get_modifier(probe);
+
+    std::fprintf(
+        stderr,
+        "Argo projection: GBM linear probe modifier=0x%016llx\n",
+        static_cast<unsigned long long>(modifier));
+
+    // DRM_FORMAT_MOD_LINEAR == 0.
+    //
+    // Some virtual/older GBM drivers return DRM_FORMAT_MOD_INVALID for buffers
+    // allocated through gbm_bo_create(), even when GBM_BO_USE_LINEAR was
+    // explicitly requested. In that case the allocation flag is our proof of
+    // the requested layout.
+    const bool linear =
+        modifier == 0 ||
+        modifier == 0x00ffffffffffffffULL; // DRM_FORMAT_MOD_INVALID
+
     gbm_bo_destroy(probe);
     return linear;
   }
@@ -305,23 +343,76 @@ struct ViewState {
     return shm_mapping != MAP_FAILED;
   }
 
+  bool OpenAllocatorNode(const char* node) {
+    if (node == nullptr || node[0] == '\0') {
+      return false;
+    }
+
+    const int fd = open(node, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+      std::fprintf(
+          stderr,
+          "Argo projection: could not open DRM render node %s\n",
+          node);
+      return false;
+    }
+
+    gbm_device* device = gbm_create_device(fd);
+    if (device == nullptr) {
+      std::fprintf(
+          stderr,
+          "Argo projection: GBM device creation failed for %s\n",
+          node);
+      close(fd);
+      return false;
+    }
+
+    allocator_fd = fd;
+    allocator = device;
+    owns_allocator = true;
+
+    std::fprintf(
+        stderr,
+        "Argo projection: using DRM render node %s\n",
+        node);
+
+    return true;
+  }
+
   void SubmitRgb(const std::uint8_t* pixels, std::size_t stride,
                  std::uint32_t frame_width, std::uint32_t frame_height) {
     std::scoped_lock lock(mutex);
     if (!suspended && allocator != nullptr &&
         (grant.granted_kind == IHS_PV_KIND_TEXTURE_DMABUF_IMPORT ||
          grant.granted_kind == IHS_PV_KIND_DRM_PLANE)) {
-      gbm_bo* buffer = gbm_bo_create(allocator, frame_width, frame_height,
-          GBM_FORMAT_XRGB8888, GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+      gbm_bo* buffer = gbm_bo_create(
+        allocator,
+        frame_width,
+        frame_height,
+        GBM_FORMAT_XRGB8888,
+        GBM_BO_USE_LINEAR);
       if (buffer == nullptr) return;
       std::uint32_t mapped_stride = 0;
       void* map_cookie = nullptr;
       void* mapping = gbm_bo_map(buffer, 0, 0, frame_width, frame_height,
           GBM_BO_TRANSFER_WRITE, &mapped_stride, &map_cookie);
-      if (mapping == nullptr || gbm_bo_get_modifier(buffer) != 0 ||
-          mapped_stride < frame_width * 4 || stride < frame_width * 4) {
+      const std::uint64_t modifier = gbm_bo_get_modifier(buffer);
+
+      const bool linear =
+          modifier == 0 ||
+          modifier == 0x00ffffffffffffffULL;
+
+      if (mapping == nullptr || !linear ||
+          mapped_stride < frame_width * 4 ||
+          stride < frame_width * 4) {
         if (mapping != nullptr) gbm_bo_unmap(buffer, map_cookie);
         gbm_bo_destroy(buffer);
+        if (!linear) {
+          std::fprintf(
+              stderr,
+              "Argo projection: rejected non-linear GBM buffer modifier=0x%016llx\n",
+              static_cast<unsigned long long>(modifier));
+        }
         return;
       }
       for (std::size_t row = 0; row < frame_height; ++row) {
@@ -336,6 +427,7 @@ struct ViewState {
       // IHS owns the exported fd and bounds its retired-import history.
       frame.struct_size = offsetof(IhsFrame, buffer_id);
       frame.format = grant.format;
+      frame.format.modifier = modifier;
       frame.width = frame_width;
       frame.height = frame_height;
       frame.plane_count = 1;
@@ -343,6 +435,20 @@ struct ViewState {
       frame.plane_stride[0] = gbm_bo_get_stride(buffer);
       int release = -1;
       const int result = fd < 0 ? IHS_PV_ERR_INVALID : ihs_pv_submit(view, &frame, -1, &release);
+      if (!reported_first_submit) {
+        reported_first_submit = true;
+
+        std::fprintf(
+            stderr,
+            "Argo projection: first IHS submit "
+            "result=%d fd=%d frame=%ux%u stride=%u modifier=0x%016llx\n",
+            result,
+            fd,
+            frame_width,
+            frame_height,
+            frame.plane_stride[0],
+            static_cast<unsigned long long>(modifier));
+      }
       if (release >= 0) close(release);
       gbm_bo_destroy(buffer);
       if (result != IHS_PV_OK && !reported_submit_error) {
@@ -398,6 +504,19 @@ GstFlowReturn OnSample(GstAppSink* sink, gpointer user_data) {
   if (buffer != nullptr && caps != nullptr &&
       gst_video_info_from_caps(&info, caps) &&
       gst_buffer_map(buffer, &mapping, GST_MAP_READ)) {
+        if (!state->reported_first_decoded_frame) {
+          state->reported_first_decoded_frame = true;
+
+          std::fprintf(
+              stderr,
+              "Argo projection: first decoded frame "
+              "%ux%u format=%s stride=%d map_bytes=%zu\n",
+              GST_VIDEO_INFO_WIDTH(&info),
+              GST_VIDEO_INFO_HEIGHT(&info),
+              gst_video_format_to_string(GST_VIDEO_INFO_FORMAT(&info)),
+              GST_VIDEO_INFO_PLANE_STRIDE(&info, 0),
+              mapping.size);
+        }
     state->SubmitRgb(mapping.data, GST_VIDEO_INFO_PLANE_STRIDE(&info, 0),
                      GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info));
     gst_buffer_unmap(buffer, &mapping);

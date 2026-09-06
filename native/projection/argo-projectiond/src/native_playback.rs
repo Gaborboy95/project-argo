@@ -23,12 +23,49 @@ impl VideoFeed {
             loop {
                 tokio::select! {
                     accepted=listener.accept()=>match accepted {
-                        Ok((mut socket,_))=>{
-                            let mut healthy=true;
-                            for bytes in &parameters {
-                                if !matches!(tokio::time::timeout(Duration::from_secs(1),socket.write_all(bytes)).await,Ok(Ok(()))) {healthy=false; break;}
+                        Ok((mut socket, _)) => {
+                            println!(
+                                "Native projection video socket accepted; cached_parameters={}",
+                                parameters.len()
+                            );
+
+                            let mut healthy = true;
+
+                            for (index, bytes) in parameters.iter().enumerate() {
+                                println!(
+                                    "Native projection video replay parameter {} bytes={}",
+                                    index,
+                                    bytes.len()
+                                );
+
+                                match tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    socket.write_all(bytes),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => {
+                                        eprintln!(
+                                            "Native projection parameter replay write failed: {e}"
+                                        );
+                                        healthy = false;
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        eprintln!(
+                                            "Native projection parameter replay timed out"
+                                        );
+                                        healthy = false;
+                                        break;
+                                    }
+                                }
                             }
-                            if healthy {client=Some(socket); println!("Native projection video consumer attached");}
+
+                            if healthy {
+                                client = Some(socket);
+                                println!("Native projection video consumer attached");
+                            }
                         },
                         Err(e)=>{eprintln!("Native video accept failed: {e}");break;}
                     },

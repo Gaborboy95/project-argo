@@ -109,15 +109,46 @@ impl DisplayConfig {
     }
 }
 pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
+    let ping = Proto::default()
+        .number(1, 5000) // timeout_ms
+        .number(2, 1500) // interval_ms
+        .number(3, 500) // high_latency_threshold_ms
+        .number(4, 5); // tracked_ping_count
+
+    let connection = Proto::default().nested(1, ping);
+
+    let headunit_info = Proto::default()
+        .bytes(1, b"Project Argo") // make
+        .bytes(2, b"Universal") // model
+        .bytes(3, b"2026") // year
+        .bytes(4, b"argo-001") // vehicle_id
+        .bytes(5, b"Project Argo") // head_unit_make
+        .bytes(6, b"Argo Head Unit") // head_unit_model
+        .bytes(7, b"1") // software build
+        .bytes(8, b"1.0"); // software version
+
     let mut response = Proto::default()
+        // Deprecated identity fields — retained for compatibility.
         .bytes(2, b"Project Argo")
-        .number(6, if display.right_driver { 2 } else { 1 })
+        .bytes(3, b"Universal")
+        .bytes(4, b"2026")
+        .bytes(5, b"argo-001")
+        // DriverPosition is zero-based:
+        // LEFT=0, RIGHT=1.
+        .number(6, if display.right_driver { 1 } else { 0 })
         .bytes(7, b"Project Argo")
-        .bytes(8, b"Argo")
-        .bytes(9, b"wired")
-        .bytes(10, b"1")
+        .bytes(8, b"Argo Head Unit")
+        .bytes(9, b"1")
+        .bytes(10, b"1.0")
+        // can_play_native_media_during_vr
         .number(11, 1)
-        .bytes(14, b"Argo");
+        // display_name
+        .bytes(14, b"Project Argo")
+        // probe_for_support = false
+        .number(15, 0)
+        // Modern AA configuration.
+        .nested(16, connection)
+        .nested(17, headunit_info);
     let mut sensors = Proto::default();
     for sensor in [10, 13] {
         sensors = sensors.nested(1, Proto::default().number(1, sensor));
@@ -142,7 +173,11 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
         1,
         Proto::default().number(1, 3).nested(
             3,
-            Proto::default().number(1, 3).nested(4, video).number(7, 0),
+            Proto::default()
+                .number(1, 3) // H.264
+                .nested(4, video)
+                .number(5, 1) // available_while_in_call = true
+                .number(7, 0), // MAIN display
         ),
     );
     for (channel, role, rate, channels) in [(4, 3, 48000, 2), (5, 1, 16000, 1), (6, 2, 16000, 1)] {
@@ -157,13 +192,30 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
                 Proto::default()
                     .number(1, 1)
                     .number(2, role)
-                    .nested(3, config),
+                    .nested(3, config)
+                    .number(5, 1),
             ),
         );
     }
+    let mic_config = Proto::default()
+        .number(1, 16000) // sampling_rate
+        .number(2, 16) // bits
+        .number(3, 1); // mono
+
+    response = response.nested(
+        1,
+        Proto::default().number(1, 9).nested(
+            5, // MediaSourceService
+            Proto::default()
+                .number(1, 1) // PCM
+                .nested(2, mic_config)
+                .number(3, 1), // available_while_in_call
+        ),
+    );
     let touch = Proto::default()
         .number(1, display.width as u64)
         .number(2, display.height as u64);
+
     response
         .nested(
             1,
@@ -243,7 +295,15 @@ impl Channels {
         let number = |field| fields.get(&field).copied();
         if id == 7 {
             let target = number(2).ok_or("channel open missing service")?;
-            let supported = self.discovered && matches!(target, 1 | 3..=6 | 8);
+            println!(
+                "AA channel open request: service={} via_ch={}",
+                target, channel
+            );
+            let supported = self.discovered && matches!(target, 1 | 3..=6 | 8 | 9);
+            println!(
+                "AA channel open response: service={} supported={}",
+                target, supported
+            );
             if supported {
                 self.open.insert(target as u8);
             }
@@ -255,32 +315,46 @@ impl Channels {
                     .finish(),
             )]);
         }
+        if channel == 0 && id == 0x0012 {
+            println!(
+                "AA AudioFocusRequest raw={}",
+                body.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+        }
         if channel == 0 {
             return Ok(match id {
                 5 => {
                     self.discovered = true;
                     println!(
-                        "AA service discovery response: input, H.264, media/speech/system audio, night/driving sensors"
+                        "AA service discovery response: input, H.264, media/speech/system audio, microphone, night/driving sensors"
                     );
                     vec![reply(0, 6, discovery(&self.display))]
                 }
                 11 => vec![reply(0, 12, body.to_vec())],
                 13 => vec![reply(0, 14, Proto::default().number(1, 1).finish())],
                 15 => vec![reply(0, 16, Vec::new()), Effect::End],
-                18 => vec![reply(
-                    0,
-                    19,
-                    Proto::default()
-                        .number(
-                            1,
-                            match number(1) {
-                                Some(4) => 3,
-                                Some(2 | 3) => 2,
-                                _ => 1,
-                            },
-                        )
-                        .finish(),
-                )],
+                18 => {
+                    let focus_type = number(1).unwrap_or(0);
+
+                    let focus_state = match focus_type {
+                        1 => 1, // GAIN -> GAIN
+                        2 => 2, // GAIN_TRANSIENT -> GAIN_TRANSIENT
+                        3 => 2, // MAY_DUCK -> GAIN_TRANSIENT
+                        4 => 3, // RELEASE -> LOSS
+                        _ => 3, // unknown -> LOSS
+                    };
+
+                    println!(
+                        "AA AudioFocusResponse: request={} response={}",
+                        focus_type, focus_state
+                    );
+
+                    vec![reply(
+                        0,
+                        19,
+                        Proto::default().number(1, focus_state).finish(),
+                    )]
+                }
                 4 | 12 | 17 | 23 => vec![],
                 _ => vec![],
             });
@@ -319,6 +393,65 @@ impl Channels {
                 if id == 0x19 { 0x1a } else { 0x8003 },
                 Proto::default().number(1, 0).finish(),
             )]);
+        }
+        if channel == 9 {
+            return Ok(match id {
+                // AVChannelSetupRequest
+                0x8000 => {
+                    if number(1) != Some(1) {
+                        return Err("AA requested unsupported microphone codec".into());
+                    }
+
+                    self.setup.insert(9);
+
+                    println!("AA microphone setup");
+
+                    vec![reply(
+                        9,
+                        0x8003,
+                        Proto::default()
+                            .number(1, 2) // OK
+                            .number(2, 1) // max_unacked
+                            .number(3, 0) // config index 0
+                            .finish(),
+                    )]
+                }
+
+                // AV_INPUT_OPEN_REQUEST / MicrophoneRequest
+                0x8005 => {
+                    let open = number(1).unwrap_or(0) != 0;
+
+                    println!("AA microphone open={open}");
+
+                    let mut effects = vec![reply(
+                        9,
+                        0x8006,
+                        Proto::default()
+                            .number(1, 0) // status OK
+                            .number(2, 1) // session id
+                            .finish(),
+                    )];
+
+                    if open {
+                        // HU is the sender on microphone/media-source channels.
+                        effects.push(reply(
+                            9,
+                            0x8001,
+                            Proto::default()
+                                .number(1, 1) // session id
+                                .number(2, 0) // config index
+                                .finish(),
+                        ));
+                    }
+
+                    effects
+                }
+
+                // STOP_INDICATION / ACK — nothing required yet.
+                0x8002 | 0x8004 => vec![],
+
+                _ => vec![],
+            });
         }
         if (3..=6).contains(&channel) {
             return Ok(match id {

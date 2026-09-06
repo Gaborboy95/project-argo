@@ -8,7 +8,7 @@ use crate::{
     native_playback::{AudioPlayback, SessionMedia, VideoFeed},
     session::AndroidAutoTransport,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, watch};
 
 async fn write(transport: &mut impl AndroidAutoTransport, bytes: &[u8]) -> Result<(), String> {
@@ -22,14 +22,61 @@ async fn send(
     tls: &mut AaTls,
     reply: Reply,
 ) -> Result<(), String> {
-    let mut plain = reply.id.to_be_bytes().to_vec();
+    let channel = reply.channel;
+    let id = reply.id;
+    let control = reply.control;
+
+    let mut plain = id.to_be_bytes().to_vec();
     plain.extend(reply.body);
+
     let records = tls.encrypt(&plain)?;
-    write(
-        transport,
-        &aa_wire::encrypted_frames(reply.channel, reply.control, &records)?,
-    )
-    .await
+    let wire = aa_wire::encrypted_frames(channel, control, &records)?;
+
+    println!(
+        "AA TX begin: ch={} id=0x{:04x} encrypted=true control={} wire_bytes={}",
+        channel,
+        id,
+        control,
+        wire.len()
+    );
+
+    write(transport, &wire).await?;
+
+    println!("AA TX complete: ch={} id=0x{:04x}", channel, id);
+
+    Ok(())
+}
+fn ping_payload() -> Vec<u8> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64;
+
+    Proto::default().number(1, timestamp).finish()
+}
+async fn send_plain(
+    transport: &mut impl AndroidAutoTransport,
+    channel: u8,
+    id: u16,
+    body: &[u8],
+) -> Result<(), String> {
+    let mut payload = id.to_be_bytes().to_vec();
+    payload.extend_from_slice(body);
+
+    let wire = aa_wire::frame(channel, 0x03, &payload)?;
+
+    println!(
+        "AA TX begin: ch={} id=0x{:04x} encrypted=false wire_bytes={}",
+        channel,
+        id,
+        wire.len()
+    );
+
+    write(transport, &wire).await?;
+
+    println!("AA TX complete: ch={} id=0x{:04x}", channel, id);
+
+    Ok(())
 }
 pub async fn run(
     transport: &mut impl AndroidAutoTransport,
@@ -94,20 +141,75 @@ pub async fn run(
     let mut commands = control.commands.subscribe();
     let clock = Instant::now();
     let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+
     let mut streaming = false;
+    let mut ping_enabled = false;
+
+    let mut ping_interval = tokio::time::interval(Duration::from_millis(1500));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Consume interval's immediate first tick. We explicitly send the
+    // first AA ping after ServiceDiscoveryResponse instead.
+    ping_interval.tick().await;
     loop {
         if let Some(packet) = decoder.packet()? {
-            if packet.flags & 8 == 0 {
-                return Err("plaintext AA message after authentication".into());
-            }
-            let plain = tls.receive(&packet.bytes)?;
-            let Some(body) = messages.accept(packet.channel, packet.flags, plain)? else {
+            let encrypted = packet.flags & 8 != 0;
+
+            let decoded = if encrypted {
+                println!(
+                    "AA encrypted RX frame: ch={} flags=0x{:02x} cipher_bytes={}",
+                    packet.channel,
+                    packet.flags,
+                    packet.bytes.len()
+                );
+
+                tls.receive(&packet.bytes)?
+            } else {
+                println!(
+                    "AA plaintext RX frame: ch={} flags=0x{:02x} bytes={}",
+                    packet.channel,
+                    packet.flags,
+                    packet.bytes.len()
+                );
+
+                packet.bytes
+            };
+
+            let Some(body) = messages.accept(packet.channel, packet.flags, decoded)? else {
                 continue;
             };
+
             if body.len() < 2 {
-                return Err("short decrypted AA message".into());
+                return Err("short AA message".into());
             }
+
             let message_id = u16::from_be_bytes([body[0], body[1]]);
+            let service_discovery = packet.channel == 0 && message_id == 0x0005;
+
+            println!(
+                "AA RX: ch={} id=0x{:04x} bytes={} encrypted={}",
+                packet.channel,
+                message_id,
+                body.len().saturating_sub(2),
+                encrypted
+            );
+
+            if !encrypted {
+                if packet.channel != 0 || !matches!(message_id, 0x000b | 0x000c) {
+                    return Err(format!(
+                        "unexpected plaintext AA message after authentication: \
+                        ch={} id=0x{:04x}",
+                        packet.channel, message_id
+                    ));
+                }
+
+                if message_id == 0x000b {
+                    send_plain(transport, 0, 0x000c, &body[2..]).await?;
+                }
+
+                continue;
+            }
+
             for effect in channels.handle(packet.channel, message_id, &body[2..])? {
                 match effect {
                     Effect::Reply(reply) => send(transport, &mut tls, reply).await?,
@@ -151,6 +253,18 @@ pub async fn run(
                     }
                 }
             }
+            if service_discovery {
+                ping_enabled = true;
+
+                let payload = ping_payload();
+                send_plain(
+                    transport, 0, 0x000b, // PING_REQUEST
+                    &payload,
+                )
+                .await?;
+
+                println!("AA PingRequest sent");
+            }
             continue;
         }
         tokio::select! {
@@ -170,6 +284,19 @@ pub async fn run(
                     _=>None,
                 };
                 if let Some(reply)=reply {send(transport,&mut tls,reply).await?;}
+            },
+            _ = ping_interval.tick(), if ping_enabled => {
+                let payload = ping_payload();
+
+                send_plain(
+                    transport,
+                    0,
+                    0x000b,
+                    &payload,
+                )
+                .await?;
+
+                println!("AA PingRequest sent");
             },
             _=tokio::time::sleep_until(setup_deadline),if !streaming=>return Err("AA video setup timeout after TLS".into()),
         }

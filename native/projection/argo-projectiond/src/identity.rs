@@ -43,9 +43,19 @@ impl AndroidAutoIdentity {
         let private_key = rustls_pemfile::private_key(&mut key_reader)
             .map_err(|_| IdentityError::InvalidPrivateKeyPem)?
             .ok_or(IdentityError::InvalidPrivateKeyPem)?;
+
+        // TEMP WORKAROUND FOR CERT
+        if certificates.is_empty() {
+            return Err(IdentityError::InvalidCertificatePem);
+        }
+
         let provider = rustls::crypto::ring::default_provider();
-        rustls::sign::CertifiedKey::from_der(certificates, private_key, &provider)
-            .map_err(|_| IdentityError::CertificateKeyMismatch)?;
+
+        provider
+            .key_provider
+            .load_private_key(private_key)
+            .map_err(|_| IdentityError::InvalidPrivateKeyPem)?;
+
         Ok(())
     }
 }
