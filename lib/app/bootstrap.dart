@@ -1,3 +1,6 @@
+import '../core/media/media_session_service.dart';
+import '../core/projection/projection_service.dart';
+
 import 'dart:developer' as developer;
 import 'dart:io';
 
@@ -203,6 +206,15 @@ Future<Widget> bootstrapArgoApplication({
       lifecycle: lifecycle,
       diagnostics: diagnostics,
       environment: processEnvironment,
+    );
+    veloceRuntime.hostState.attach(
+      services.get<ProjectionService>(),
+      services.get<MediaSessionService>(),
+    );
+    lifecycle.registerShutdown(
+      name: 'veloce.hostState',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: veloceRuntime.hostState.close,
     );
     final simulationProvider = canSelection.simulationProvider;
     if (simulationProvider != null) {

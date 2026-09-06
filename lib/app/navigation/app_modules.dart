@@ -1,3 +1,5 @@
+import '../../core/media/media_session_service.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/power/head_unit_power_service.dart';
@@ -60,6 +62,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         icon: Icons.music_note_outlined,
         builder: (_, services) => MediaPage(
           projection: services.get<ProjectionService>(),
+          media: services.contains<MediaSessionService>()
+              ? services.get<MediaSessionService>()
+              : null,
           geometryDiagnostics:
               services.contains<ProjectionPresentationOptions>() &&
               services.get<ProjectionPresentationOptions>().geometryDiagnostics,

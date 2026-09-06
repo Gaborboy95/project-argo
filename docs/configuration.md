@@ -44,6 +44,7 @@ path exists on an OS.
 | `ARGO_PROJECTION_MEDIA_SOCKET` | Explicit path, otherwise `$XDG_RUNTIME_DIR/argo/projection-video.sock`, otherwise `/run/argo/projection-video.sock` | Same resolution in daemon and native view; same explicit-path validation as control. Ignored by renderer-test source. Example `$XDG_RUNTIME_DIR/argo/projection-video.sock`. |
 | `ARGO_ANDROID_AUTO_CERT_FILE` | No default | **Daemon only**, startup validation and session TLS loading; external readable PEM certificate, e.g. `$HOME/.config/project-argo/android-auto/argo.crt`. Missing/invalid identity is reported through control readiness without disabling the rest of Argo. Restart daemon after correcting files. |
 | `ARGO_ANDROID_AUTO_KEY_FILE` | No default | **Daemon only**; private-key PEM, e.g. `$HOME/.config/project-argo/android-auto/argo.key`. Keep permissions restricted and files outside repository/plugin/settings directories. Dart ignores inherited identity variables and never opens/parses/transmits keys or identity paths. |
+| `ARGO_HOST_STATE_DIAGNOSTICS` | Off; exactly `1` enables | Argo/Veloce startup; forwards DEBUG logs from explicitly loaded host-read-capable resources, newest line at most every 3 seconds, truncated/quoted. May contain track/device text; development-only opt-in. Example `1` during the synthetic observer check. No CAN dependency. |
 | `ARGO_PROJECTION_LOG_LEVEL` | `info`; `error`, `warn`, `info`, `debug`, `trace` | Daemon startup, release supported; invalid value fails startup. Example `debug`. INFO transitions/socket locations; WARN/ERROR failures; DEBUG setup/focus/consumer detail; TRACE RX/TX/ping metadata without media/credential dumps. Independent of renderer logging. |
 
 The renderer launcher consumes `FLUTTER_WORKSPACE` (default
@@ -137,7 +138,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v2 is incompatible with v1: rebuild/restart both client and daemon together.
+IPC v3 is incompatible with v1 and v2: rebuild/restart both client and daemon together.
 Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
 must reconnect after the first closes. There is no observer takeover or automatic
@@ -147,3 +148,11 @@ session starts. An already-started standalone session keeps its selected default
 when Argo attaches; different saved preferences become pending for its next
 connection. The daemon has no user-settings database; restart restores daemon
 defaults until Argo sends its saved request. See the [wire contract](architecture.md).
+
+
+Host media/phone state is live, not a setting. No new track, playback, phone,
+artwork or credential storage exists. Backend DEBUG emits bounded revision-only
+metadata diagnostics; packet metadata remains TRACE. The optional host diagnostic
+switch only exposes observer DEBUG lines; it does not grant Lua read permission.
+Read access requires `argo.host.read.v1`; see [the host API](vehicle-integrations.md#read-only-argo-host-state-v1).
+The generic profile does not automatically install the synthetic observer.

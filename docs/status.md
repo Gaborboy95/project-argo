@@ -93,7 +93,7 @@ for private identifiers; never share private keys or media payload dumps.
 
 Identity ownership is now exclusively in argo-projectiond. Flutter ignores inherited
 identity variables, never opens/parses a private key, and sends no identity paths
-or contents through IPC v2. Missing/invalid daemon identity leaves control readiness
+or contents through IPC v3. Missing/invalid daemon identity leaves control readiness
 and capability reporting available; restart the daemon after correcting files.
 TLS is 1.2 with resumption disabled. The USB-specific permissive
 peer verifier does not provide WebPKI chain/hostname/signature authentication;
@@ -124,11 +124,10 @@ focus/lifecycle event; missing host events cannot be claimed handled. Observed
 pointer removal/mouse state can reconcile some losses. Real-phone outside-drag,
 module-switch and reconnect touch acceptance still needs testing.
 
-Wireless Android Auto, Bluetooth integration, CarPlay transport, new metadata
-APIs, customization, plugin-rendered Argo tabs/settings/widgets and complete
+Wireless Android Auto, Bluetooth integration, CarPlay transport, playback controls, customization, plugin-rendered Argo tabs/settings/widgets and complete
 microphone capture are future work. `wifi`/`carPlay` enums and Veloce's broader UI
 APIs are scaffolding/capabilities, not present usage instructions. No such feature
-or IHS/Veloce change is implemented by this documentation update.
+or IHS/Veloce change is implied by the implemented read-only host state API.
 
 ## Remaining follow-up work
 
@@ -186,7 +185,7 @@ second-client refusal, frozen current/next-session selection, stale-reply handli
 legacy settings fallback, persisted UI changes and disabled renderer-test coverage.
 These checks are not phone, audible-output or visible-rendering acceptance.
 The existing IHS eventfd problem and TLS compatibility policy remain unchanged.
-Follow the [bounded two-terminal acceptance workflow](../tool/projection/README.md#configuration-ownership-acceptance-ipc-v2)
+Follow the [bounded two-terminal acceptance workflow](../tool/projection/README.md#configuration-ownership-acceptance-ipc-v3)
 with driver side or DPI first. Live-phone configuration/persistence/reconnect and
 unchanged picture/audio/touch for this patch are **not yet user-verified**.
 
@@ -203,3 +202,40 @@ No Flutter Engine or IHS rebuild was performed.
 This pass did not launch a phone or a manual renderer session. Renderer-test
 independence and PlatformViewLayer composition retain automated coverage; visible
 acceptance here refers only to the earlier user reports, not a new endurance run.
+
+## Shared host media/state update
+
+Baseline: `8cd3eee`; reception/state commit `a70f6ea` adds IPC v3 and an independently
+implemented optional AA metadata reader. The user confirms Argo runs and projection
+settings work. That confirmation does **not** establish live-phone next-session
+configuration/reconnect correctness or renderer endurance.
+
+Implemented: shared immutable media/phone facts, session-scoped initial/update IPC,
+read-only `argo_host.snapshot()` with generation-aware permission checks, a synthetic
+Lua observer and a bounded Media-page facts panel. Public schemas/reference notes
+support track text, playback/application/position, optional battery and discovery
+name/brand. Duration/model/charging are unknown for this AA provider; no fields have
+been newly observed from the actual phone during this pass. Bluetooth/CarPlay/local
+providers, controls, calls/contacts, artwork handling and microphone capture remain
+unimplemented. No IHS, Veloce, TLS/identity, USB transport, AV format, rendering or
+gesture implementation changes were made.
+
+Automated evidence: 42 Rust tests and strict all-feature/all-target Clippy pass.
+The shared IPC v3 hex fixture agrees across Dart/Rust. The native-Lua exercise ran
+against the installed native library (not a skipped/mock substitute), covering
+current reads, coalescing, permission denial, forged invalidations, reload/stale
+generations and disconnect/unload cleanup; the existing synthetic Lua resource
+checks also passed. The layer regression verifies an unchanged PlatformViewLayer
+ID and surface rectangle across a metadata update, including small-window layout.
+Flutter formatting/analyzer and 115 relevant Dart tests passed with native Lua
+enabled. The six focused native-Lua/layer tests were rerun after final stale-source
+and unknown-timestamp safeguards. The IPC v3 release daemon and x86_64 release Argo
+bundle built in the existing Linux workspace; the unchanged native projection
+library was restaged. No Flutter Engine, IHS or Veloce build/change was required.
+Markdown targets/anchors, shell example syntax and the new environment option
+reference were checked. No phone or manual rendering session ran in this pass.
+
+**Not yet phone-verified:** actual title/artist/playback delivery, Lua/UI agreement,
+track-change and pause/resume sequencing, observer reload while connected, cleanup
+on physical disconnect, and whether this phone sends battery. Target hardware and
+endurance remain unverified. Use the [bounded acceptance workflow](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v3).

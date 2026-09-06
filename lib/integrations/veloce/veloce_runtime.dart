@@ -1,4 +1,7 @@
 import 'dart:developer' as developer;
+
+import 'argo_host_state_bridge.dart';
+
 import 'dart:io';
 
 import 'package:veloce_lua_core/veloce_lua_core.dart';
@@ -11,6 +14,7 @@ final class VeloceRuntimeConfiguration {
     required this.storageDatabase,
     this.nativeLibraryPath,
     this.traceVehicleKey,
+    this.hostStateDiagnostics = false,
   });
 
   /// Builds the production configuration from host environment variables.
@@ -47,6 +51,7 @@ final class VeloceRuntimeConfiguration {
       ),
       nativeLibraryPath: _optionalPath(values, 'VELOCE_LUA_LIBRARY'),
       traceVehicleKey: _optionalPath(values, 'VELOCE_TRACE_VEHICLE_KEY'),
+      hostStateDiagnostics: values['ARGO_HOST_STATE_DIAGNOSTICS'] == '1',
     );
   }
 
@@ -54,6 +59,7 @@ final class VeloceRuntimeConfiguration {
   final File storageDatabase;
   final String? nativeLibraryPath;
   final String? traceVehicleKey;
+  final bool hostStateDiagnostics;
 
   static Directory _applicationDataDirectory(Map<String, String> environment) {
     final String? basePath;
@@ -102,6 +108,7 @@ final class VeloceRuntimeConfiguration {
 final class VeloceRuntime {
   VeloceRuntime._({
     required this.pluginManager,
+    required this.hostState,
     required this.vehicleDataBus,
     required this.configuration,
     required this.initialDiscovery,
@@ -111,6 +118,7 @@ final class VeloceRuntime {
   });
 
   final PluginManager pluginManager;
+  final ArgoHostStateBridge hostState;
   final VehicleDataBus vehicleDataBus;
   final VeloceRuntimeConfiguration configuration;
   final PluginDiscoveryResult initialDiscovery;
@@ -134,7 +142,10 @@ final class VeloceRuntime {
       databaseFile: resolvedConfiguration.storageDatabase,
     );
     final resolvedCanProvider = canProvider ?? _UnavailableCanProvider();
-    final capabilityManager = CapabilityManager();
+    final capabilityManager = ArgoHostStateBridge.capabilityManager();
+    final hostState = ArgoHostStateBridge(
+      diagnostics: resolvedConfiguration.hostStateDiagnostics,
+    );
     if (resolvedCanProvider.writesEnabled) {
       capabilityManager.setHostCapabilityEnabled(
         BuiltInCapabilities.canWrite,
@@ -171,7 +182,9 @@ final class VeloceRuntime {
         canProvider: resolvedCanProvider,
         storageProvider: storageProvider,
         capabilityManager: capabilityManager,
+        loader: ArgoHostStateBridge.loader(),
       );
+      hostState.register(pluginManager);
       final discovery = await pluginManager.discover();
       await pluginManager.startWatching();
       if (traceKey != null) {
@@ -189,6 +202,7 @@ final class VeloceRuntime {
 
       return VeloceRuntime._(
         pluginManager: pluginManager,
+        hostState: hostState,
         vehicleDataBus: vehicleDataBus,
         configuration: resolvedConfiguration,
         initialDiscovery: discovery,
@@ -197,6 +211,7 @@ final class VeloceRuntime {
         traceSubscription: traceSubscription,
       );
     } on Object catch (error, stackTrace) {
+      await hostState.close();
       await _closeAfterStartupFailure(
         pluginManager: pluginManager,
         storageProvider: storageProvider,
@@ -224,6 +239,7 @@ final class VeloceRuntime {
       }
     }
 
+    await close(hostState.close);
     await close(_canProvider.close);
     await close(pluginManager.close);
     if (_traceSubscription case final subscription?) {

@@ -1,3 +1,6 @@
+import '../../core/media/media_session_service.dart';
+import '../../core/media/media_state.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -14,10 +17,12 @@ class MediaPage extends StatefulWidget {
     super.key,
     required this.projection,
     this.rendererTest = false,
+    this.media,
     this.geometryDiagnostics = false,
   });
 
   final ProjectionService projection;
+  final MediaSessionService? media;
   final bool rendererTest;
   final bool geometryDiagnostics;
 
@@ -193,8 +198,16 @@ class _MediaPageState extends State<MediaPage> {
                 ),
             ],
           ),
+          if (!widget.rendererTest)
+            Flexible(
+              child: SizedBox(
+                height: 104,
+                child: _MediaFacts(session: session, media: widget.media),
+              ),
+            ),
           const SizedBox(height: 12),
           Expanded(
+            flex: widget.rendererTest ? 1 : 3,
             child: Card(clipBehavior: Clip.antiAlias, child: surface),
           ),
         ],
@@ -247,4 +260,64 @@ class _ProjectionStatus extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MediaFacts extends StatelessWidget {
+  const _MediaFacts({required this.session, required this.media});
+  final ProjectionSession? session;
+  final MediaSessionService? media;
+  @override
+  Widget build(BuildContext context) => StreamBuilder<MediaSessionSnapshot>(
+    stream: media?.changes,
+    builder: (context, _) {
+      final s = session;
+      final live =
+          s != null &&
+          s.state != ProjectionSessionState.failed &&
+          s.state != ProjectionSessionState.disconnected;
+      final phone = live ? s.metadata?.phone : null;
+      final source = media?.current.activeSource;
+      final details = source?.details;
+      String time(int ms) =>
+          '${ms ~/ 60000}:${((ms ~/ 1000) % 60).toString().padLeft(2, '0')}';
+      return SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              live
+                  ? '${s.device.protocol.name} / ${s.device.transport.name} · ${phone?.displayName ?? s.device.displayName}'
+                  : 'No connected projection phone',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              details?.title ?? 'Track unavailable',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (details?.artist != null || details?.album != null)
+              Text(
+                [
+                  details?.artist,
+                  details?.album,
+                ].whereType<String>().join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            Text(
+              '${details?.playback.name ?? "unknown"}'
+              '${details?.positionMs == null ? "" : " · reported ${time(details!.positionMs!)}"}'
+              '${details?.durationMs == null ? "" : " / ${time(details!.durationMs!)}"}'
+              '${phone?.batteryPercent == null ? "" : " · Phone battery ${phone!.batteryPercent}%"}'
+              '${phone?.criticalBattery == true ? " · Phone battery critical" : ""}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }

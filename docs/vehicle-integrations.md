@@ -164,3 +164,72 @@ configured vcan workflow in [setup](setup.md). This example needs no CAN writes,
 real power, AA identity or UI extension permission. The full checked-in example
 also contains `audio_policy`, `power_policy` and `battery_protection`; their
 thresholds/delays are demonstration values, not vehicle safety recommendations.
+
+
+## Read-only Argo host state v1
+
+Argo adds the global Lua namespace **`argo_host`**, method **`snapshot()`**, with
+zero arguments. Custom namespaces in the installed native runtime are globals:
+use `argo_host.snapshot()`, **not** `require("veloce").argo_host`. Built-in logging
+and events still use `require("veloce")`. This is an Argo host API, not a Veloce
+vehicle signal or a portable built-in Veloce namespace.
+
+Request **`argo.host.read.v1`** in the resource manifest. Argo enables the host
+capability, but every call also requires that permission in the caller's active
+Veloce generation. Undeclared reads fail; calls from unloaded/replaced generations
+fail. No setters or transport commands are exposed. Defaults and existing Veloce
+APIs keep their usual authorization.
+
+The returned version-1 structured snapshot has these fields (Lua `nil` denotes
+unknown; arrays are Lua sequence tables):
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | Integer `1`. |
+| `epoch`, `revision` | Opaque Argo-runtime epoch and increasing cache revision. Compare as a pair; reset local observations when epoch changes. Never compare revisions across process restarts. |
+| `updatedAtMs` | UTC Unix milliseconds when Argo's cached snapshot changed; not a phone clock or media playhead. |
+| `available` | Projection backend availability; true is not a claim that a phone or track exists. |
+| `projection.activeSessionId` | Existing selected projection ID, independent of media selection. |
+| `projection.sessions[]` | Current nonfailed, nondisconnected sessions: `sessionId`, `deviceId`, `protocol`, `transport`, `state`, `deviceName`, nullable `manufacturer`, nullable `model`. Device name falls back to the existing generic device descriptor when the phone has not supplied one. |
+| `media.activeSourceId` | Selected media-source ID, or nil. |
+| `media.sources[]` | `sourceId`, `sourceKind`, `sessionId`, `deviceId`, `revision`, `updatedAtMs`, nullable `title`, `artist`, `album`, `application`, `positionMs`, `durationMs`, plus `playbackState`. |
+| `phones[]` | Session/device IDs, nullable `batteryPercent`, `criticalBattery`, `charging`, `revision`, `updatedAtMs`. Revision/time describe the originating session-metadata snapshot, not a separate battery sample clock; time is nil before any metadata has arrived. |
+
+Protocol values are `androidAuto`/`carPlay`, transport `usb`/`wifi`. Only wired AA
+is implemented. Playback values are `unknown`, `stopped`, `playing`, `paused`,
+`error`. Positions/durations are integer **milliseconds**, only reported values;
+no playhead interpolation or periodic packet-frequency updates occur. The AA
+source currently has no verified duration or device-model mapping, and charging
+is always nil. A missing percentage is nil, never 0. Phone battery is unrelated
+to vehicle battery. Source revision/time reflect the session metadata that last
+changed the media source; phone-only updates need not advance the media cache.
+
+Session IDs provide daemon epochs. IDs are opaque correlation values, not stable
+hardware identifiers to store across reconnects. Metadata replacement clears an
+old track's absent artist/album; status messages independently update playback/app/
+position, and battery fields are independent optional patches. A changed track
+clears its prior position until a new position is reported. A changed known app
+clears the old app's track pending new metadata. Absent duration/model/charging
+are not guessed. Disconnected/failed sessions disappear from host lists and their
+live media/phone fields disappear. An unavailable backend returns `available=false`
+and empty lists. State is never restored from saved settings/plugin storage.
+
+For updates request the built-in **`events`** permission and subscribe to
+**`argo.host.state.changed.v1` before the first snapshot read**. Events contain
+only an empty invalidation object, at most four host notifications per second.
+Veloce retains its bounded subscriber queue (64 pending, drop oldest) and removes
+callbacks with the owning generation. Anyone with events permission can publish a
+look-alike hint: never trust event data or use its claimed revision as host state.
+Always re-read the protected snapshot and deduplicate by its epoch/revision. Read
+immediately after subscribing/on reload, since events are not a history or an
+initial snapshot. No private metadata is broadcast to events-only resources.
+
+The [synthetic host observer](../tool/vehicle_integrations/example-vehicle/plugins/host_media)
+requests only read/events/logging, reads on load, reacts to hints and deduplicates
+its DEBUG summary. It makes no CAN calls and renders no plugin UI. Its DEBUG lines
+are in Veloce's bounded log history; the optional `ARGO_HOST_STATE_DIAGNOSTICS=1`
+forwards the newest observer DEBUG line at most every three seconds to the Argo
+terminal, with quoting and a 1024-character bound. Enable this deliberately for
+acceptance because such lines may include track/device text. Normal INFO logging
+contains no track dump. [Run instructions](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v3)
+load only this observer without selecting an example vehicle profile.

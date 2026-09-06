@@ -65,3 +65,19 @@ flutter run -d linux --no-enable-impeller
 The battery policy likewise owns its example-only voltage thresholds,
 hysteresis, and confirmation timer. See [the power runbook](../host_power/README.md) for the
 safe fake-systemctl SocketCAN suspend/resume and poweroff procedure.
+
+## Optional host media observer
+
+The synthetic bundle also contains `plugins/host_media` (`dev.example.host_media`).
+It uses `argo_host.snapshot()` plus invalidation events, not vehicle signals/CAN,
+and requires `argo.host.read.v1`, `events` and `logging`. Custom host namespaces
+are provided by Argo's runtime; a plain Veloce runtime needs the corresponding
+host registration/catalog before this resource can load. It creates no UI.
+
+To run **only** this observer with Argo's generic profile, follow the
+[projection host-state workflow](../projection/README.md#host-metadata-and-lua-acceptance-ipc-v3).
+It uses a separate mutable plugin root and leaves the other synthetic vehicle
+policies unloaded. The [native Lua exercise](../../test/integrations/veloce/argo_host_state_bridge_test.dart)
+uses fake state and proves reads/permissions/reload without a phone. API fields,
+unknown/disconnected results and subscribe-before-read ordering are documented in
+[plugin authoring](../../docs/vehicle-integrations.md#read-only-argo-host-state-v1).

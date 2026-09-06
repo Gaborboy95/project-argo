@@ -79,7 +79,7 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v2 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v3 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
@@ -163,8 +163,7 @@ permission checks when adding namespaces; replacing the entire API registry need
 explicit equivalent checks. `PluginApiCall` carries plugin/generation identity and validated
 structured arguments. Handlers are synchronous; asynchronous work must return
 an ID and deliver completion through an owned event/callback. Resource cleanup
-must respect generation replacement. This is an extension recipe, not an API
-already exposed by Argo. Read the matching sibling
+must respect generation replacement. Argo now uses this extension point for `argo_host.snapshot()` as described below. Read the matching sibling
 `packages/veloce_lua_core/lib/src/api/plugin_api_registry.dart` before extending it.
 
 Veloce's UI extension registries and Flutter renderer package do not automatically
@@ -172,7 +171,7 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
-## Projection configuration ownership (IPC v2)
+## Projection configuration ownership (IPC v3)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -181,7 +180,7 @@ when identity is missing. No Flutter certificate parser or identity validator
 remains, and inherited identity environment variables are ignored by Dart.
 
 The daemon admits one control client at a time with a connection-owned permit.
-Hello is empty; v1 headers and nonempty legacy hello payloads are rejected rather
+Hello is empty; v1/v2 headers and nonempty legacy hello payloads are rejected rather
 than reinterpreted. Requests must have strictly increasing per-connection u32
 revisions. Invalid requests leave pending and active configurations intact.
 Replies carry the revision; Dart ignores stale acknowledgements. Session-state
@@ -198,11 +197,12 @@ height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
 | 9 capabilities | Readiness:u8 (0 ready, 1 missing identity, 2 invalid identity, 3 backend failure), message:string; resolution count:u8 then u16 pairs; FPS count:u8 then u8 values; min/max DPI:u16; default display; audio count:u8 then role:u8, rate:u16, bits:u8, channels:u8. |
 | 28 configure | Client revision:u32 and display. No secrets or paths. |
 | 10 configuration | Revision:u32, accepted:u8, reason:string, validated next display, active session ID:string; active display follows only for a nonempty ID. Revision 0 is initial state. Session changes can notify at the last processed revision. |
+| 11 session metadata | Session ID:string, device ID:string, revision:u32, receive time:u64 (Unix milliseconds, 0 before any metadata); media-present:u8; nullable title/artist/album; playback:u8; nullable application; nullable position/duration:u64 milliseconds; nullable device name/manufacturer/model; battery:u8 (255 unknown, otherwise 0..100), critical:u8 (0 unknown, 1 false, 2 true). Text presence is u8 (0/1) followed by string only when present; nullable numbers use the same presence marker. |
 | 5 audio stream | Existing session/stream IDs, role/active/focus, then selected PCM rate:u16, bits:u8, channels:u8. |
 
 Other message kinds preserve their existing bounded control responsibilities.
-The shared hex fixture in `test/fixtures/projection/ipc_v2_capabilities.hex` is
-checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2 bundles.
+The shared hex fixture in `test/fixtures/projection/ipc_v3_capabilities.hex` is
+checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2/v3 bundles.
 
 HostControl serializes request selection and session freezing through its watch
 state. The USB worker freezes before version negotiation; post-version TLS uses
@@ -212,3 +212,48 @@ adopt a later client request in place. AA discovery, native audio construction
 and session metadata use the same fixed AudioFormat catalog. Playback pipelines,
 wire channel IDs/order, TLS compatibility, input mapping and native rendering
 are unchanged; only native endpoint resolution was adjusted.
+
+
+## Shared media and phone state
+
+`ProjectionSession.metadata` adds immutable `ProjectionSessionMetadata`,
+`MediaDetails` and `PhoneDetails` to the existing session model. The device/session
+IDs remain the association boundary. `ProjectionMediaSource` observes the existing
+ProjectionService and fills an application-owned `CachedMediaSessionService`;
+features use the `MediaSessionService` contract. Its selected media source is
+independent of `ProjectionSnapshot.activeSessionId`: returning to Argo does not
+stop being able to read now-playing state. The adapter currently owns the single
+projection-derived source set; a future multi-provider selector is separate work,
+not an implemented Bluetooth/local-media service.
+
+The daemon's bounded metadata parser handles track replacement separately from
+status/battery patches. It never copies artwork into state. Semantic duplicates
+produce no revision or notification. Each live session has its own revision and
+receive timestamp; the existing unique session ID supplies its epoch. Replacement,
+failure and disconnect discard metadata; session-ID checks reject late updates.
+The current snapshot follows device/session creation on IPC, including when Argo
+attaches late. Malformed optional messages are discarded with one warning per
+session/message type, while unrelated AV handling continues. Bounds remain 64 KiB
+IPC payload and 256 KiB buffered IPC; AA optional parsing respects the existing
+4 MiB message limit, 1024 fields and 1024 UTF-8 bytes per accepted text.
+
+The Media page reads the shared service in a bounded facts panel (up to 104 logical pixels, shrinking with small windows). Metadata
+changes retain the same native platform-view ID and fitted viewport. Expanded
+presentation remains the existing surface path. The regression checks the actual
+PlatformViewLayer ID and destination rectangle before/after a metadata update.
+
+`ArgoHostStateBridge` is constructed before Veloce discovery with an unavailable
+cache, adds its namespace to the manager's **existing** API registry, then attaches
+the projection/media services after composition. The manager, capability catalog
+and manifest loader all know `argo.host.read.v1`. Generation-aware authorization,
+default APIs and Veloce's bounded event queues remain intact. Host reads are
+synchronous cached copies; no IPC or native media call is made from Lua. Reads
+update immediately, while a single 250 ms timer coalesces metadata-free invalidation
+events. Bootstrap registers bridge cleanup before projection shutdown; Veloce also
+closes the bridge idempotently before unloading resources. The Argo-side integration
+was checked against sibling Veloce `d169d4cd6d10c1f38c534f425de83a75f1192ca9`;
+that checkout was not modified.
+
+The [versioned Lua contract](vehicle-integrations.md#read-only-argo-host-state-v1)
+explains freshness, permission and subscription/read ordering. Its data is not
+published on the vehicle signal bus or exposed as CAN telemetry.

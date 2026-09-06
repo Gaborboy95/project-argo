@@ -12,7 +12,7 @@ native audio delivery. The IHS projection-view library decodes video with
 GStreamer and submits native frames to the existing ivi-homescreen compositor.
 Video and PCM do not pass through Dart. AA credentials are loaded only by the
 daemon; the Flutter client reports readiness and selected/pending configuration
-through IPC v2.
+through IPC v3.
 
 ## Current scope
 
@@ -32,9 +32,14 @@ reconnect endurance and live-AA quality at 1:1 are not established. An outstandi
 IHS release-eventfd leak limits long-running EGL projection; no IHS fix is included.
 
 Wireless Android Auto, Bluetooth integration, working microphone capture,
-CarPlay, new metadata APIs, customization and plugin-rendered application tabs
+CarPlay, playback controls, customization and plugin-rendered application tabs
 or settings are not completed features. Some protocol enums and microphone
 channel scaffolding exist; they do not establish end-to-end support.
+
+Read-only AA track/playback and optional phone state now flow through a shared
+media service and permission-checked `argo_host.snapshot()` Lua API. Parser and
+native-Lua fixtures are verified; real-phone metadata/battery acceptance is still
+pending. The Media page provides a small read-only facts panel.
 
 ## Documentation
 

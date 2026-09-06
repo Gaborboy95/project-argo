@@ -1,0 +1,8 @@
+{
+  "id": "dev.example.host_media",
+  "name": "Synthetic Host Media Observer",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "entrypoint": "main.lua",
+  "permissions": ["argo.host.read.v1", "events", "logging"]
+}

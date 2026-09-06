@@ -1,3 +1,7 @@
+import 'package:argo/core/media/media_session_service.dart';
+import 'package:argo/core/media/media_state.dart';
+import 'package:argo/integrations/projection/projection_media_source.dart';
+
 import 'dart:async';
 
 import 'package:argo/core/projection/in_memory_projection_backend.dart';
@@ -249,6 +253,8 @@ void main() {
         initial: _liveSnapshot(stream: stream),
       );
       final service = _DirectProjectionService(backend);
+      final media = CachedMediaSessionService();
+      final mediaSource = ProjectionMediaSource(service, media);
       late SettingsService settings;
       await tester.runAsync(() async {
         settings = await SettingsService.load(
@@ -262,7 +268,7 @@ void main() {
             id: 'media',
             label: 'Media',
             icon: Icons.music_note,
-            builder: (_, _) => MediaPage(projection: service),
+            builder: (_, _) => MediaPage(projection: service, media: media),
           ),
         );
       await tester.pumpWidget(
@@ -277,6 +283,39 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('ARGO'), findsOneWidget);
+      final beforeMetadata = tester.getRect(find.byType(PlatformViewSurface));
+      final nativeId = tester.layers
+          .whereType<PlatformViewLayer>()
+          .single
+          .viewId;
+      backend.emit(
+        _liveSnapshot(
+          stream: stream,
+          metadata: const ProjectionSessionMetadata(
+            revision: 1,
+            updatedAtMs: 1700000000000,
+            media: MediaDetails(
+              title: 'Synthetic track',
+              artist: 'Artist',
+              album: 'Album',
+              playback: MediaPlaybackState.playing,
+              positionMs: 12000,
+            ),
+            phone: PhoneDetails(batteryPercent: 70),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic track'), findsOneWidget);
+      expect(find.text('Artist · Album'), findsOneWidget);
+      expect(find.textContaining('Phone battery 70%'), findsOneWidget);
+      expect(tester.getRect(find.byType(PlatformViewSurface)), beforeMetadata);
+      expect(
+        tester.layers.whereType<PlatformViewLayer>().single.viewId,
+        nativeId,
+      );
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      expect(calls.where((c) => c.method == 'dispose'), isEmpty);
       await tester.tap(find.text('Compare size'));
       await tester.pumpAndSettle();
       expect(calls.where((c) => c.method == 'create'), hasLength(1));
@@ -320,8 +359,12 @@ void main() {
       expect(calls.where((c) => c.method == 'create'), hasLength(1));
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
-      await backend.close();
-      await tester.runAsync(settings.close);
+      await tester.runAsync(() async {
+        await mediaSource.close();
+        await backend.close();
+        await media.close();
+        await settings.close();
+      });
     },
   );
 
@@ -423,24 +466,27 @@ ProjectionVideoStream _mainStream() => ProjectionVideoStream(
   height: 720,
   framesPerSecond: 30,
 );
-ProjectionSnapshot _liveSnapshot({ProjectionVideoStream? stream}) =>
-    ProjectionSnapshot(
-      backendAvailable: true,
-      activeSessionId: 'session',
-      sessions: [
-        ProjectionSession(
-          id: 'session',
-          device: const ProjectionDevice(
-            id: 'phone',
-            displayName: 'Phone',
-            protocol: ProjectionProtocol.androidAuto,
-            transport: ProjectionTransport.usb,
-          ),
-          state: ProjectionSessionState.streaming,
-          videoStreams: [stream ?? _mainStream()],
-        ),
-      ],
-    );
+ProjectionSnapshot _liveSnapshot({
+  ProjectionVideoStream? stream,
+  ProjectionSessionMetadata? metadata,
+}) => ProjectionSnapshot(
+  backendAvailable: true,
+  activeSessionId: 'session',
+  sessions: [
+    ProjectionSession(
+      id: 'session',
+      device: const ProjectionDevice(
+        id: 'phone',
+        displayName: 'Phone',
+        protocol: ProjectionProtocol.androidAuto,
+        transport: ProjectionTransport.usb,
+      ),
+      state: ProjectionSessionState.streaming,
+      videoStreams: [stream ?? _mainStream()],
+      metadata: metadata,
+    ),
+  ],
+);
 Widget _gesturePage(ProjectionService service, {bool active = true}) =>
     MaterialApp(
       home: Center(

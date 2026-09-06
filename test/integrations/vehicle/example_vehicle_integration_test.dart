@@ -1,3 +1,5 @@
+import 'package:argo/integrations/veloce/argo_host_state_bridge.dart';
+
 import 'dart:io';
 
 import 'package:argo/core/vehicle/integration/vehicle_integration_bundle.dart';
@@ -14,7 +16,7 @@ void main() {
   test('example integration exposes a valid Veloce decoder bundle', () async {
     final bundle = await _exampleBundle();
 
-    final discovery = await PluginLoader().discover(
+    final discovery = await ArgoHostStateBridge.loader().discover(
       bundle.velocePluginDirectory,
     );
 
@@ -59,7 +61,7 @@ void main() {
     'example Lua audio policy emits once per normalized rising edge',
     () async {
       final bundle = await _exampleBundle();
-      final manager = PluginManager(
+      final manager = _hostManager(
         pluginRoot: bundle.velocePluginDirectory,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
           libraryPath: nativeLibrary,
@@ -128,7 +130,7 @@ void main() {
     () async {
       final bundle = await _exampleBundle();
       final canProvider = InMemoryCanProvider();
-      final manager = PluginManager(
+      final manager = _hostManager(
         pluginRoot: bundle.velocePluginDirectory,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
           libraryPath: nativeLibrary,
@@ -197,7 +199,7 @@ void main() {
         },
         writesEnabled: false,
       );
-      final manager = PluginManager(
+      final manager = _hostManager(
         pluginRoot: bundle.velocePluginDirectory,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
           libraryPath: nativeLibrary,
@@ -248,7 +250,7 @@ void main() {
     'episode',
     () async {
       final bundle = await _exampleBundle();
-      final manager = PluginManager(
+      final manager = _hostManager(
         pluginRoot: bundle.velocePluginDirectory,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
           libraryPath: nativeLibrary,
@@ -318,7 +320,7 @@ void main() {
     'publishes once per low-voltage episode',
     () async {
       final bundle = await _exampleBundle();
-      final manager = PluginManager(
+      final manager = _hostManager(
         pluginRoot: bundle.velocePluginDirectory,
         runtimeFactory: IsolatedNativeLuaRuntimeFactory(
           libraryPath: nativeLibrary,
@@ -404,4 +406,21 @@ String? _configuredNativeLibrary() {
   if (configured == null || configured.isEmpty) return null;
   final library = File(configured);
   return library.existsSync() ? library.absolute.path : null;
+}
+
+PluginManager _hostManager({
+  required Directory pluginRoot,
+  required PluginScriptRuntimeFactory runtimeFactory,
+  CanProvider? canProvider,
+}) {
+  final manager = PluginManager(
+    pluginRoot: pluginRoot,
+    runtimeFactory: runtimeFactory,
+    canProvider: canProvider,
+    capabilityManager: ArgoHostStateBridge.capabilityManager(),
+    loader: ArgoHostStateBridge.loader(),
+  );
+  final bridge = ArgoHostStateBridge()..register(manager);
+  addTearDown(bridge.close);
+  return manager;
 }

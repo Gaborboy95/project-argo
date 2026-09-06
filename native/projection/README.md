@@ -25,7 +25,7 @@ GStreamer/PipeWire pipelines and metadata-only Argo focus gains.
 No Android Auto certificate or private key is included. The hardware-proven
 USB/version path now continues into memory TLS 1.2, service discovery and AV
 channels. Identity files are configured and loaded only by the daemon, under the existing
-TLS compatibility checks. IPC v2 carries readiness/capabilities and revisioned
+TLS compatibility checks. IPC v3 carries readiness/capabilities and revisioned
 display requests, never client credential paths. Active phone configuration is
 frozen; later Argo preferences apply on the next phone connection.
 Read the runbook's narrow USB peer-trust policy before deployment.

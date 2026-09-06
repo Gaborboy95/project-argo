@@ -192,7 +192,7 @@ VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
 The example uses the generic vehicle profile and an empty plugin root. Android
 Auto does not depend on a vehicle profile. Identity paths are configured **only
 on the daemon**; both variables are explicitly unset for homescreen above. Argo
-never opens/parses the key and IPC v2 has no client identity fields. Inherited
+never opens/parses the key and IPC v3 has no client identity fields. Inherited
 identity variables are ignored by Dart. Both processes resolve the same control
 and media defaults from XDG_RUNTIME_DIR, or /run/argo without it; explicit paths
 above make the two-terminal relationship clear. Empty/invalid overrides fail.
@@ -521,10 +521,10 @@ tests, Clippy with warnings denied, and the release daemon build. The existing
 wire fixture emitted no routine packet/ping metadata at default/INFO and restored
 that metadata at TRACE. Flutter Engine and IHS were not rebuilt.
 
-## Configuration ownership acceptance (IPC v2)
+## Configuration ownership acceptance (IPC v3)
 
 Rebuild the daemon and bundle using the commands above. Stop previous owned
-processes before staging; this is an incompatible v1→v2 control change. Do not
+processes before staging; this is an incompatible v1/v2→v3 control change. Do not
 regenerate credentials. Use the **same existing identity** only in terminal 1;
 terminal 2 explicitly unsets both identity variables. No phone session may have
 started before the request if you want it to use Argo's saved configuration;
@@ -564,3 +564,133 @@ Missing/invalid daemon identity still permits the control UI to report capabilit
 and an actionable error. Correct daemon configuration and restart it; there is no
 automatic daemon spawning/reconnect supervisor. A second control client receives
 an ownership error instead of racing the first client's preferences.
+
+## Host metadata and Lua acceptance (IPC v3)
+
+This revision advertises read-only media status on runtime channel **10** using
+service descriptor field 9. Existing video/audio/input descriptors and TLS remain
+unchanged. Rebuild both Argo and daemon: IPC v3 explicitly rejects v1/v2 peers.
+The earlier configuration-ownership workflow still applies with matching v3 builds.
+
+Wire references were inspected, not copied/vendored: public
+[media channel notes](https://github.com/mrmees/open-android-auto/blob/main/docs/channels/media.md),
+[playback status schema](https://github.com/mrmees/open-android-auto/blob/main/oaa/media/MediaPlaybackStatusMessage.proto),
+[track schema](https://github.com/mrmees/open-android-auto/blob/main/oaa/media/MediaPlaybackMetadataMessage.proto),
+[battery schema](https://github.com/mrmees/open-android-auto/blob/main/oaa/control/BatteryStatusMessage.proto),
+and [discovery request schema](https://github.com/mrmees/open-android-auto/blob/main/oaa/control/ServiceDiscoveryRequestMessage.proto).
+These are public reverse-engineered references, not Google certification or
+acceptance on this VM's phone. Argo's bounded reader is implemented independently.
+
+| Message | Fields handled / semantics |
+|---|---|
+| Media channel `0x8001` | Playback enum field 1 (unknown/stopped/playing/paused/error), optional application field 2, optional position field 3 (seconds → milliseconds). Independent status patch. |
+| Media channel `0x8003` | Optional title/artist/album fields 1/2/3 replace the previous track description; omitted artist/album clear old values. Artwork field 4 and unknown fields are skipped without copying into state/IPC. A changed track clears the old reported position. |
+| Control `0x17` | Optional battery percentage field 1 (0..100) and critical-battery boolean field 3. Independent patches; omitted fields stay unknown or retain their last explicitly reported value within this session. Discharge-time field 2 is unused. |
+| Control discovery `0x05` | Optional phone display name field 4 and brand/manufacturer field 5. Icon blobs and session-info internals are skipped. No model inferred from USB identity. |
+
+The inspected phone-sourced schema does **not** establish duration semantics for
+its unknown fields. Duration is supported as a nullable application/IPC/API value
+but remains unknown for this AA provider. A duration field in a different
+CarLocalMedia service must not be reused here. Model and charging also remain
+unknown. Sparse positions are not interpolated. A changed known application
+clears prior track details while awaiting that application's metadata. Malformed
+optional messages retain the prior valid snapshot/receive time and are discarded
+without failing video/audio; warnings are bounded per session/message type.
+
+### Build and synthetic native-Lua check
+
+First stop owned homescreen and daemon processes; do not overwrite their running
+artifacts. Use the [native view/bundle build commands](#build-the-native-view-and-argo-bundle)
+for the existing `argo-release-x86_64` bundle, and build the daemon:
+
+```bash
+set -euo pipefail
+export ARGO="$HOME/dev/argo"
+if pgrep -u "$UID" -x homescreen >/dev/null || \
+   pgrep -u "$UID" -f '(^|/)argo-projectiond([[:space:]]|$)' >/dev/null; then
+  echo 'Stop your existing homescreen and daemon before rebuilding/staging.' >&2
+  exit 1
+fi
+source "$HOME/.cargo/env"
+cargo build --manifest-path "$ARGO/native/projection/argo-projectiond/Cargo.toml" \
+  --release --features linux-usb,linux-media --offline
+export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+source "$FLUTTER_WORKSPACE/setup_env.sh"
+cd "$ARGO"
+VELOCE_LUA_LIBRARY="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64/lib/libveloce_lua_native.so" \
+  flutter test --no-pub test/integrations/veloce/argo_host_state_bridge_test.dart
+```
+
+This test uses the real isolated native Lua runtime with a fake source: immediate
+current read, coalesced invalidation, forged-hint resistance, undeclared permission,
+reload, stale generation and disconnect/unload cleanup. It is **not phone
+acceptance**. No engine/IHS rebuild or phone is needed for that exercise.
+
+### Real phone and observer
+
+Start the daemon using [terminal 1](#one-real-device-workflow), keeping existing
+identity files only there. With homescreen stopped, use this terminal 2 instead
+of the empty-plugin example. It installs only the synthetic observer, with the
+**generic** profile and no example CAN or vehicle-policy plugins:
+
+```bash
+set -euo pipefail
+export ARGO="$HOME/dev/argo"
+export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
+export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+source "$FLUTTER_WORKSPACE/setup_env.sh"
+: "${XDG_RUNTIME_DIR:?Run in your desktop login session}"
+if pgrep -u "$UID" -x homescreen >/dev/null; then
+  echo 'Stop homescreen before staging the observer.' >&2
+  exit 1
+fi
+unset ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
+unset ARGO_SIMULATION_SCENARIO ARGO_VEHICLE_INTEGRATIONS_DIR VELOCE_CAN_INPUT
+export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock"
+export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo/projection-video.sock"
+export VELOCE_PLUGIN_DIR="$HOME/.local/share/project-argo/host-media-demo"
+install -d -m 700 "$VELOCE_PLUGIN_DIR/host_media"
+install -m 600 "$ARGO/tool/vehicle_integrations/example-vehicle/plugins/host_media/manifest.json" \
+  "$VELOCE_PLUGIN_DIR/host_media/manifest.json"
+install -m 600 "$ARGO/tool/vehicle_integrations/example-vehicle/plugins/host_media/main.lua" \
+  "$VELOCE_PLUGIN_DIR/host_media/main.lua"
+export ARGO_PROJECTION_RENDER_TEST=0 ARGO_PROJECTION_BACKEND=android-auto
+export ARGO_MODE=simulation ARGO_VEHICLE_PROFILE=generic
+export ARGO_HOST_POWER_BACKEND=disabled ARGO_AUDIO_BACKEND=pipewire
+export ARGO_HOST_STATE_DIAGNOSTICS=1
+export LD_LIBRARY_PATH="$IHS_PREFIX/lib:$BUNDLE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so"
+"$IHS_PREFIX/bin/homescreen" -b "$BUNDLE" --backend wayland-egl --width=1280 --height=720 \
+  2>&1 | tee /tmp/argo-host-media.log
+```
+
+1. Connect the phone and play a track. Compare Media's title/artist/playback with
+   the explicitly enabled `[Argo host observer ...]` DEBUG summary in terminal 2.
+   Wait at least three seconds per observation because diagnostic output coalesces;
+   cached reads are immediate. No playback buttons are provided.
+2. Change track, pause/resume and verify both consumers. Artist/album must not
+   linger from the preceding track when omitted. Position may be sparse; duration
+   remains unknown until a verified provider supplies it.
+3. Reload only the external synthetic resource while the phone stays connected:
+
+   ```bash
+   observer_file="$HOME/.local/share/project-argo/host-media-demo/host_media/main.lua"
+   printf '\n-- Synthetic observer reload check.\n' >> "$observer_file"
+   ```
+
+   Veloce's existing watcher coalesces the save and reloads its generation. The
+   freshly loaded observer immediately logs current state without waiting for a
+   new track. No new AA session is created.
+4. Disconnect. Argo and the observer must lose obsolete live track/phone state.
+   Record whether this particular phone supplied battery percentage/critical state;
+   absent battery does not fail media acceptance. Charging is unknown.
+5. Stop owned processes normally. Keep manual rendering short and stop immediately
+   on the known IHS release-eventfd/FD-exhaustion warning; do not raise limits or
+   infer endurance from successful metadata reads. The phone-independent renderer
+   launcher remains `tool/projection/run_renderer_test.sh` and clears these options.
+
+Turn off `ARGO_HOST_STATE_DIAGNOSTICS` after this deliberate check; logs can contain
+private track/device text. Only explicitly installed, host-read-authorized Lua
+resources can read the API; public invalidation events carry no such text.
+See the [exact Lua fields/permissions](../../docs/vehicle-integrations.md#read-only-argo-host-state-v1).
