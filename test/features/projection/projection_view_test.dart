@@ -9,6 +9,7 @@ import 'package:argo/core/projection/projection_models.dart';
 import 'package:argo/core/projection/projection_service.dart';
 import 'package:argo/core/projection/projection_types.dart';
 import 'package:argo/features/projection/projection_view.dart';
+import 'package:argo/features/projection/projection_page.dart';
 import 'package:argo/features/projection/projection_input_scope.dart';
 import 'package:argo/app/argo_environment.dart';
 import 'package:argo/app/navigation/app_module.dart';
@@ -218,7 +219,7 @@ void main() {
   );
 
   testWidgets(
-    'expanded render and touch share a fitted rectangle at non-unit DPR',
+    'Home owns one fullscreen layer across metadata, phone Exit and same-session resume',
     (tester) async {
       tester.view.devicePixelRatio = 2;
       tester.view.physicalSize = const Size(1600, 1200);
@@ -238,7 +239,8 @@ void main() {
           null,
         ),
       );
-      final stream = ProjectionVideoStream(
+      ProjectionVideoStream streamAt(int revision) => ProjectionVideoStream(
+        presentationRevision: revision,
         id: 'main',
         sessionId: 'session',
         role: ProjectionVideoRole.main,
@@ -249,20 +251,26 @@ void main() {
         contentInsets: const ProjectionInsets(left: 80, right: 80),
         safeInsets: const ProjectionInsets(left: 40, top: 20),
       );
+      final stream = streamAt(0);
       final backend = InMemoryProjectionBackend(
         initial: _liveSnapshot(stream: stream),
       );
       final service = _DirectProjectionService(backend);
       final media = CachedMediaSessionService();
       final mediaSource = ProjectionMediaSource(service, media);
-      late SettingsService settings;
-      await tester.runAsync(() async {
-        settings = await SettingsService.load(
-          schema: AppSettingKeys.createSchema(),
-          store: _GeometryStore(),
-        );
-      });
+      final settings = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: _GeometryStore(),
+      );
       final modules = AppModuleRegistry()
+        ..register(
+          AppModule(
+            id: 'home',
+            label: 'Home',
+            icon: Icons.home,
+            builder: (_, _) => ProjectionPage(projection: service),
+          ),
+        )
         ..register(
           AppModule(
             id: 'media',
@@ -275,67 +283,53 @@ void main() {
         MaterialApp(
           home: AppShell(
             environment: ArgoEnvironment(
-              services: ServiceRegistry()..register(settings),
+              services: ServiceRegistry()
+                ..register(settings)
+                ..register<ProjectionService>(service),
               moduleRegistry: modules,
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
+      expect(service.activations, ['session']);
       expect(find.text('ARGO'), findsOneWidget);
-      final beforeMetadata = tester.getRect(find.byType(PlatformViewSurface));
+      expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
+      const metadata = ProjectionSessionMetadata(
+        revision: 1,
+        updatedAtMs: 1700000000000,
+        media: MediaDetails(
+          title: 'Synthetic track',
+          artist: 'Artist',
+          album: 'Album',
+          playback: MediaPlaybackState.playing,
+          positionMs: 12000,
+        ),
+        phone: PhoneDetails(batteryPercent: 70),
+      );
+      backend.emit(_liveSnapshot(stream: streamAt(1), metadata: metadata));
+      await tester.pumpAndSettle();
+      expect(find.text('ARGO'), findsNothing);
       final nativeId = tester.layers
           .whereType<PlatformViewLayer>()
           .single
           .viewId;
-      backend.emit(
-        _liveSnapshot(
-          stream: stream,
-          metadata: const ProjectionSessionMetadata(
-            revision: 1,
-            updatedAtMs: 1700000000000,
-            media: MediaDetails(
-              title: 'Synthetic track',
-              artist: 'Artist',
-              album: 'Album',
-              playback: MediaPlaybackState.playing,
-              positionMs: 12000,
-            ),
-            phone: PhoneDetails(batteryPercent: 70),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Synthetic track'), findsOneWidget);
-      expect(find.text('Artist · Album'), findsOneWidget);
-      expect(find.textContaining('Phone battery 70%'), findsOneWidget);
-      expect(tester.getRect(find.byType(PlatformViewSurface)), beforeMetadata);
-      expect(
-        tester.layers.whereType<PlatformViewLayer>().single.viewId,
-        nativeId,
-      );
-      expect(calls.where((c) => c.method == 'create'), hasLength(1));
-      expect(calls.where((c) => c.method == 'dispose'), isEmpty);
-      await tester.tap(find.text('Compare size'));
-      await tester.pumpAndSettle();
-      expect(calls.where((c) => c.method == 'create'), hasLength(1));
-      expect(find.text('ARGO'), findsNothing);
+      expect(tester.layers.whereType<TextureLayer>(), isEmpty);
       final fitted = const ProjectionViewGeometry(
         width: 800,
         height: 600,
         devicePixelRatio: 2,
-        preferPhysicalPixels: true,
       ).fit(1280, 720)!;
-      expect(fitted.isOneToOne, isTrue);
       expect(
         tester.getRect(find.byType(PlatformViewSurface)),
         Rect.fromLTWH(fitted.left, fitted.top, fitted.width, fitted.height),
       );
-      expect(fitted.physicalWidth, 1280);
-      expect(fitted.physicalHeight, 720);
-      expect(find.textContaining('1:1 physical pixels'), findsOneWidget);
+      expect(fitted.physicalWidth, 1600);
       final pointer = await tester.startGesture(
-        Offset(fitted.left + (80 + 1120 * 0.25) / 2, fitted.top + 360 / 2),
+        Offset(
+          fitted.left + (80 + 1120 * 0.25) * fitted.width / 1280,
+          fitted.top + fitted.height / 2,
+        ),
       );
       await pointer.up();
       await tester.pump();
@@ -345,26 +339,244 @@ void main() {
       await bars.up();
       await tester.pump();
       expect(backend.touches, hasLength(2));
+      final held = await tester.startGesture(const Offset(400, 300));
+      await tester.pump();
+      // A transient stop alone must not navigate. The explicit phone intent does.
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(1),
+          metadata: metadata,
+          state: ProjectionSessionState.suspended,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('ARGO'), findsOneWidget);
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(1),
+          metadata: metadata,
+          state: ProjectionSessionState.suspended,
+          hostReturnRevision: 1,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Now Playing'), findsOneWidget);
+      expect(find.text('Synthetic track'), findsOneWidget);
+      expect(find.text('Artist · Album'), findsOneWidget);
+      expect(find.textContaining('Phone battery 70%'), findsOneWidget);
+      expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
+      expect(backend.touches.last.phase, ProjectionTouchPhase.cancel);
+      await held.up();
+      await tester.pump();
+      expect(
+        backend.touches.where((t) => t.phase == ProjectionTouchPhase.cancel),
+        hasLength(1),
+      );
+      expect(service.activations, ['session']);
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      expect(calls.where((c) => c.method == 'dispose'), isEmpty);
+      service.activationHold = Completer<void>();
+      await tester.tap(find.text('Home'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Home'),
+      ); // explicit repeated Home, coalesced while in flight
+      await tester.pump();
+      expect(service.activations, ['session', 'session']);
+      service.activationHold!.complete();
+      await tester.pump();
+      await tester.tap(
+        find.text('Home'),
+      ); // already selected, request again after completion
+      await tester.pump();
+      expect(service.activations, ['session', 'session', 'session']);
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(2),
+          metadata: metadata,
+          hostReturnRevision: 1,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.layers.whereType<PlatformViewLayer>().single.viewId,
+        nativeId,
+      );
+      expect(service.connections, isEmpty);
       tester.view.physicalSize = const Size(1000, 700);
       await tester.pumpAndSettle();
-      expect(find.textContaining('1:1 physical pixels'), findsNothing);
-      expect(find.textContaining('scaled to fit'), findsOneWidget);
       expect(
         tester.getSize(find.byType(PlatformViewSurface)),
         const Size(500, 281.25),
       );
-      await tester.tap(find.text('Back to Argo'));
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(2),
+          metadata: metadata,
+          state: ProjectionSessionState.suspended,
+          hostReturnRevision: 2,
+        ),
+      );
       await tester.pumpAndSettle();
-      expect(find.text('Compare size'), findsOneWidget);
+      expect(find.text('Now Playing'), findsOneWidget);
+      // A delayed phone request on Media must not re-activate or navigate.
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(2),
+          metadata: metadata,
+          hostReturnRevision: 3,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Now Playing'), findsOneWidget);
+      expect(service.activations, hasLength(3));
       expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      backend.emit(ProjectionSnapshot(backendAvailable: true));
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic track'), findsNothing);
+      expect(calls.where((c) => c.method == 'dispose'), hasLength(1));
+      await tester.tap(find.text('Home'));
+      await tester.pumpAndSettle();
+      expect(find.text('Back to Argo'), findsNothing);
+      expect(find.text('ARGO'), findsOneWidget);
+      expect(find.text('No device'), findsOneWidget);
+      expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
+      await settings.close();
       await tester.runAsync(() async {
         await mediaSource.close();
         await backend.close();
         await media.close();
-        await settings.close();
       });
+    },
+  );
+
+  testWidgets(
+    'old session events and activation errors cannot take replacement ownership',
+    (tester) async {
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views,
+        (call) async {
+          calls.add(call);
+          return call.method == 'create' ? (call.arguments as Map)['id'] : null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform_views,
+          null,
+        ),
+      );
+      final backend = InMemoryProjectionBackend(initial: _liveSnapshot());
+      final service = _DirectProjectionService(backend)
+        ..activationHold = Completer<void>();
+      final settings = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: _GeometryStore(),
+      );
+      final modules = AppModuleRegistry()
+        ..register(
+          AppModule(
+            id: 'home',
+            label: 'Home',
+            icon: Icons.home,
+            builder: (_, _) => ProjectionPage(projection: service),
+          ),
+        )
+        ..register(
+          AppModule(
+            id: 'media',
+            label: 'Media',
+            icon: Icons.music_note,
+            builder: (_, _) => MediaPage(projection: service),
+          ),
+        );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(
+            environment: ArgoEnvironment(
+              services: ServiceRegistry()
+                ..register(settings)
+                ..register<ProjectionService>(service),
+              moduleRegistry: modules,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final replacement = ProjectionSession(
+        id: 'replacement',
+        device: _liveSnapshot().sessions.single.device,
+        state: ProjectionSessionState.streaming,
+        videoStreams: [
+          ProjectionVideoStream(
+            id: 'replacement:main',
+            sessionId: 'replacement',
+            role: ProjectionVideoRole.main,
+            codec: ProjectionVideoCodec.h264,
+            width: 1280,
+            height: 720,
+            framesPerSecond: 30,
+          ),
+        ],
+      );
+      backend.emit(
+        ProjectionSnapshot(
+          backendAvailable: true,
+          activeSessionId: replacement.id,
+          sessions: [replacement],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final id = tester.layers.whereType<PlatformViewLayer>().single.viewId;
+      service.activationHold!.completeError(StateError('old session gone'));
+      await tester.pumpAndSettle();
+      backend.emit(
+        ProjectionSnapshot(
+          backendAvailable: true,
+          activeSessionId: replacement.id,
+          sessions: [
+            replacement,
+            _liveSnapshot(hostReturnRevision: 9).sessions.single,
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('ARGO'), findsNothing);
+      expect(find.textContaining('old session gone'), findsNothing);
+      expect(tester.layers.whereType<PlatformViewLayer>().single.viewId, id);
+      expect(service.activations, ['session']);
+      expect(
+        service.visibility,
+        isEmpty,
+      ); // retired surface never sends a stale hide
+      backend.emit(
+        ProjectionSnapshot(
+          backendAvailable: true,
+          activeSessionId: replacement.id,
+          sessions: [
+            ProjectionSession(
+              id: replacement.id,
+              device: replacement.device,
+              state: ProjectionSessionState.suspended,
+              videoStreams: replacement.videoStreams,
+              hostReturnRevision: 1,
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Now Playing'), findsOneWidget);
+      expect(service.visibility, isEmpty);
+      expect(calls.where((c) => c.method == 'create'), hasLength(2));
+      expect(calls.where((c) => c.method == 'dispose'), hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(calls.where((c) => c.method == 'dispose'), hasLength(2));
+      await settings.close();
+      await tester.runAsync(backend.close);
     },
   );
 
@@ -424,17 +636,27 @@ void main() {
 final class _DirectProjectionService implements ProjectionService {
   _DirectProjectionService(this.backend);
   final InMemoryProjectionBackend backend;
-  Completer<void>? hold;
+  Completer<void>? hold, activationHold;
+  final activations = <String>[];
+  final connections = <String>[];
+  final visibility = <(String, bool)>[];
   @override
   ProjectionSnapshot get current => backend.current;
   @override
   Stream<ProjectionSnapshot> get changes => backend.changes;
   @override
-  Future<void> activate(String sessionId) => backend.activate(sessionId);
+  Future<void> activate(String sessionId) async {
+    activations.add(sessionId);
+    await activationHold?.future;
+  }
+
   @override
   Future<void> close() => backend.close();
   @override
-  Future<void> connect(String deviceId) => backend.connect(deviceId);
+  Future<void> connect(String deviceId) async {
+    connections.add(deviceId);
+  }
+
   @override
   Future<void> disconnect(String sessionId) => backend.disconnect(sessionId);
   @override
@@ -453,8 +675,9 @@ final class _DirectProjectionService implements ProjectionService {
   }
 
   @override
-  Future<void> setVideoVisibility(String streamId, bool visible) =>
-      backend.setVideoVisibility(streamId, visible);
+  Future<void> setVideoVisibility(String streamId, bool visible) async {
+    visibility.add((streamId, visible));
+  }
 }
 
 ProjectionVideoStream _mainStream() => ProjectionVideoStream(
@@ -469,6 +692,8 @@ ProjectionVideoStream _mainStream() => ProjectionVideoStream(
 ProjectionSnapshot _liveSnapshot({
   ProjectionVideoStream? stream,
   ProjectionSessionMetadata? metadata,
+  ProjectionSessionState state = ProjectionSessionState.streaming,
+  int hostReturnRevision = 0,
 }) => ProjectionSnapshot(
   backendAvailable: true,
   activeSessionId: 'session',
@@ -481,7 +706,8 @@ ProjectionSnapshot _liveSnapshot({
         protocol: ProjectionProtocol.androidAuto,
         transport: ProjectionTransport.usb,
       ),
-      state: ProjectionSessionState.streaming,
+      state: state,
+      hostReturnRevision: hostReturnRevision,
       videoStreams: [stream ?? _mainStream()],
       metadata: metadata,
     ),

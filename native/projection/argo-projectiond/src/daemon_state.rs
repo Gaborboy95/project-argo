@@ -51,6 +51,8 @@ pub struct ProjectionRuntimeSnapshot {
     pub session: Option<ProjectionSessionStatusSnapshot>,
     pub video: Option<(crate::aa_channels::DisplayConfig, bool)>,
     pub audio: [bool; 3],
+    pub host_return_revision: u32,
+    pub presentation_revision: u32,
     pub metadata: crate::metadata::Snapshot,
 }
 
@@ -69,6 +71,8 @@ impl ProjectionRuntimeSnapshot {
             }),
             video: None,
             audio: [false; 3],
+            host_return_revision: 0,
+            presentation_revision: 0,
             metadata: Default::default(),
         }
     }
@@ -126,10 +130,11 @@ pub fn snapshot_messages(
     {
         messages.push(device_message(device)?);
     }
-    if previous.session != current.session
+    if (previous.session != current.session
+        || previous.host_return_revision != current.host_return_revision)
         && let Some(session) = current.session.as_ref()
     {
-        messages.push(session_message(session)?);
+        messages.push(session_message(session, current.host_return_revision)?);
     }
     if let Some(session) = current.session.as_ref() {
         if previous.metadata != current.metadata
@@ -138,7 +143,9 @@ pub fn snapshot_messages(
             messages.push(current.metadata.message(&session.id, &session.device_id)?);
         }
         if let Some((display, visible)) = &current.video
-            && (previous.video != current.video || previous.session != current.session)
+            && (previous.video != current.video
+                || previous.session != current.session
+                || previous.presentation_revision != current.presentation_revision)
         {
             let mut writer = PayloadWriter::default();
             writer.string(&session.id)?;
@@ -153,6 +160,7 @@ pub fn snapshot_messages(
             }
             writer.u8(u8::from(*visible));
             writer.u8(u8::from(*visible));
+            writer.u32(current.presentation_revision);
             messages.push(Message {
                 kind: 4,
                 payload: writer.finish(),
@@ -194,12 +202,16 @@ fn device_message(device: &ProjectionDeviceStatus) -> Result<Message, DecodeErro
     })
 }
 
-fn session_message(session: &ProjectionSessionStatusSnapshot) -> Result<Message, DecodeError> {
+fn session_message(
+    session: &ProjectionSessionStatusSnapshot,
+    host_return_revision: u32,
+) -> Result<Message, DecodeError> {
     let mut writer = PayloadWriter::default();
     writer.string(&session.id)?;
     writer.string(&session.device_id)?;
     writer.u8(session.state.wire_value());
     writer.string(session.failure.as_deref().unwrap_or_default())?;
+    writer.u32(host_return_revision);
     Ok(Message {
         kind: IPC_SESSION,
         payload: writer.finish(),
@@ -233,6 +245,26 @@ mod tests {
                 .map(|message| message.kind)
                 .collect::<Vec<_>>(),
             vec![IPC_DEVICE, IPC_SESSION, 11]
+        );
+
+        let message = session_message(
+            &ProjectionSessionStatusSnapshot {
+                id: "aa-wired:device".into(),
+                device_id: "device".into(),
+                state: ProjectionSessionStatus::Suspended,
+                failure: None,
+            },
+            1,
+        )
+        .unwrap();
+        let actual = crate::ipc::encode(&message)
+            .unwrap()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            actual,
+            include_str!("../../../../test/fixtures/projection/ipc_v4_host_return.hex").trim()
         );
 
         let ready = connecting.clone().ready();

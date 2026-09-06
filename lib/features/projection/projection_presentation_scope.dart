@@ -1,19 +1,20 @@
 import 'package:flutter/widgets.dart';
 
-/// A local shell layout toggle, not another projection session or surface.
+/// Application-owned presentation readiness. Neither the service nor native view
+/// knows which Argo destination owns presentation.
 class ProjectionPresentationScope extends InheritedWidget {
   const ProjectionPresentationScope({
     super.key,
-    required this.expanded,
-    required this.setExpanded,
+    required this.waiting,
+    this.error,
     required super.child,
   });
-  final bool expanded;
-  final ValueChanged<bool> setExpanded;
+  final bool waiting;
+  final String? error;
 
   static ProjectionPresentationScope? of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<ProjectionPresentationScope>();
   @override
   bool updateShouldNotify(ProjectionPresentationScope oldWidget) =>
-      expanded != oldWidget.expanded;
+      waiting != oldWidget.waiting || error != oldWidget.error;
 }

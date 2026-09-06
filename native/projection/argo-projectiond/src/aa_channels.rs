@@ -254,6 +254,7 @@ impl Reply {
 pub enum Effect {
     Reply(Reply),
     Video(bool),
+    HostReturn,
     Audio(u8, bool),
     Media(u8, Vec<u8>),
     End,
@@ -266,6 +267,8 @@ pub struct Channels {
     sessions: BTreeMap<u8, u64>,
     pointers: BTreeMap<u16, (u32, u32)>,
     discovered: bool,
+    // Explicit host/phone return remains in effect until a host activation.
+    video_requested: bool,
     metadata_warnings: BTreeSet<(u8, u16)>,
 }
 impl Channels {
@@ -277,9 +280,14 @@ impl Channels {
             sessions: BTreeMap::new(),
             pointers: BTreeMap::new(),
             discovered: false,
+            video_requested: true,
             metadata_warnings: BTreeSet::new(),
         }
     }
+    pub fn set_video_requested(&mut self, requested: bool) {
+        self.video_requested = requested;
+    }
+
     pub fn handle(&mut self, channel: u8, id: u16, body: &[u8]) -> Result<Vec<Effect>, String> {
         let reply = |ch, id, body| Effect::Reply(Reply::new(ch, id, body));
         if id <= 1 && (3..=6).contains(&channel) {
@@ -540,11 +548,14 @@ impl Channels {
                     }
                     if channel == 3 {
                         vec![
-                            Effect::Video(true),
+                            Effect::Video(self.video_requested),
                             reply(
                                 3,
                                 0x8008,
-                                Proto::default().number(1, 1).number(2, 0).finish(),
+                                Proto::default()
+                                    .number(1, if self.video_requested { 1 } else { 2 })
+                                    .number(2, 0)
+                                    .finish(),
                             ),
                         ]
                     } else {
@@ -562,8 +573,19 @@ impl Channels {
                     }
                 }
                 0x8007 if channel == 3 => {
-                    let focused = number(2) == Some(1);
-                    vec![
+                    let mode = number(2);
+                    if mode == Some(2) {
+                        self.video_requested = false;
+                    }
+                    let focused = mode == Some(1) && self.video_requested;
+                    crate::daemon_log!(
+                        Debug,
+                        "aa-focus",
+                        "phone request mode={mode:?} reason={:?} host_allows_video={} reply_focused={focused}",
+                        number(3),
+                        self.video_requested
+                    );
+                    let mut effects = vec![
                         reply(
                             3,
                             0x8008,
@@ -573,7 +595,13 @@ impl Channels {
                                 .finish(),
                         ),
                         Effect::Video(focused),
-                    ]
+                    ];
+                    // Explicit UNFOCUSED request; missing/unknown modes and AV
+                    // STOP are not evidence of a request to return to the host.
+                    if number(2) == Some(2) {
+                        effects.push(Effect::HostReturn);
+                    }
+                    effects
                 }
                 _ => vec![],
             });

@@ -27,8 +27,23 @@ subscriptions/controllers local to their presentation.
 Climate, Parking, Media and Settings. The shell retains pages in an IndexedStack.
 Navigation away is not disposal. ProjectionInputScope explicitly communicates
 input ownership; hiding projection, replacing a session/stream and changing
-presentation geometry cancel accepted gestures. Expanded mode reuses the native
-view through stable widget ownership rather than opening another session.
+presentation geometry cancel accepted gestures. Stable `home` composes
+[ProjectionPage](../lib/features/projection/projection_page.dart); `media` composes
+native Now Playing. AppShell removes its chrome only while Home has usable video and supplies small
+presentation callbacks, with no page/navigation concepts in ProjectionService,
+Rust or Veloce. Explicit Home actions request activation (including repeated Home);
+builds and metadata never do. Activation writes are coalesced while in flight.
+
+ProjectionPage alone owns the native view. Offstage removes its layer and input
+while retaining the controller across host navigation; session/stream identity
+keys replace it on a true replacement. Media has no native consumer. ProjectionView
+cancels gestures on ownership loss but no longer sends focus commands from
+creation/update/disposal. Navigation owns hides, guarded against later Home actions
+and old session IDs. Active video uses an unobstructed, aspect-fitted viewport
+with black letterboxing. AA Exit returns to Media. Unavailable/waiting video has
+no PlatformViewLayer: Home shows centered connection status with normal shell
+navigation. The renderer diagnostic also has no floating controls; stop it from
+its launcher terminal.
 
 ## Three different kinds of state
 
@@ -79,12 +94,26 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v3 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v4 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
 loads them from its environment. The native video feed is separately framed/bounded. Argo connects to an already
 running daemon and does not provide automatic daemon respawn supervision.
+
+IPC v4 appends a u32 host-return revision to session messages (kind 3), and a
+u32 presentation revision to video messages (kind 4). Both are session-scoped,
+start at zero and use network byte order. Explicit phone UNFOCUSED requests advance
+the first; AV stop does not. The application compares revisions only for the same
+session and only navigates from its owned Home presentation. An initial historical
+revision is state, not a navigation command. Video revisions survive coalesced daemon
+watch snapshots: Home waits for a newer visible revision after requesting activation.
+Explicit Home activation keeps the existing focus-indication wire layout. After
+a phone Exit or host hide, the daemon now keeps video permission off until Home
+requests it again: late phone focus requests/video starts are answered without
+granting presentation. Touch events do not change that permission. Local activation alone no longer
+marks video streaming; incoming native video data ends the waiting state. This is
+not a decoded-frame/display acknowledgement. No native media bytes enter this IPC.
 
 The shared presentation path is:
 
@@ -171,7 +200,7 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
-## Projection configuration ownership (IPC v3)
+## Projection configuration ownership (IPC v4)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -201,7 +230,7 @@ height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
 | 5 audio stream | Existing session/stream IDs, role/active/focus, then selected PCM rate:u16, bits:u8, channels:u8. |
 
 Other message kinds preserve their existing bounded control responsibilities.
-The shared hex fixture in `test/fixtures/projection/ipc_v3_capabilities.hex` is
+The shared hex fixture in `test/fixtures/projection/ipc_v4_capabilities.hex` is
 checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2/v3 bundles.
 
 HostControl serializes request selection and session freezing through its watch
@@ -237,10 +266,10 @@ session/message type, while unrelated AV handling continues. Bounds remain 64 Ki
 IPC payload and 256 KiB buffered IPC; AA optional parsing respects the existing
 4 MiB message limit, 1024 fields and 1024 UTF-8 bytes per accepted text.
 
-The Media page reads the shared service in a bounded facts panel (up to 104 logical pixels, shrinking with small windows). Metadata
-changes retain the same native platform-view ID and fitted viewport. Expanded
-presentation remains the existing surface path. The regression checks the actual
-PlatformViewLayer ID and destination rectangle before/after a metadata update.
+Media reads shared state in a scrollable Now Playing layout with a neutral artwork
+placeholder, track facts and optional phone battery. It owns no session state or
+native video. Suspension/host return retain metadata and audio. The layer regression
+checks the same native ID across metadata, host navigation and resume.
 
 `ArgoHostStateBridge` is constructed before Veloce discovery with an unavailable
 cache, adds its namespace to the manager's **existing** API registry, then attaches

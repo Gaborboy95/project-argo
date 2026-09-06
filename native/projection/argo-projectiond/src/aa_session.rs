@@ -167,6 +167,7 @@ pub async fn run(
     let clock = Instant::now();
     let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
 
+    let mut awaiting_video = false;
     let mut streaming = false;
     let mut ping_enabled = false;
 
@@ -248,11 +249,26 @@ pub async fn run(
                     Effect::Metadata(update) => {
                         state.send_if_modified(|snapshot| snapshot.update_metadata(&id, update));
                     }
-                    Effect::Media(3, bytes) => media
-                        .video
-                        .as_ref()
-                        .ok_or("video feed closed")?
-                        .push(bytes)?,
+                    Effect::Media(3, bytes) => {
+                        media
+                            .video
+                            .as_ref()
+                            .ok_or("video feed closed")?
+                            .push(bytes)?;
+                        if awaiting_video {
+                            awaiting_video = false;
+                            set_visibility(&state, &id, true);
+                        }
+                    }
+                    Effect::HostReturn => {
+                        awaiting_video = false;
+                        state.send_modify(|snapshot| {
+                            if snapshot.session.as_ref().is_some_and(|s| s.id == id) {
+                                snapshot.host_return_revision =
+                                    snapshot.host_return_revision.saturating_add(1);
+                            }
+                        });
+                    }
                     Effect::Media(channel, bytes) => media
                         .audio
                         .get(&channel)
@@ -271,6 +287,7 @@ pub async fn run(
                         });
                     }
                     Effect::Video(visible) => {
+                        let visible = visible && !awaiting_video;
                         streaming = true;
                         state.send_modify(|snapshot| {
                             if let Some(session) = snapshot.session.as_mut()
@@ -312,8 +329,8 @@ pub async fn run(
                 let reply=match command {
                     Command::Disconnect(target) if target==id=>{send(transport,&mut tls,Reply::new(0,15,Proto::default().number(1,1).finish())).await?;return Ok(());},
                     Command::Touch(target,pointer,phase,x,y) if target==id=>channels.touch(pointer,phase,x,y,clock.elapsed().as_micros() as u64)?,
-                    Command::Activate(target) if target==id=>{set_visibility(&state,&id,true);Some(Reply::new(3,0x8008,Proto::default().number(1,1).number(2,1).finish()))},
-                    Command::Visibility(target,visible) if target==format!("{id}:main")=>{set_visibility(&state,&id,visible);Some(Reply::new(3,0x8008,Proto::default().number(1,if visible{1}else{2}).number(2,1).finish()))},
+                    Command::Activate(target) if target==id=>{crate::daemon_log!(Debug,"aa-focus","host activation requested");channels.set_video_requested(true);awaiting_video=true;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,1).number(2,1).finish()))},
+                    Command::Visibility(target,visible) if target==format!("{id}:main")=>{crate::daemon_log!(Debug,"aa-focus","host visibility requested: {visible}");channels.set_video_requested(visible);awaiting_video=visible;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,if visible{1}else{2}).number(2,1).finish()))},
                     Command::Gain(target,stream,gain) if target==id=>{let channel=match stream.as_str(){"media"=>4,"speech"=>5,"system"=>6,_=>return Err("unknown native audio stream".into())};if let Some(playback)=media.audio.get(&channel){playback.gain(gain as f64)?;}None},
                     _=>None,
                 };
@@ -343,6 +360,7 @@ fn set_visibility(state: &watch::Sender<ProjectionRuntimeSnapshot>, id: &str, vi
             && session.id == id
             && let Some((_, focus)) = snapshot.video.as_mut()
         {
+            snapshot.presentation_revision = snapshot.presentation_revision.saturating_add(1);
             *focus = visible;
             session.state = if visible {
                 ProjectionSessionStatus::Streaming

@@ -56,12 +56,13 @@ void main() {
               ..string(id)
               ..string('device')
               ..uint8(1)
-              ..string(''))
+              ..string('')
+              ..uint32(0))
             .takeBytes(),
       ),
     );
     session('aa-wired:device');
-    final hex = File('test/fixtures/projection/ipc_v3_metadata.hex')
+    final hex = File('test/fixtures/projection/ipc_v4_metadata.hex')
         .readAsStringSync()
         .trim();
     final packet = ProjectionIpcDecoder().add([
@@ -87,6 +88,22 @@ void main() {
     var changes = 0;
     final subscription = media.changes.listen((_) => changes++);
     transport.emit(packet);
+    expect(changes, 0);
+    final returnHex = File('test/fixtures/projection/ipc_v4_host_return.hex')
+        .readAsStringSync()
+        .trim();
+    transport.emit(
+      ProjectionIpcDecoder().add([
+        for (var i = 0; i < returnHex.length; i += 2)
+          int.parse(returnHex.substring(i, i + 2), radix: 16),
+      ]).single,
+    );
+    expect(backend.current.sessions.single.hostReturnRevision, 1);
+    expect(
+      backend.current.sessions.single.state,
+      ProjectionSessionState.suspended,
+    );
+    expect(media.current.activeSource!.details.title, 'Song');
     expect(changes, 0);
     transport.emit(
       ProjectionIpcMessage(
@@ -290,7 +307,8 @@ void main() {
                 ..string('session')
                 ..string('phone')
                 ..uint8(ProjectionSessionState.connecting.index)
-                ..string(''))
+                ..string('')
+                ..uint32(0))
               .takeBytes(),
         ),
       );
@@ -326,7 +344,7 @@ final class _FakeTransport implements ProjectionControlTransport {
 }
 
 ProjectionIpcMessage _capabilities() {
-  final hex = File('test/fixtures/projection/ipc_v3_capabilities.hex')
+  final hex = File('test/fixtures/projection/ipc_v4_capabilities.hex')
       .readAsStringSync()
       .trim();
   final bytes = [

@@ -148,6 +148,7 @@ final class AndroidAutoProjectionBackend
           final deviceId = reader.string();
           final state = _enumAt(ProjectionSessionState.values, reader.uint8());
           final failure = reader.string();
+          final hostReturnRevision = reader.uint32();
           _requireDone(reader);
           final device = _devices[deviceId];
           if (device == null) {
@@ -168,6 +169,7 @@ final class AndroidAutoProjectionBackend
             videoStreams: previous?.videoStreams ?? const [],
             audioStreams: previous?.audioStreams ?? const [],
             failureMessage: failure.isEmpty ? null : failure,
+            hostReturnRevision: hostReturnRevision,
           );
           _publish();
           return;
@@ -376,6 +378,7 @@ final class AndroidAutoProjectionBackend
     _sessions[sessionId] = ProjectionSession(
       id: session.id,
       device: session.device,
+      hostReturnRevision: session.hostReturnRevision,
       state: session.state,
       videoStreams: session.videoStreams,
       audioStreams: session.audioStreams,
@@ -434,6 +437,7 @@ final class AndroidAutoProjectionBackend
       ),
       visible: reader.uint8() != 0,
       focused: reader.uint8() != 0,
+      presentationRevision: reader.uint32(),
     );
     _requireDone(reader);
     final streams = [
@@ -444,6 +448,7 @@ final class AndroidAutoProjectionBackend
     _sessions[sessionId] = ProjectionSession(
       id: session.id,
       device: session.device,
+      hostReturnRevision: session.hostReturnRevision,
       state: session.state,
       metadata: session.metadata,
       videoStreams: streams,
@@ -478,6 +483,7 @@ final class AndroidAutoProjectionBackend
     _sessions[sessionId] = ProjectionSession(
       id: session.id,
       device: session.device,
+      hostReturnRevision: session.hostReturnRevision,
       state: session.state,
       metadata: session.metadata,
       videoStreams: session.videoStreams,
@@ -559,6 +565,7 @@ final class AndroidAutoProjectionBackend
       ProjectionIpcKind.activate,
       ProjectionIpcWriter()..string(sessionId),
     );
+    if (_closed || !_sessions.containsKey(sessionId)) return;
     _activeSessionId = sessionId;
     _publish();
   }

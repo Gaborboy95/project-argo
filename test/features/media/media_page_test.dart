@@ -13,7 +13,7 @@ void main() {
     );
     final service = _DirectProjectionService(backend);
     await tester.pumpWidget(MaterialApp(home: MediaPage(projection: service)));
-    expect(find.text('No device'), findsOneWidget);
+    expect(find.text('No connected projection phone'), findsOneWidget);
 
     const phone = ProjectionDevice(
       id: 'phone',
@@ -35,7 +35,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.text('Connecting…'), findsOneWidget);
+    expect(find.text('androidAuto / usb · Phone'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await backend.close();

@@ -10,7 +10,7 @@ import '../../core/projection/projection_presentation_options.dart';
 import '../../core/projection/projection_render_test.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
 import '../../features/climate/climate_page.dart';
-import '../../features/home/home_page.dart';
+import '../../features/projection/projection_page.dart';
 import '../../features/media/media_page.dart';
 import '../../features/parking/parking_page.dart';
 import '../../features/settings/settings_page.dart';
@@ -25,7 +25,15 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'home',
         label: 'Home',
         icon: Icons.home_outlined,
-        builder: (_, _) => const HomePage(),
+        builder: (_, services) => ProjectionPage(
+          projection: services.get<ProjectionService>(),
+          geometryDiagnostics:
+              services.contains<ProjectionPresentationOptions>() &&
+              services.get<ProjectionPresentationOptions>().geometryDiagnostics,
+          rendererTest:
+              services.contains<ProjectionRenderTest>() &&
+              services.get<ProjectionRenderTest>().enabled,
+        ),
       ),
     )
     ..register(
@@ -65,12 +73,6 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
           media: services.contains<MediaSessionService>()
               ? services.get<MediaSessionService>()
               : null,
-          geometryDiagnostics:
-              services.contains<ProjectionPresentationOptions>() &&
-              services.get<ProjectionPresentationOptions>().geometryDiagnostics,
-          rendererTest:
-              services.contains<ProjectionRenderTest>() &&
-              services.get<ProjectionRenderTest>().enabled,
         ),
       ),
     )

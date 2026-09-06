@@ -29,7 +29,7 @@ from [architecture](architecture.md) and [configuration](configuration.md).
 | Gesture refinement | Outside terminal, ownership cancellation, session targeting and Rust gesture-wide CANCEL regression coverage. | Latest user reply: not tested with a phone yet. |
 | Presentation comparison | Shared render/touch fit, DPR 2 and same-view expanded-layout test. | VM measured 1280×720 destination at DPR 1; user reported clean bars at 1:1. Embedded example was 1031.11×580 (0.80556×). Live-AA artifacts at 1:1 remain unassessed. |
 | Audio/power backends | Capability, bridge authorization and fake-host tests exist. | No new real suspend/poweroff, physical CAN or target-hardware validation claimed. |
-| Long-running projection | Current frame path has an identified host-side release-eventfd retention issue. | User reported repeated `dup(release eventfd) failed (errno=24)` after the comparison work. Not fixed in Argo or IHS here. |
+| Long-running projection | Current frame path has an identified host-side release-eventfd retention issue. | User reported repeated `dup(release eventfd) failed (errno=24)` after the comparison work. A subsequent local Wayland-EGL IHS fix is described below; no full endurance claim. |
 
 Prior implementation validation recorded 38 focused Flutter tests and 38 Rust
 tests passing, analyzer, Clippy and release daemon/bundle builds. These were
@@ -69,8 +69,9 @@ its own per-buffer release eventfd when GL consumes a frame without the DRM
 scanout retirement callback. Argo closes the returned duplicate; fresh IDs make
 host retention accumulate. Restarting the owned homescreen releases descriptors
 but is only temporary relief. Increasing limits or suppressing warnings does
-not fix ownership. The earlier source diagnosis has not been followed by an IHS
-patch or a post-fix endurance run; this task explicitly leaves IHS unchanged.
+not fix ownership. The original Argo presentation/configuration tasks left IHS unchanged. The user
+subsequently authorized a targeted local IHS patch; see
+[its scope and validation below](#local-ihs-wayland-egl-descriptor-fix).
 
 ## Phone connection, logs and security
 
@@ -93,7 +94,7 @@ for private identifiers; never share private keys or media payload dumps.
 
 Identity ownership is now exclusively in argo-projectiond. Flutter ignores inherited
 identity variables, never opens/parses a private key, and sends no identity paths
-or contents through IPC v3. Missing/invalid daemon identity leaves control readiness
+or contents through IPC v4. Missing/invalid daemon identity leaves control readiness
 and capability reporting available; restart the daemon after correcting files.
 TLS is 1.2 with resumption disabled. The USB-specific permissive
 peer verifier does not provide WebPKI chain/hostname/signature authentication;
@@ -135,9 +136,9 @@ or IHS/Veloce change is implied by the implemented read-only host state API.
   controls or invented AA fields. Implement a mapping only with verified protocol
   evidence; source content insets and Flutter presentation are distinct.
 - Reconcile microphone advertisement/open success with the absent capture path.
-- Correct host GL release-eventfd retirement only in a separately authorized IHS
-  task, then perform an FD-count/endurance run. No workaround here changes buffer
-  IDs, allocation, modifiers or fence ownership.
+- Validate the separately authorized local Wayland-EGL IHS descriptor fix with
+  real-phone navigation/volume and longer endurance checks. DRM/KMS fallback is
+  outside that targeted fix. Argo buffer IDs/allocation/modifiers remain unchanged.
 - Test latest gestures, reconnect and live-AA artifacts at measured 1:1 with a
   phone; target hardware and undelivered host focus events remain unverified.
 
@@ -185,7 +186,7 @@ second-client refusal, frozen current/next-session selection, stale-reply handli
 legacy settings fallback, persisted UI changes and disabled renderer-test coverage.
 These checks are not phone, audible-output or visible-rendering acceptance.
 The existing IHS eventfd problem and TLS compatibility policy remain unchanged.
-Follow the [bounded two-terminal acceptance workflow](../tool/projection/README.md#configuration-ownership-acceptance-ipc-v3)
+Follow the [bounded two-terminal acceptance workflow](../tool/projection/README.md#configuration-ownership-acceptance-ipc-v4)
 with driver side or DPI first. Live-phone configuration/persistence/reconnect and
 unchanged picture/audio/touch for this patch are **not yet user-verified**.
 
@@ -235,7 +236,114 @@ library was restaged. No Flutter Engine, IHS or Veloce build/change was required
 Markdown targets/anchors, shell example syntax and the new environment option
 reference were checked. No phone or manual rendering session ran in this pass.
 
-**Not yet phone-verified:** actual title/artist/playback delivery, Lua/UI agreement,
+**Subsequent user confirmation:** real wired AA reached the Lua observer as
+`androidAuto/usb | Android | Without You | playing`. This verifies that reported
+protocol/transport, device name, title and playing state reached Lua.
+
+**Not yet phone-verified:** artist/battery delivery, Lua/UI agreement,
 track-change and pause/resume sequencing, observer reload while connected, cleanup
 on physical disconnect, and whether this phone sends battery. Target hardware and
-endurance remain unverified. Use the [bounded acceptance workflow](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v3).
+endurance remain unverified. Use the [bounded acceptance workflow](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v4).
+
+
+## Home / Media separation
+
+Local implementation based on `6c1c7c3`: Home now owns fullscreen projection;
+Media is native Now Playing with placeholder artwork. IPC v4 distinguishes an
+explicit phone return-to-host request from a transient video stop. Home activation
+uses the existing session/focus command; pages never connect/disconnect merely to
+switch presentation. Hidden Home retains one native view with no platform layer
+or input ownership. Old surface disposal no longer sends a stale focus loss.
+
+Automated checks cover actual PlatformViewLayer identity, no TextureLayer,
+fullscreen fitting at DPR 2, gesture cancellation, metadata retention through
+host return, repeated Home activation coalescing, no automatic activation from
+updates, and stale-session/activation isolation. Protocol fixtures distinguish
+focus loss from AV stop and agree on the new IPC representation. Runtime results
+for the new Exit/Media/Home cycle have **not yet been supplied**. The prior user
+metadata and 1:1 renderer confirmations remain narrow historical acceptance;
+no target hardware or endurance acceptance is added. Follow the
+[bounded Home/Media workflow](../tool/projection/README.md#home--media-acceptance-ipc-v4).
+
+
+Validation for this pass: formatting/analyzer, 116 relevant Dart regressions
+(including the real native-Lua exercise), 42 all-feature Rust tests and strict
+all-target/all-feature Clippy passed. The IPC v4 release daemon and x86_64 Argo
+bundle built against the existing workspace. The unchanged native view also
+built through `run_renderer_test.sh`; neither Engine nor IHS was rebuilt.
+The launcher ran for 12 seconds after homescreen started, then the owned process
+was interrupted (launcher status 130). Home logged one view (ID 0), a 1280×720
+logical/physical destination at DPR 1, offset 0, and accepted submissions. No
+release-eventfd warning appeared during that short interval. Visible bars were
+not independently inspected in this run; this is not visual or endurance
+acceptance. Logs: `/tmp/argo-renderer-test.log`. No phone session ran in this pass.
+
+
+Presentation refinement: usable video alone now enables fullscreen Home, without
+floating host controls. Waiting/no-video Home shows centered connection status
+and normal shell navigation. AA Exit remains the route from active AA to Media.
+Formatting/analyzer and 15 relevant widget/composition regressions passed. This
+refinement has not yet been visually accepted on the phone.
+
+
+## Local IHS Wayland-EGL descriptor fix
+
+The user subsequently authorized IHS source/build/staging changes after the leak
+also froze the application during volume interaction. The patch is local IHS commit `35a5f852`, based on
+`50cbfb5b29266821091dd5a15edb6fe0a8547a91`, in
+`shell/platform/homescreen/platform_views/platform_view_host.cc`; it is not an
+upstream or released IHS fix. It gates per-buffer scanout release-eventfd creation
+on the backend's GBM/DRM capability, matching the existing capability check.
+Wayland EGL imports through `GetGlTextureName` and has no `OnScanoutRelease`
+callback; those per-frame host descriptors otherwise remain retained. The
+existing GL release-fence path remains intact. DRM/KMS behavior is unchanged,
+including the need to investigate its separate GL-fallback retirement path.
+
+The reviewed patch passed C++ syntax checking and the existing `ivi-homescreen`
+target rebuilt successfully. The executable was staged at
+`$HOME/dev/ivi-build/out/usr/local/bin/homescreen` with its installed RPATH, after
+checking homescreen was stopped. The previous executable is backed up under
+`/tmp/argo-ihs-before-eventfd-fix.iyLMRN/homescreen` for this VM session. No Flutter
+Engine rebuild, daemon/configuration change, descriptor-limit increase or Argo
+buffer-ID/allocation/modifier workaround was used.
+
+
+Post-patch bounded result: `run_renderer_test.sh` ran for 90 seconds after
+homescreen startup. Samples every ten seconds stayed at **34–35 total FDs** and
+**2 eventfds**, rather than increasing per submitted frame. No descriptor
+exhaustion warning occurred; the monitor stopped its owned process at the bound
+(SIGINT, launcher status 130). The user confirmed **bars are moving** during the
+run. This verifies visible native rendering and bounded descriptor stability for
+this Wayland-EGL renderer test, not real-phone volume/Exit/Home behavior, DRM/KMS
+support, or long-term endurance. The diagnostic is stopped; use the existing VM
+launch command to test the phone next. Evidence is saved in
+`/tmp/argo-ihs-fd-test.json`, `/tmp/argo-ihs-fd-test-renderer.log` and
+`/tmp/argo-ihs-rebuild.log`. The projection daemon was neither rebuilt nor restarted.
+
+
+## Repeated Exit and AA redraw follow-up
+
+The user reports that only the AA interface redraws (no Argo connection/status
+flash), and that subsequent Exit attempts can return immediately to AA. Inspection
+found that the daemon granted any later phone focus/start request after Exit.
+It now retains explicit host-return/host-hide ownership until an explicit Home
+activation, without replacing the session or changing AV configuration. A focused
+regression repeats three cycles and verifies map-drag serialization does not emit
+focus messages. Numeric DEBUG focus diagnostics distinguish phone requests from
+host activation in a subsequent phone reproduction. The actual redraw cause is
+not conclusively established by the existing INFO logs, and real-phone acceptance
+of this fix remains pending. The earlier TLS failure in the log is recorded as a
+separate unresolved session failure, not silently addressed by this focus fix.
+
+Validation for the focus follow-up: 43 Rust tests, strict all-feature/all-target
+Clippy, Flutter analyzer and 24 relevant Dart regressions passed. The release
+daemon rebuilt. Both `argo-release-x86_64` and `argo-fullscreen-update` contain
+the same rebuilt application. No IHS, native decoder, identity or USB code changed
+in this follow-up. No real-phone reproduction ran after the change.
+
+
+Subsequent user acceptance: after rebuilding/restarting with the focus-ownership
+fix, the user reported **“Fixed”** for the repeated Exit / AA interface-redraw
+issue. This updates the pending phone result above; it is not a claim of extended
+endurance, comprehensive phone compatibility, or resolution of the earlier
+separate TLS error. The local IHS descriptor fix is committed as `35a5f852`.

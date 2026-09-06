@@ -4,8 +4,8 @@ Current status at audited Argo revision `ee08a138`: the user reports live wired
 Android Auto video/audio and visible native renderer bars on Ubuntu VMware through
 unmodified IHS. Latest gesture refinement is code/test verified but not yet
 phone-tested; reconnect endurance and target-hardware acceptance remain open.
-See [acceptance and limitations](../../docs/status.md), including the outstanding
-IHS release-eventfd exhaustion issue. This is a development runbook, not product
+See [acceptance and limitations](../../docs/status.md), including the separately authorized local IHS release-eventfd fix and its
+remaining validation limits. This is a development runbook, not product
 certification. [Setup](../../docs/setup.md) and [configuration](../../docs/configuration.md)
 provide the environment and option reference.
 
@@ -192,11 +192,11 @@ VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
 The example uses the generic vehicle profile and an empty plugin root. Android
 Auto does not depend on a vehicle profile. Identity paths are configured **only
 on the daemon**; both variables are explicitly unset for homescreen above. Argo
-never opens/parses the key and IPC v3 has no client identity fields. Inherited
+never opens/parses the key and IPC v4 has no client identity fields. Inherited
 identity variables are ignored by Dart. Both processes resolve the same control
 and media defaults from XDG_RUNTIME_DIR, or /run/argo without it; explicit paths
 above make the two-terminal relationship clear. Empty/invalid overrides fail.
-Select **Media** in Argo, unlock the phone, and plug it in. Accept any phone-side
+Select **Home** in Argo, unlock the phone, and plug it in. Accept any phone-side
 Android Auto prompts. Then verify touch, music and a navigation announcement.
 Use **Return to Argo** / **Show projection** to switch the surface. Unplug must
 clear projection while leaving Argo alive; replug must create a fresh session.
@@ -286,8 +286,8 @@ From the Argo checkout, with the previous test homescreen stopped, run:
 tool/projection/run_renderer_test.sh
 ```
 
-Select **Media**. The page must show **Native renderer test — no phone** outside
-its surface, with visibly scrolling SMPTE bars **inside Argo**. The native source
+Select **Home**. Expect visibly scrolling SMPTE bars **inside Argo**, fullscreen
+with no floating controls. Native startup logs identify renderer-test mode. The native source
 is live 1280×720 BGRx, 30 fps, pixel aspect ratio 1:1. Destroying the view stops
 the pipeline; recreating it restarts the pattern. Existing navigation uses an
 `IndexedStack` and keeps pages mounted, so changing tabs alone does not destroy
@@ -301,7 +301,7 @@ environment, builds the existing native view and an x86_64 release/AOT bundle in
 The launcher now uses the installed CLI's supported `--width`/`--height` options.
 The earlier `--w`/`--h` forms were forwarded as engine arguments, so the historical
 comparison began at 1920×720. Native pattern dimensions remain 1280×720; geometry
-logs/Compare size still establish the actual destination after window resizing.
+logs still establish the actual destination after window resizing.
 It does not rebuild IHS or Flutter Engine, update repositories, or require root.
 It refuses to stage while another launcher or the user's homescreen is running.
 Runtime output goes to `/tmp/argo-renderer-test.log`; a homescreen failure remains
@@ -463,23 +463,18 @@ Renderer-test diagnostics are independent and unchanged. Post-version failures
 are labelled as session failures rather than failed version negotiation, and the
 same propagated failure is logged once at the owning lifecycle boundary.
 
-### Presentation-size comparison
+### Fullscreen presentation geometry
 
-On Media, **Compare size** expands the existing native surface without page
-padding, heading, rounded Card, status bar or navigation chrome. **Back to Argo**
-restores the embedded layout. Global keys retain the same native platform-view
-ID across the layout change; no Android Auto session is created or renegotiated.
-The renderer test uses the same controls and surface. Input is cancelled when
-switching presentation geometry, and the overlay control intercepts its own taps.
-
-Expanded layout targets source width/height divided by Flutter's reported
-`devicePixelRatio`, centred on physical-pixel-aligned offsets. If the viewport is
-too small, it fits the full source with preserved aspect ratio. The overlay shows
-physical destination dimensions and says **1:1 physical pixels** only when both
-match the source within 0.01 pixel; otherwise it says **scaled to fit**. This
-measures Flutter's physical destination, not an unobservable subsequent resample
-by the desktop compositor/monitor. No crop, stretch, AA DPI/resolution/bitrate,
-native filtering or buffer-allocation settings change.
+Home uses the full Argo viewport only while video is usable, with black
+letterboxing, preserved aspect ratio and no floating controls. AA Exit returns
+to Media. When video is unavailable or waiting, Home shows centered connection
+status and normal shell navigation. Media contains no projection surface.
+The old embedded/Card comparison toolbar is retired; the earlier measurements
+below remain historical evidence, not current controls. Geometry diagnostics
+still measure the actual logical fit, DPR and derived physical destination.
+A fullscreen window is not necessarily 1:1: only matching destination/source
+pixel dimensions establish that, and the desktop compositor may scale again.
+No source resolution, DPI, FPS, audio format or native filtering changes here.
 
 Enable bounded geometry logs for live projection with
 `ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1`, or run the phone-independent comparison:
@@ -507,7 +502,7 @@ Rust pointer coverage verifies gesture-wide CANCEL versus single-pointer UP.
 Code/test acceptance is separate from VM mouse/focus/unplug acceptance and from
 whether live-image artifacts persist at a measured 1:1 destination.
 
-VM comparison result: the rebuilt release bundle ran through the existing IHS
+Historical VM comparison result (before Home/Media separation): the rebuilt release bundle ran through the existing IHS
 executable with one native view across embedded/expanded transitions. At DPR 1,
 the embedded destination measured 1031.11 × 580 pixels (0.80556× source), and
 Compare size measured 1280 × 720 pixels (1:1), centred in a 1920 × 720 viewport.
@@ -521,7 +516,7 @@ tests, Clippy with warnings denied, and the release daemon build. The existing
 wire fixture emitted no routine packet/ping metadata at default/INFO and restored
 that metadata at TRACE. Flutter Engine and IHS were not rebuilt.
 
-## Configuration ownership acceptance (IPC v3)
+## Configuration ownership acceptance (IPC v4)
 
 Rebuild the daemon and bundle using the commands above. Stop previous owned
 processes before staging; this is an incompatible v1/v2→v3 control change. Do not
@@ -549,9 +544,12 @@ a standalone session already in progress keeps its initial selection.
    active, Argo must show its actual selection and queue any differing preference.
 6. Stop owned homescreen/daemon processes. Run `tool/projection/run_renderer_test.sh`
    from the Argo root; it explicitly disables projection backend and clears identity
-   and socket variables. Select Media and check moving native bars inside Argo.
+   and socket variables. Select Home and check moving native bars inside Argo.
 
-Keep each manual rendering check short. The known IHS eventfd leak is unchanged:
+Keep each manual rendering check short. The original IHS binary has an eventfd
+leak; the separately authorized local Wayland-EGL fix and its measured evidence
+are documented in [status](../../docs/status.md#local-ihs-wayland-egl-descriptor-fix).
+Regardless of the installed host revision,
 if `dup(release eventfd)`/FD-exhaustion failures appear, capture the log and stop
 that run immediately. Do not raise limits, hide warnings, or infer endurance from
 short success. New-session settings, live input and audio acceptance for this
@@ -565,11 +563,11 @@ and an actionable error. Correct daemon configuration and restart it; there is n
 automatic daemon spawning/reconnect supervisor. A second control client receives
 an ownership error instead of racing the first client's preferences.
 
-## Host metadata and Lua acceptance (IPC v3)
+## Host metadata and Lua acceptance (IPC v4)
 
 This revision advertises read-only media status on runtime channel **10** using
 service descriptor field 9. Existing video/audio/input descriptors and TLS remain
-unchanged. Rebuild both Argo and daemon: IPC v3 explicitly rejects v1/v2 peers.
+unchanged. Rebuild both Argo and daemon: IPC v4 explicitly rejects v1/v2 peers.
 The earlier configuration-ownership workflow still applies with matching v3 builds.
 
 Wire references were inspected, not copied/vendored: public
@@ -665,7 +663,7 @@ export VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so"
   2>&1 | tee /tmp/argo-host-media.log
 ```
 
-1. Connect the phone and play a track. Compare Media's title/artist/playback with
+1. Connect the phone, select Home and play a track. Use AA Exit to reach Media. Compare its title/artist/playback with
    the explicitly enabled `[Argo host observer ...]` DEBUG summary in terminal 2.
    Wait at least three seconds per observation because diagnostic output coalesces;
    cached reads are immediate. No playback buttons are provided.
@@ -694,3 +692,89 @@ Turn off `ARGO_HOST_STATE_DIAGNOSTICS` after this deliberate check; logs can con
 private track/device text. Only explicitly installed, host-read-authorized Lua
 resources can read the API; public invalidation events carry no such text.
 See the [exact Lua fields/permissions](../../docs/vehicle-integrations.md#read-only-argo-host-state-v1).
+
+
+## Home / Media acceptance (IPC v4)
+
+Build/restart both the daemon and Argo bundle using the existing
+[build commands](#build-and-synthetic-native-lua-check) and
+[native-view/bundle workflow](#build-the-native-view-and-argo-bundle). Do not stage
+libraries into a running process. Launch the daemon with its existing external
+identity in [terminal 1](#one-real-device-workflow), then use the exact
+[observer-enabled homescreen command](#real-phone-and-observer) for terminal 2;
+that command explicitly unsets both identity variables in Argo. No Engine or IHS
+rebuild is needed. Old v3 app/daemon combinations are rejected rather than silently
+misreading the added session/video fields.
+
+The phone's video channel 3 message `0x8007`, explicit focus mode 2 (`UNFOCUSED`),
+now carries neutral host-return intent. The [public request schema](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/VideoFocusRequestMessage.proto)
+and [mode enum](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/VideoFocusModeEnum.proto)
+distinguish this from AV stop `0x8002`. Unknown/absent focus mode and transient AV
+stops do not navigate. The focus-reason enum is not used to guess intent. The daemon now keeps explicit Exit/host-hide ownership until Home activates
+the session again. Late phone focus requests and video-start messages cannot
+grant presentation back by themselves; the message layout is unchanged. The following real-phone cycle still needs verification:
+
+1. Connect the phone and select **Home**: expect fullscreen AA with black unused
+   space. Start music; record the session ID without sharing private identity data.
+2. Press **Exit inside AA**: expect **Media / Now Playing** once, with the same live
+   track. Confirm audio and the Lua observer continue when supplied by the phone.
+3. Press **Home**: expect AA to resume on the same session, with no new AOAP/TLS
+   handshake. A repeated Home action while waiting can retry after the previous
+   activation write finishes. It must not create concurrent activation attempts.
+4. Repeat the cycle, exercise touch, change track and pause/resume. Metadata must
+   not recreate the native platform view or pull navigation away from Media/Settings.
+5. Disconnect: expect no old projection layer, phone or track. No-phone Home
+   shows centered connection status with normal host navigation, not fullscreen.
+6. Stop the owned daemon/homescreen. Run `tool/projection/run_renderer_test.sh`,
+   select **Home**, and check moving native bars through the same fullscreen surface.
+   The diagnostic has no floating controls or phone Exit action; stop it with
+   Ctrl+C in its launcher terminal.
+
+Keep runs short and stop on the known release-eventfd/FD exhaustion warning.
+Do not raise limits or infer visible success from submit acceptance, a focus write,
+a presentation revision, or mocked tests. The revision confirms renewed incoming
+video data, not a decoded/displayed-frame acknowledgement; visible resume and any
+brief stale frame during decoder restart must be checked on the VM.
+
+The user has confirmed real metadata reaching Lua as
+`androidAuto/usb | Android | Without You | playing`. That does not yet establish
+this navigation cycle, uninterrupted audio, observer reload, battery delivery,
+full disconnect cleanup or renderer endurance.
+
+
+### Local IHS descriptor fix
+
+The VM's existing `$HOME/dev/ivi-build/out/usr/local/bin/homescreen` now contains
+the separately authorized local Wayland-EGL release-eventfd fix. The command
+paths above stay the same. This is a patched local IHS checkout, so earlier
+acceptance through **unmodified** IHS remains historical evidence, not a label
+for new runs. See [scope, rollback backup and measured validation](../../docs/status.md#local-ihs-wayland-egl-descriptor-fix).
+Real-phone volume changes, repeated Exit/Home and long-run responsiveness still
+need validation; a short native-pattern run does not establish them.
+
+
+### Repeated Exit / AA redraw diagnosis
+
+The daemon now retains an explicit return-to-host choice across late focus/start
+messages. Home alone restores permission for the same live session. The normal
+`argo-release-x86_64` bundle and the temporary `argo-fullscreen-update` bundle
+are both refreshed for this fix; restart both the daemon and homescreen before
+retesting. The IHS descriptor fix remains installed and is unchanged.
+
+For one short phone reproduction, set `ARGO_PROJECTION_LOG_LEVEL=debug` in the
+**daemon terminal before launch**. `[aa-focus]` entries record only numeric phone
+focus mode/reason, host permission and host activation/visibility commands.
+Argo logs explicit Home activation and accepted phone host-return events in its
+homescreen log. No packet trace, track content or credential logging is needed.
+Repeat Exit → Media → Home two or three times, then pan the map. Check whether
+redraws occur without an explicit Home activation. Stop and preserve both logs if
+it persists. Default INFO remains quiet; remove the debug override afterward.
+The repeated-cycle regression proves the ownership rule in code, not that this
+phone's redraw artifact is eliminated. One earlier logged TLS decryption failure
+was a distinct session failure; no TLS/USB/identity changes were made here.
+
+
+The user subsequently confirmed the repeated Exit / AA redraw issue is **fixed**
+with the focus-ownership change. The separately committed local IHS descriptor
+fix is `35a5f852`. Longer endurance and the separate earlier TLS error remain
+outside this acceptance.

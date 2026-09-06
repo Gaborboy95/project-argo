@@ -195,7 +195,6 @@ class _ProjectionViewState extends State<ProjectionView>
     WidgetsBinding.instance.addObserver(this);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_observePointer);
     _setTarget();
-    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, true));
   }
 
   void _setTarget() {
@@ -226,10 +225,6 @@ class _ProjectionViewState extends State<ProjectionView>
     }
     _cancelAll();
     _setTarget();
-    unawaited(
-      oldWidget.service?.setVideoVisibility(oldWidget.stream!.id, false),
-    );
-    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, true));
   }
 
   @override
@@ -239,7 +234,6 @@ class _ProjectionViewState extends State<ProjectionView>
     if (!_sending && _pending.isEmpty) _closeTargets();
     WidgetsBinding.instance.removeObserver(this);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_observePointer);
-    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, false));
     super.dispose();
   }
 

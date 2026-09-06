@@ -231,5 +231,5 @@ are in Veloce's bounded log history; the optional `ARGO_HOST_STATE_DIAGNOSTICS=1
 forwards the newest observer DEBUG line at most every three seconds to the Argo
 terminal, with quoting and a 1024-character bound. Enable this deliberately for
 acceptance because such lines may include track/device text. Normal INFO logging
-contains no track dump. [Run instructions](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v3)
+contains no track dump. [Run instructions](../tool/projection/README.md#host-metadata-and-lua-acceptance-ipc-v4)
 load only this observer without selecting an example vehicle profile.

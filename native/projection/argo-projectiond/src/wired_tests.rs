@@ -224,7 +224,62 @@ fn discovery_video_setup_and_native_stream_lifecycle() {
         .handle(3, 0x8007, &Proto::default().number(2, 2).finish())
         .unwrap();
     assert!(matches!(focus[1], Effect::Video(false)));
+    assert!(matches!(focus[2], Effect::HostReturn));
+    for (message, body) in [
+        (0x8002, vec![]),
+        (0x8007, vec![]),
+        (0x8007, Proto::default().number(2, 1).finish()),
+    ] {
+        assert!(
+            !channels
+                .handle(3, message, &body)
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, Effect::HostReturn))
+        );
+    }
 }
+#[test]
+fn repeated_phone_exit_requires_explicit_host_resume() {
+    let mut channels = opened();
+    channels
+        .handle(3, 0x8000, &Proto::default().number(1, 3).finish())
+        .unwrap();
+    for cycle in 0..3 {
+        let exit = channels
+            .handle(3, 0x8007, &Proto::default().number(2, 2).finish())
+            .unwrap();
+        assert!(exit.iter().any(|e| matches!(e, Effect::HostReturn)));
+        // A delayed start or phone re-request cannot override the user's Exit.
+        let start = channels
+            .handle(
+                3,
+                0x8001,
+                &Proto::default().number(1, cycle + 1).number(2, 0).finish(),
+            )
+            .unwrap();
+        assert!(matches!(start[0], Effect::Video(false)));
+        let regain = channels
+            .handle(3, 0x8007, &Proto::default().number(2, 1).finish())
+            .unwrap();
+        assert!(matches!(regain[1], Effect::Video(false)));
+        let Effect::Reply(reply) = &regain[0] else {
+            panic!("focus reply missing")
+        };
+        assert_eq!(numbers(&reply.body).unwrap().get(&1), Some(&2));
+        // Home resumes the same channel/session; map dragging only emits input.
+        channels.set_video_requested(true);
+        let resumed = channels
+            .handle(3, 0x8007, &Proto::default().number(2, 1).finish())
+            .unwrap();
+        assert!(matches!(resumed[1], Effect::Video(true)));
+        for (phase, x) in [(0, 0.3), (1, 0.4), (1, 0.5), (2, 0.5)] {
+            let touch = channels.touch(1, phase, x, 0.5, 100).unwrap().unwrap();
+            assert_eq!((touch.channel, touch.id), (8, 0x8001));
+        }
+    }
+}
+
 #[test]
 fn touch_uses_negotiated_pixels_and_tracks_pointer_lifecycle() {
     let mut channels = opened();
@@ -404,7 +459,7 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
             "Android phone".into(),
         );
         let id = initial.session.as_ref().unwrap().id.clone();
-        let (state, _) = tokio::sync::watch::channel(initial);
+        let (state, mut observed) = tokio::sync::watch::channel(initial);
         let (phone_tx, input) = tokio::sync::mpsc::channel(32);
         let (output, mut phone_rx) = tokio::sync::mpsc::channel(32);
         let engine_control = control.clone();
@@ -472,6 +527,12 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         )
         .await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8003);
+        // Home may activate a ready session before its first video descriptor.
+        control
+            .commands
+            .send(crate::host_control::Command::Activate(id.clone()))
+            .unwrap();
+        assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
         phone_send(
             &mut phone,
             &phone_tx,
@@ -481,6 +542,33 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         )
         .await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
+        observed
+            .wait_for(|s| s.video.as_ref().is_some_and(|(_, visible)| !visible))
+            .await
+            .unwrap();
+        // A focus write/start indication alone must not expose cached video.
+        phone_send(&mut phone, &phone_tx, 3, 1, vec![0, 0, 0, 1, 0x67, 1]).await;
+        assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8004);
+        observed
+            .wait_for(|s| {
+                s.video.as_ref().is_some_and(|(_, visible)| *visible) && s.presentation_revision > 0
+            })
+            .await
+            .unwrap();
+        phone_send(
+            &mut phone,
+            &phone_tx,
+            3,
+            0x8007,
+            Proto::default().number(2, 2).finish(),
+        )
+        .await;
+        assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
+        observed
+            .wait_for(|s| s.host_return_revision == 1)
+            .await
+            .unwrap();
+        assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
         control
             .commands
             .send(crate::host_control::Command::Touch(id, 1, 0, 0.5, 0.5))

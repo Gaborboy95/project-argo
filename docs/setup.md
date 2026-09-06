@@ -106,9 +106,9 @@ GStreamer; pass staged IHS include/library paths directly to CMake.
   from the Argo root run `tool/projection/run_renderer_test.sh`. It builds a
   dedicated release bundle, clears inherited integrations/sockets/credentials,
   disables real backends and captures `/tmp/argo-renderer-test.log`.
-- [Measured size comparison](../tool/projection/README.md#presentation-size-comparison):
+- [Measured fullscreen geometry](../tool/projection/README.md#fullscreen-presentation-geometry):
   run `ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1 tool/projection/run_renderer_test.sh`,
-  then Media → Compare size. The label reports actual physical dimensions. The
+  then select Home. Opt-in geometry logs report actual physical dimensions. The
   launcher requests a 1280×720 window using the installed CLI's supported flags;
   use the measured destination after any desktop/window resizing.
 

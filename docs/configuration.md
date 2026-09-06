@@ -121,7 +121,7 @@ phone connection**, without automatic disconnection.
 
 Safe-inset keys remain compatible storage but have no applied AA mapping and no
 enabled controls. Runtime stream content/safe insets remain independent metadata;
-rendering/touch fit and physical presentation are unchanged. Compare size does
+Home uses a shared aspect fit for rendering/touch. Fullscreen presentation does
 not renegotiate source resolution, DPI or FPS. Renderer-test source stays fixed
 at 1280×720/30. Model enum values `wifi`/`carPlay` are not implemented backends.
 
@@ -138,8 +138,9 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v3 is incompatible with v1 and v2: rebuild/restart both client and daemon together.
-Hello has no configuration or identity payload. One client owns control for the
+IPC v4 is incompatible with v1, v2 and v3: rebuild/restart both client and daemon together.
+Session/video messages now include session-scoped presentation revisions; AV stops
+are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
 must reconnect after the first closes. There is no observer takeover or automatic
 supervisor. Capabilities/readiness work even with identity missing or invalid.

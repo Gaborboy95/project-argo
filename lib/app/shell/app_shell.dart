@@ -3,6 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/settings/app_setting_keys.dart';
+import '../../core/projection/projection_service.dart';
+import '../../core/projection/projection_models.dart';
+import '../../core/projection/projection_types.dart';
+import '../../core/projection/projection_render_test.dart';
+import '../../features/projection/projection_page.dart';
 import '../../core/settings/settings_service.dart';
 import '../argo_environment.dart';
 import '../../features/projection/projection_input_scope.dart';
@@ -20,7 +25,27 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   late int _selectedIndex;
-  bool _expandedProjection = false;
+  ProjectionService? _projection;
+  StreamSubscription<ProjectionSnapshot>? _projectionSubscription;
+  ProjectionSnapshot? _previous;
+  String? _presentedSession, _waitingSession, _activationError;
+  bool _activating = false;
+  String? _activatingSession, _queuedHomeSession;
+  int _requestedAfterRevision = 0;
+  int _navigationEpoch = 0;
+  bool get _home =>
+      widget.environment.moduleRegistry.modules[_selectedIndex].id == 'home';
+  bool get _fullscreen =>
+      _home &&
+      _projection != null &&
+      ((widget.environment.services.contains<ProjectionRenderTest>() &&
+              widget.environment.services
+                  .get<ProjectionRenderTest>()
+                  .enabled) ||
+          (_waitingSession == null &&
+              projectionVideoUsable(
+                selectedProjectionSession(_projection!.current),
+              )));
   final _contentKey = GlobalKey();
 
   SettingsService get _settings =>
@@ -38,6 +63,113 @@ class _AppShellState extends State<AppShell> {
         : homeIndex >= 0
         ? homeIndex
         : 0;
+    if (widget.environment.services.contains<ProjectionService>()) {
+      _projection = widget.environment.services.get<ProjectionService>();
+      _previous = _projection!.current;
+      _projectionSubscription = _projection!.changes.listen(_onProjection);
+      if (_home) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _home) _resumeHome();
+        });
+      }
+    }
+  }
+
+  void _onProjection(ProjectionSnapshot snapshot) {
+    final session = selectedProjectionSession(snapshot);
+    final previous = _previous?.sessions
+        .where((s) => s.id == session?.id)
+        .firstOrNull;
+    _previous = snapshot;
+    final hostReturn =
+        session != null &&
+        previous != null &&
+        session.hostReturnRevision > previous.hostReturnRevision;
+    if (_home && hostReturn && _presentedSession == session.id) {
+      debugPrint(
+        'Argo projection presentation: phone host-return revision=${session.hostReturnRevision}',
+      );
+      _returnToHost(phoneRequested: true);
+      return;
+    }
+    if (_presentedSession != session?.id) _presentedSession = null;
+    if (_waitingSession != session?.id) _waitingSession = null;
+    if (_waitingSession != null &&
+        projectionVideoUsable(session) &&
+        mainProjectionStream(session)!.presentationRevision >
+            _requestedAfterRevision) {
+      _waitingSession = null;
+    }
+    if (_home && projectionVideoUsable(session) && _waitingSession == null) {
+      _presentedSession = session!.id;
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _resumeHome() {
+    if (!_home) return;
+    final session = selectedProjectionSession(_projection!.current);
+    if (session == null || session.state == ProjectionSessionState.connecting) {
+      return;
+    }
+    if (_activating) {
+      // Coalesce the same request; serialize an explicit Home action targeting
+      // a replacement session behind the old write, never run both in parallel.
+      if (_activatingSession != session.id) _queuedHomeSession = session.id;
+      return;
+    }
+    debugPrint('Argo projection presentation: explicit Home activation');
+    final epoch = _navigationEpoch;
+    setState(() {
+      _activating = true;
+      _activatingSession = session.id;
+      _activationError = null;
+      _waitingSession = session.id;
+      _requestedAfterRevision =
+          mainProjectionStream(session)?.presentationRevision ?? 0;
+      _presentedSession = null;
+    });
+    unawaited(
+      _projection!
+          .activate(session.id)
+          .catchError((Object error) {
+            if (mounted &&
+                _home &&
+                epoch == _navigationEpoch &&
+                selectedProjectionSession(_projection!.current)?.id ==
+                    session.id) {
+              setState(
+                () => _activationError = 'Could not resume projection: $error',
+              );
+            }
+          })
+          .whenComplete(() {
+            _activating = false;
+            _activatingSession = null;
+            final queued = _queuedHomeSession;
+            _queuedHomeSession = null;
+            if (mounted &&
+                _home &&
+                queued != null &&
+                selectedProjectionSession(_projection!.current)?.id == queued) {
+              _resumeHome();
+            }
+          }),
+    );
+  }
+
+  void _returnToHost({bool phoneRequested = false}) {
+    final index = widget.environment.moduleRegistry.modules.indexWhere(
+      (m) => m.id == 'media',
+    );
+    if (index >= 0) _selectModule(index, phoneRequested: phoneRequested);
+  }
+
+  @override
+  void dispose() {
+    _navigationEpoch++;
+    unawaited(_projectionSubscription?.cancel());
+    super.dispose();
   }
 
   @override
@@ -45,10 +177,10 @@ class _AppShellState extends State<AppShell> {
     final modules = widget.environment.moduleRegistry.modules;
 
     return ProjectionPresentationScope(
-      expanded: _expandedProjection,
-      setExpanded: (value) => setState(() => _expandedProjection = value),
+      waiting: _waitingSession != null,
+      error: _activationError,
       child: Scaffold(
-        body: _expandedProjection
+        body: _fullscreen
             ? _buildContent(modules)
             : SafeArea(
                 child: LayoutBuilder(
@@ -106,15 +238,44 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  void _selectModule(int index) {
+  void _selectModule(int index, {bool phoneRequested = false}) {
     if (index == _selectedIndex) {
+      if (_home && _projection != null) _resumeHome();
       return;
     }
+    final oldStream = _home && _projection != null
+        ? mainProjectionStream(selectedProjectionSession(_projection!.current))
+        : null;
+    final epoch = ++_navigationEpoch;
 
     setState(() {
       _selectedIndex = index;
-      _expandedProjection = false;
+      _waitingSession = null;
+      _queuedHomeSession = null;
+      _presentedSession = null;
+      _activationError = null;
     });
+    if (oldStream != null && !phoneRequested) {
+      // Allow the ownership scope to cancel gestures first. A later Home action
+      // invalidates this hide, so an old surface can never hide a resumed one.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || epoch != _navigationEpoch || _home) return;
+        if (selectedProjectionSession(_projection!.current)?.id !=
+            oldStream.sessionId) {
+          return;
+        }
+        unawaited(
+          _projection!.setVideoVisibility(oldStream.id, false).catchError((
+            Object error,
+          ) {
+            debugPrint(
+              'Argo projection: could not relinquish video focus: $error',
+            );
+          }),
+        );
+      });
+    }
+    if (_home && _projection != null) _resumeHome();
     final moduleId = widget.environment.moduleRegistry.modules[index].id;
     unawaited(
       _settings.set(AppSettingKeys.lastModule, moduleId).catchError((

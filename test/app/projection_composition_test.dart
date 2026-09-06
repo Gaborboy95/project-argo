@@ -7,7 +7,7 @@ import 'package:argo/core/projection/projection_backend.dart';
 import 'package:argo/core/projection/projection_service.dart';
 import 'package:argo/core/projection/disabled_projection_backend.dart';
 import 'package:argo/core/projection/projection_render_test.dart';
-import 'package:argo/features/media/media_page.dart';
+import 'package:argo/features/projection/projection_page.dart';
 import 'package:argo/features/projection/projection_view.dart';
 import 'package:argo/integrations/projection/ihs_projection_view_registry.dart';
 import 'package:flutter/material.dart';
@@ -106,14 +106,14 @@ void main() {
     );
     await tester.pumpWidget(
       MaterialApp(
-        home: MediaPage(
+        home: ProjectionPage(
           projection: projection,
           rendererTest: services.get<ProjectionRenderTest>().enabled,
         ),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Native renderer test — no phone'), findsOneWidget);
+    expect(find.text('Back to Argo'), findsNothing);
     expect(find.byType(ProjectionView), findsOneWidget);
     expect(find.byType(PlatformViewSurface), findsOneWidget);
     final create = calls.singleWhere((call) => call.method == 'create');

@@ -12,15 +12,15 @@ native audio delivery. The IHS projection-view library decodes video with
 GStreamer and submits native frames to the existing ivi-homescreen compositor.
 Video and PCM do not pass through Dart. AA credentials are loaded only by the
 daemon; the Flutter client reports readiness and selected/pending configuration
-through IPC v3.
+through IPC v4.
 
 ## Current scope
 
 Implemented: module navigation, typed persistent settings (including next-session projection preferences), normalized vehicle
 telemetry/power state, external bundle discovery, Veloce plugin lifecycle,
 simulation scenarios, opt-in SocketCAN, audio policy with default-sink
-volume/mute through `wpctl`, and opt-in systemd host power control. Media contains
-wired Android Auto and the phone-independent native renderer diagnostic. Climate
+volume/mute through `wpctl`, and opt-in systemd host power control. Home presents fullscreen wired Android Auto (or the phone-independent native
+renderer diagnostic); Media is a native, read-only Now Playing page. Climate
 and Parking are placeholders; their navigation entries are not working controls.
 
 Projection remains experimental. The user has verified visible native bars and
@@ -29,7 +29,9 @@ The latest gesture fixes have automated coverage but have not yet been tested
 with a phone. Expanded presentation reached 1280 × 720 physical pixels at DPR 1;
 the user reported clean bars at that size. Target-vehicle hardware acceptance,
 reconnect endurance and live-AA quality at 1:1 are not established. An outstanding
-IHS release-eventfd leak limits long-running EGL projection; no IHS fix is included.
+IHS release-eventfd leak was identified in the original host. A separately
+authorized local Wayland-EGL IHS patch is now staged; see the bounded validation
+and remaining acceptance limits in [status](docs/status.md#local-ihs-wayland-egl-descriptor-fix).
 
 Wireless Android Auto, Bluetooth integration, working microphone capture,
 CarPlay, playback controls, customization and plugin-rendered application tabs
@@ -38,8 +40,10 @@ channel scaffolding exist; they do not establish end-to-end support.
 
 Read-only AA track/playback and optional phone state now flow through a shared
 media service and permission-checked `argo_host.snapshot()` Lua API. Parser and
-native-Lua fixtures are verified; real-phone metadata/battery acceptance is still
-pending. The Media page provides a small read-only facts panel.
+native-Lua fixtures are verified. The user confirmed real-phone title/playback
+reaching Lua (`androidAuto/usb | Android | Without You | playing`). Battery, full
+UI/Lua sequencing and the new Exit → Media → Home cycle still need acceptance.
+Media uses a neutral music-art placeholder; artwork delivery is not implemented.
 
 ## Documentation
 

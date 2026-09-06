@@ -42,6 +42,7 @@ final class ProjectionVideoStream {
     this.safeInsets = const ProjectionInsets(),
     this.visible = true,
     this.focused = true,
+    this.presentationRevision = 0,
   }) {
     if (id.trim().isEmpty || sessionId.trim().isEmpty) {
       throw ArgumentError(
@@ -72,6 +73,7 @@ final class ProjectionVideoStream {
   final ProjectionInsets safeInsets;
   final bool visible;
   final bool focused;
+  final int presentationRevision;
 
   @override
   bool operator ==(Object other) =>
@@ -86,7 +88,8 @@ final class ProjectionVideoStream {
       contentInsets == other.contentInsets &&
       safeInsets == other.safeInsets &&
       visible == other.visible &&
-      focused == other.focused;
+      focused == other.focused &&
+      presentationRevision == other.presentationRevision;
 
   @override
   int get hashCode => Object.hash(
@@ -101,6 +104,7 @@ final class ProjectionVideoStream {
     safeInsets,
     visible,
     focused,
+    presentationRevision,
   );
 }
 
@@ -157,6 +161,7 @@ final class ProjectionSession {
     Iterable<ProjectionAudioStream> audioStreams = const [],
     this.failureMessage,
     this.metadata,
+    this.hostReturnRevision = 0,
   }) : videoStreams = List.unmodifiable(videoStreams),
        audioStreams = List.unmodifiable(audioStreams);
 
@@ -165,6 +170,9 @@ final class ProjectionSession {
   final ProjectionSessionState state;
   final List<ProjectionVideoStream> videoStreams;
   final List<ProjectionAudioStream> audioStreams;
+
+  /// Session-scoped phone requests to relinquish presentation, not AV stops.
+  final int hostReturnRevision;
   final ProjectionSessionMetadata? metadata;
   final String? failureMessage;
 
@@ -175,6 +183,7 @@ final class ProjectionSession {
       device == other.device &&
       state == other.state &&
       failureMessage == other.failureMessage &&
+      hostReturnRevision == other.hostReturnRevision &&
       metadata == other.metadata &&
       _listEquals(videoStreams, other.videoStreams) &&
       _listEquals(audioStreams, other.audioStreams);
@@ -186,6 +195,7 @@ final class ProjectionSession {
     state,
     failureMessage,
     metadata,
+    hostReturnRevision,
     Object.hashAll(videoStreams),
     Object.hashAll(audioStreams),
   );
