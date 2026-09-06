@@ -8,9 +8,14 @@ import '../../core/projection/projection_types.dart';
 import '../projection/projection_view.dart';
 
 class MediaPage extends StatefulWidget {
-  const MediaPage({super.key, required this.projection});
+  const MediaPage({
+    super.key,
+    required this.projection,
+    this.rendererTest = false,
+  });
 
   final ProjectionService projection;
+  final bool rendererTest;
 
   @override
   State<MediaPage> createState() => _MediaPageState();
@@ -68,7 +73,9 @@ class _MediaPageState extends State<MediaPage> {
             children: [
               Expanded(
                 child: Text(
-                  'Projection',
+                  widget.rendererTest
+                      ? 'Native renderer test — no phone'
+                      : 'Projection',
                   style: Theme.of(context).textTheme.headlineMedium,
                 ),
               ),
@@ -90,9 +97,10 @@ class _MediaPageState extends State<MediaPage> {
           Expanded(
             child: Card(
               clipBehavior: Clip.antiAlias,
-              child:
-                  stream != null &&
-                      session?.state == ProjectionSessionState.streaming
+              child: widget.rendererTest
+                  ? const ProjectionView.rendererTest()
+                  : stream != null &&
+                        session?.state == ProjectionSessionState.streaming
                   ? ProjectionView(
                       service: widget.projection,
                       sessionId: session!.id,

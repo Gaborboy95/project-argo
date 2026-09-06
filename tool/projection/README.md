@@ -238,3 +238,81 @@ protobuf definitions or credentials were copied into Argo. Native API references
 [IHS platform-view ABI](https://github.com/toyota-connected/ivi-homescreen/blob/main/shared/include/ihs/platform_view.h),
 [rustls](https://docs.rs/rustls/0.23.43/rustls/),
 [Vulkan DRM-device properties](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDrmPropertiesEXT.html).
+
+## Phone-independent native renderer diagnostic
+
+From the Argo checkout, with the previous test homescreen stopped, run:
+
+```bash
+tool/projection/run_renderer_test.sh
+```
+
+Select **Media**. The page must show **Native renderer test — no phone** outside
+its surface, with visibly scrolling SMPTE bars **inside Argo**. The native source
+is live 1280×720 BGRx, 30 fps, pixel aspect ratio 1:1. Destroying the view stops
+the pipeline; recreating it restarts the pattern. Existing navigation uses an
+`IndexedStack` and keeps pages mounted, so changing tabs alone does not destroy
+the view. This navigation behavior is unchanged.
+
+The launcher uses `FLUTTER_WORKSPACE` (default `$HOME/dev/infotainment`) and
+`IHS_PREFIX` (default `$HOME/dev/ivi-build/out/usr/local`). It loads the workspace
+environment, builds the existing native view and an x86_64 release/AOT bundle in
+`<workspace>/bundle/argo-render-test`, then runs the existing
+`<IHS prefix>/bin/homescreen --backend wayland-egl --w=1280 --h=720`.
+It does not rebuild IHS or Flutter Engine, update repositories, or require root.
+It refuses to stage while another launcher or the user's homescreen is running.
+Runtime output goes to `/tmp/argo-renderer-test.log`; a homescreen failure remains
+a failing shell exit status through `tee`.
+
+`ARGO_PROJECTION_RENDER_TEST=1` is a process-environment flag, supported in AOT.
+Unset or `0` preserves normal selection; other values are rejected. Test mode
+requires the disabled projection backend (also the default); combining it with
+`ARGO_PROJECTION_BACKEND=android-auto` fails before identity validation or backend
+construction. No AA session or public test protocol is created. The launcher
+sets simulation, generic vehicle profile, and disabled projection/audio/host
+power backends. It clears inherited Argo/Veloce integration and scenario settings,
+projection sockets and certificates, and uses isolated empty plugin/integration
+directories and temporary settings. An explicit
+`ARGO_PROJECTION_DRM_RENDER_NODE` is preserved; otherwise native device discovery
+is used. No daemon, phone, USB inspection or media-socket connection is needed.
+
+The presentation path is unchanged: `ProjectionView` creates `AndroidView` with
+`argo.projection.view` and `StandardMessageCodec`, using Flutter's existing
+platform-view ID, create, layout and dispose messages. In the installed Flutter
+framework this is `PlatformViewsService.initAndroidView()` →
+`TextureAndroidViewController` → `RenderAndroidView`/`TextureLayer` composition.
+It is not switched to a hybrid/surface controller. The same dynamically loaded
+`libargo_projection_view.so` registers the same IHS factory. Only native source
+selection changes: `videotestsrc` feeds the existing bounded `projection_sink`
+appsink, `OnSample()` and `SubmitRgb()`. All pixels remain native.
+
+Logs include factory/create results, platform-view ID and native view pointer
+(the IHS create ID is the platform-view ID; no separate native numeric ID is
+exposed here), requested size, selected source, granted IHS kind, first sample
+geometry/format/stride and first submit result/format/modifier. Per-view submitted
+and failed counters are reported no more often than every three seconds;
+failures include pre-submit drops. Destruction reports final counts. IHS kinds
+are logged numerically as defined by the installed `ihs/platform_view.h`.
+
+The committed compatibility behavior is preserved: GBM requests linear XRGB8888,
+accepts LINEAR or INVALID from the existing allocation probe, and passes the
+actual buffer modifier to IHS without coercion. DMA-BUF frames retain the existing
+pre-`buffer_id` ABI size and release-fence handling. SOFTWARE_SHM still requires
+a real host-provided mapping. No IHS results are overridden.
+
+**Visual acceptance remains manual:** compilation, mock tests and `submit
+accepted` logs cannot establish that a frame was displayed. Acceptance requires
+moving native bars visibly displayed inside Argo through the existing, unmodified
+ivi-homescreen executable. A blank surface with accepted submissions reproduces
+the presentation problem independently of Android Auto.
+
+Validation of this diagnostic in the Linux VM: formatting, analyzer and all 30
+focused projection/Media tests passed (two new checks). The C++ library built
+against the installed IHS, and the launcher built/staged the release bundle and
+ran the existing wayland-egl homescreen. GStreamer 1.24.2 supplied 1280×720 BGRx
+samples with stride 5120; IHS granted kind 1 and accepted 2,450 submissions
+with actual modifier `0x00ffffffffffffff` and no reported submission failures.
+The process environment had no projection socket/certificate variables. Stopping
+the launched homescreen logged native-view destruction and the final counters.
+The user observed a **blank surface** on Media. This reproduces the presentation
+failure without Android Auto; visible renderer acceptance has **not** passed.

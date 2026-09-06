@@ -4,6 +4,7 @@ import '../core/lifecycle/app_lifecycle_coordinator.dart';
 import '../core/projection/projection_backend.dart';
 import '../core/projection/projection_backend_type.dart';
 import '../core/projection/projection_preferences.dart';
+import '../core/projection/projection_render_test.dart';
 import '../core/projection/projection_service.dart';
 import '../core/services/service_registry.dart';
 import '../core/settings/settings_service.dart';
@@ -21,6 +22,7 @@ Future<ProjectionService> registerProjectionServices({
   AndroidAutoIdentityValidator? identityValidator,
   ProjectionViewRegistry Function({String? libraryPath})? viewRegistryLoader,
 }) async {
+  final renderTest = ProjectionRenderTest.fromEnvironment(environment);
   final preferences = ProjectionPreferences.fromSettings(
     services.get<SettingsService>(),
   );
@@ -34,7 +36,7 @@ Future<ProjectionService> registerProjectionServices({
   );
   final backendType = ProjectionBackendType.fromEnvironment(environment);
   ProjectionViewRegistry? viewRegistry;
-  if (backendType == ProjectionBackendType.androidAuto) {
+  if (renderTest.enabled || backendType == ProjectionBackendType.androidAuto) {
     try {
       viewRegistry = (viewRegistryLoader ?? IhsProjectionViewRegistry.load)(
         libraryPath: environment['ARGO_PROJECTION_VIEW_LIBRARY'],
@@ -45,6 +47,7 @@ Future<ProjectionService> registerProjectionServices({
         shutdown: viewRegistry.close,
       );
     } on Object catch (error, stackTrace) {
+      if (renderTest.enabled) rethrow;
       diagnostics.error(
         'projection.view',
         'Native projection view is unavailable.',
@@ -64,6 +67,7 @@ Future<ProjectionService> registerProjectionServices({
     shutdown: projection.close,
   );
   services
+    ..register<ProjectionRenderTest>(renderTest)
     ..register<ProjectionBackend>(backend)
     ..register<ProjectionService>(projection);
   if (viewRegistry != null) {

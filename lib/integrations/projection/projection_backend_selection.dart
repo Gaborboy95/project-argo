@@ -5,6 +5,7 @@ import '../../core/projection/disabled_projection_backend.dart';
 import '../../core/projection/projection_backend.dart';
 import '../../core/projection/projection_backend_type.dart';
 import '../../core/projection/projection_preferences.dart';
+import '../../core/projection/projection_render_test.dart';
 import 'android_auto_identity.dart';
 import 'android_auto_projection_backend.dart';
 import 'projection_ipc.dart';
@@ -21,6 +22,7 @@ Future<ProjectionBackend> selectProjectionBackend({
   ProjectionControlTransportFactory? transportFactory,
   AndroidAutoIdentityValidator? identityValidator,
 }) async {
+  ProjectionRenderTest.fromEnvironment(environment);
   final type = ProjectionBackendType.fromEnvironment(environment);
   if (type == ProjectionBackendType.disabled) {
     return const DisabledProjectionBackend();

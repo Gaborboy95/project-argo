@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/power/head_unit_power_service.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/projection/projection_service.dart';
+import '../../core/projection/projection_render_test.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
 import '../../features/climate/climate_page.dart';
 import '../../features/home/home_page.dart';
@@ -55,8 +56,12 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'media',
         label: 'Media',
         icon: Icons.music_note_outlined,
-        builder: (_, services) =>
-            MediaPage(projection: services.get<ProjectionService>()),
+        builder: (_, services) => MediaPage(
+          projection: services.get<ProjectionService>(),
+          rendererTest:
+              services.contains<ProjectionRenderTest>() &&
+              services.get<ProjectionRenderTest>().enabled,
+        ),
       ),
     )
     ..register(

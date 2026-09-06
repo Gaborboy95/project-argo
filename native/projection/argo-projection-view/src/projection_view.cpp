@@ -12,6 +12,8 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -75,11 +77,48 @@ struct ViewState {
   int allocator_fd = -1;
   bool owns_allocator = false;
   bool reported_submit_error = false;
-  bool reported_first_decoded_frame = false;
-  bool reported_first_submit = false; 
+  std::atomic<bool> reported_first_decoded_frame{false};
+  bool reported_first_submit = false;
+
+  bool renderer_test = false;
+  int view_id = -1;
+  // Submission counters are protected by mutex, like SubmitRgb and negotiation.
+  std::uint64_t submitted = 0;
+  std::uint64_t failed = 0;
+  bool reported_test_submit = false;
+  std::chrono::steady_clock::time_point last_report = std::chrono::steady_clock::now();
+
+  void ReportSubmission(const IhsFrame* frame, int result) {
+    if (!renderer_test) return;
+    if (result == IHS_PV_OK) ++submitted;
+    else ++failed;
+    if (frame != nullptr && !reported_test_submit) {
+      reported_test_submit = true;
+      std::fprintf(stderr,
+          "Argo renderer test: id=%d first submit result=%d (%s) "
+          "format=0x%08x modifier=0x%016llx; display unverified\n",
+          view_id, result, result == IHS_PV_OK ? "submit accepted" : "submit failed",
+          frame->format.fourcc,
+          static_cast<unsigned long long>(frame->format.modifier));
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report >= std::chrono::seconds(3)) {
+      last_report = now;
+      std::fprintf(stderr,
+          "Argo renderer test: id=%d submitted=%llu failed=%llu "
+          "(failed includes pre-submit drops); display unverified\n",
+          view_id, static_cast<unsigned long long>(submitted),
+          static_cast<unsigned long long>(failed));
+    }
+  }
 
   ~ViewState() {
     StopPipeline();
+    if (renderer_test) {
+      std::fprintf(stderr, "Argo renderer test: destroy id=%d native=%p submitted=%llu failed=%llu\n",
+          view_id, static_cast<void*>(view),
+          static_cast<unsigned long long>(submitted), static_cast<unsigned long long>(failed));
+    }
     ReleaseMapping();
     if (owns_allocator && allocator != nullptr) gbm_device_destroy(allocator);
     if (allocator_fd >= 0) close(allocator_fd);
@@ -100,32 +139,40 @@ struct ViewState {
   }
 
   bool StartPipeline() {
-    const char* socket_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
-    if (socket_path == nullptr || socket_path[0] == '\0') {
-      return false;
-    }
-    media_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (media_fd < 0) {
-      return false;
-    }
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    if (std::strlen(socket_path) >= sizeof(address.sun_path)) {
-      StopPipeline();
-      return false;
-    }
-    std::strncpy(address.sun_path, socket_path, sizeof(address.sun_path) - 1);
-    if (connect(media_fd, reinterpret_cast<sockaddr*>(&address),
-                sizeof(address)) != 0) {
-      StopPipeline();
-      return false;
-    }
+    std::string source;
+    if (renderer_test) {
+      source = "videotestsrc is-live=true pattern=smpte horizontal-speed=2 ! "
+          "video/x-raw,format=BGRx,width=1280,height=720,"
+          "framerate=30/1,pixel-aspect-ratio=1/1 ! ";
+    } else {
+      const char* socket_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
+      if (socket_path == nullptr || socket_path[0] == '\0') {
+        return false;
+      }
+      media_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      if (media_fd < 0) {
+        return false;
+      }
+      sockaddr_un address{};
+      address.sun_family = AF_UNIX;
+      if (std::strlen(socket_path) >= sizeof(address.sun_path)) {
+        StopPipeline();
+        return false;
+      }
+      std::strncpy(address.sun_path, socket_path, sizeof(address.sun_path) - 1);
+      if (connect(media_fd, reinterpret_cast<sockaddr*>(&address),
+                  sizeof(address)) != 0) {
+        StopPipeline();
+        return false;
+      }
 
-    const std::string description =
-        "fdsrc fd=" + std::to_string(media_fd) +
-        " do-timestamp=true ! queue max-size-buffers=8 ! "
-        "h264parse ! decodebin ! videoconvert ! "
-        "video/x-raw,format=BGRx,width=[1,1920],height=[1,1080] ! appsink name=projection_sink "
+      source =
+          "fdsrc fd=" + std::to_string(media_fd) +
+          " do-timestamp=true ! queue max-size-buffers=8 ! "
+          "h264parse ! decodebin ! videoconvert ! "
+          "video/x-raw,format=BGRx,width=[1,1920],height=[1,1080] ! ";
+    }
+    const std::string description = source + "appsink name=projection_sink "
         "sync=false max-buffers=2 drop=true";
     GError* error = nullptr;
     pipeline = gst_parse_launch(description.c_str(), &error);
@@ -142,7 +189,7 @@ struct ViewState {
       if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
         GError* failure = nullptr;
         gst_message_parse_error(message, &failure, nullptr);
-        std::fprintf(stderr, "Argo projection: native decoder failed: %s\n",
+        std::fprintf(stderr, "Argo projection: native GStreamer pipeline failed: %s\n",
                      failure ? failure->message : "unknown error");
         if (failure) g_error_free(failure);
       }
@@ -318,7 +365,12 @@ struct ViewState {
     };
     grant = IhsPvGrant{};
     grant.struct_size = sizeof(grant);
-    if (ihs_pv_negotiate(view, &requirements, &grant) != IHS_PV_OK) {
+    const int result = ihs_pv_negotiate(view, &requirements, &grant);
+    if (renderer_test) {
+      std::fprintf(stderr, "Argo renderer test: id=%d negotiation result=%d granted_kind=%u\n",
+                   view_id, result, grant.granted_kind);
+    }
+    if (result != IHS_PV_OK) {
       return false;
     }
     if (grant.granted_kind != IHS_PV_KIND_SOFTWARE_SHM) {
@@ -391,7 +443,10 @@ struct ViewState {
         frame_height,
         GBM_FORMAT_XRGB8888,
         GBM_BO_USE_LINEAR);
-      if (buffer == nullptr) return;
+      if (buffer == nullptr) {
+        ReportSubmission(nullptr, IHS_PV_ERR_INVALID);
+        return;
+      }
       std::uint32_t mapped_stride = 0;
       void* map_cookie = nullptr;
       void* mapping = gbm_bo_map(buffer, 0, 0, frame_width, frame_height,
@@ -407,12 +462,14 @@ struct ViewState {
           stride < frame_width * 4) {
         if (mapping != nullptr) gbm_bo_unmap(buffer, map_cookie);
         gbm_bo_destroy(buffer);
-        if (!linear) {
+        if (!linear && (!renderer_test || !reported_submit_error)) {
+          if (renderer_test) reported_submit_error = true;
           std::fprintf(
               stderr,
               "Argo projection: rejected non-linear GBM buffer modifier=0x%016llx\n",
               static_cast<unsigned long long>(modifier));
         }
+        ReportSubmission(nullptr, IHS_PV_ERR_INVALID);
         return;
       }
       for (std::size_t row = 0; row < frame_height; ++row) {
@@ -435,6 +492,7 @@ struct ViewState {
       frame.plane_stride[0] = gbm_bo_get_stride(buffer);
       int release = -1;
       const int result = fd < 0 ? IHS_PV_ERR_INVALID : ihs_pv_submit(view, &frame, -1, &release);
+      ReportSubmission(&frame, result);
       if (!reported_first_submit) {
         reported_first_submit = true;
 
@@ -459,6 +517,7 @@ struct ViewState {
     }
     if (suspended || grant.granted_kind != IHS_PV_KIND_SOFTWARE_SHM ||
         shm_mapping == MAP_FAILED) {
+      ReportSubmission(nullptr, IHS_PV_ERR_INVALID);
       return;
     }
     const std::size_t rows = std::min<std::size_t>(
@@ -484,7 +543,8 @@ struct ViewState {
         .buffer_id = 0,
     };
     int release_fence = -1;
-    ihs_pv_submit(view, &frame, -1, &release_fence);
+    const int result = ihs_pv_submit(view, &frame, -1, &release_fence);
+    ReportSubmission(&frame, result);
     if (release_fence >= 0) {
       close(release_fence);
     }
@@ -504,12 +564,11 @@ GstFlowReturn OnSample(GstAppSink* sink, gpointer user_data) {
   if (buffer != nullptr && caps != nullptr &&
       gst_video_info_from_caps(&info, caps) &&
       gst_buffer_map(buffer, &mapping, GST_MAP_READ)) {
-        if (!state->reported_first_decoded_frame) {
-          state->reported_first_decoded_frame = true;
+        if (!state->reported_first_decoded_frame.exchange(true)) {
 
           std::fprintf(
               stderr,
-              "Argo projection: first decoded frame "
+              "Argo projection: first native sample "
               "%ux%u format=%s stride=%d map_bytes=%zu\n",
               GST_VIDEO_INFO_WIDTH(&info),
               GST_VIDEO_INFO_HEIGHT(&info),
@@ -563,14 +622,28 @@ int Create(const IhsPvCreateInfo* info, void*, IhsPlatformView* view,
     return IHS_PV_ERR_INVALID;
   }
   auto state = std::make_unique<ViewState>();
+  const char* test = std::getenv("ARGO_PROJECTION_RENDER_TEST");
+  state->renderer_test = test != nullptr && std::strcmp(test, "1") == 0;
+  const char* backend = std::getenv("ARGO_PROJECTION_BACKEND");
+  if (state->renderer_test && backend != nullptr && backend[0] != '\0' &&
+      std::strcmp(backend, "disabled") != 0) {
+    std::fprintf(stderr, "Argo renderer test: create rejected: requires ARGO_PROJECTION_BACKEND=disabled\n");
+    return IHS_PV_ERR_INVALID;
+  }
+  state->view_id = info->id;
   state->view = view;
+  if (state->renderer_test) {
+    std::fprintf(stderr, "Argo renderer test: enabled id=%d native=%p requested=%gx%g source=videotestsrc SMPTE moving 1280x720 BGRx 30fps PAR=1/1\n",
+        info->id, static_cast<void*>(view), info->width, info->height);
+  }
   state->width = info->width;
   state->height = info->height;
   if (!state->Negotiate()) {
+    if (state->renderer_test) std::fprintf(stderr, "Argo renderer test: create failed: negotiation result=%d\n", IHS_PV_ERR_UNSUPPORTED);
     return IHS_PV_ERR_UNSUPPORTED;
   }
   if (!state->StartPipeline()) {
-    std::fprintf(stderr, "Argo projection: could not start native H.264 pipeline\n");
+    std::fprintf(stderr, "Argo projection: could not start native pipeline\n");
     return IHS_PV_ERR_UNSUPPORTED;
   }
   *callbacks = IhsPvCallbacks{
@@ -583,6 +656,7 @@ int Create(const IhsPvCreateInfo* info, void*, IhsPlatformView* view,
       .renegotiate = Renegotiate,
       .dispose = Dispose,
   };
+  if (state->renderer_test) std::fprintf(stderr, "Argo renderer test: create id=%d result=%d\n", info->id, IHS_PV_OK);
   *user_data = state.release();
   return IHS_PV_OK;
 }
@@ -592,7 +666,12 @@ int Create(const IhsPvCreateInfo* info, void*, IhsPlatformView* view,
 extern "C" __attribute__((visibility("default"))) int
 argo_projection_view_register() {
   gst_init(nullptr, nullptr);
-  return ihs_pv_register_factory(kViewType, Create, nullptr);
+  const int result = ihs_pv_register_factory(kViewType, Create, nullptr);
+  const char* test = std::getenv("ARGO_PROJECTION_RENDER_TEST");
+  if (test != nullptr && std::strcmp(test, "1") == 0) {
+    std::fprintf(stderr, "Argo renderer test: factory registration type=%s result=%d\n", kViewType, result);
+  }
+  return result;
 }
 
 extern "C" __attribute__((visibility("default"))) void

@@ -18,17 +18,24 @@ typedef ProjectionNativeViewBuilder = Widget Function(
 class ProjectionView extends StatefulWidget {
   const ProjectionView({
     super.key,
-    required this.service,
-    required this.sessionId,
-    required this.stream,
+    required ProjectionService this.service,
+    required String this.sessionId,
+    required ProjectionVideoStream this.stream,
     this.nativeViewBuilder,
   });
 
+  const ProjectionView.rendererTest({super.key, this.nativeViewBuilder})
+    : service = null,
+      sessionId = null,
+      stream = null;
+
+  bool get isRendererTest => service == null;
+
   static const viewType = 'argo.projection.view';
 
-  final ProjectionService service;
-  final String sessionId;
-  final ProjectionVideoStream stream;
+  final ProjectionService? service;
+  final String? sessionId;
+  final ProjectionVideoStream? stream;
   final ProjectionNativeViewBuilder? nativeViewBuilder;
 
   @override
@@ -41,20 +48,22 @@ class _ProjectionViewState extends State<ProjectionView> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.service.setVideoVisibility(widget.stream.id, true));
+    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, true));
   }
 
   @override
   void didUpdateWidget(ProjectionView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.stream.id == widget.stream.id) return;
-    unawaited(oldWidget.service.setVideoVisibility(oldWidget.stream.id, false));
-    unawaited(widget.service.setVideoVisibility(widget.stream.id, true));
+    if (oldWidget.stream?.id == widget.stream?.id) return;
+    unawaited(
+      oldWidget.service?.setVideoVisibility(oldWidget.stream!.id, false),
+    );
+    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, true));
   }
 
   @override
   void dispose() {
-    unawaited(widget.service.setVideoVisibility(widget.stream.id, false));
+    unawaited(widget.service?.setVideoVisibility(widget.stream!.id, false));
     super.dispose();
   }
 
@@ -76,7 +85,8 @@ class _ProjectionViewState extends State<ProjectionView> {
             _send(event, ProjectionTouchPhase.cancel, geometry),
         child: Center(
           child: AspectRatio(
-            aspectRatio: widget.stream.width / widget.stream.height,
+            aspectRatio:
+                (widget.stream?.width ?? 1280) / (widget.stream?.height ?? 720),
             child: IgnorePointer(child: _nativeView(context)),
           ),
         ),
@@ -86,10 +96,19 @@ class _ProjectionViewState extends State<ProjectionView> {
 
   Widget _nativeView(BuildContext context) {
     final builder = widget.nativeViewBuilder;
-    if (builder != null) return builder(context, widget.stream.id);
+    if (builder != null) {
+      return builder(context, widget.stream?.id ?? 'renderer-diagnostic');
+    }
     return AndroidView(
       viewType: ProjectionView.viewType,
-      creationParams: <String, Object?>{'streamId': widget.stream.id},
+      creationParams: <String, Object?>{
+        if (widget.stream != null) 'streamId': widget.stream!.id,
+      },
+      onPlatformViewCreated: widget.isRendererTest
+          ? (id) => debugPrint(
+              'Argo renderer test: Flutter platform-view created id=$id',
+            )
+          : null,
       creationParamsCodec: const StandardMessageCodec(),
     );
   }
@@ -99,8 +118,9 @@ class _ProjectionViewState extends State<ProjectionView> {
     ProjectionTouchPhase phase,
     ProjectionViewGeometry geometry,
   ) {
+    if (widget.isRendererTest) return;
     final touch = _mapper.map(
-      stream: widget.stream,
+      stream: widget.stream!,
       view: geometry,
       pointerId: event.pointer,
       phase: phase,
@@ -108,7 +128,7 @@ class _ProjectionViewState extends State<ProjectionView> {
       localY: event.localPosition.dy,
     );
     if (touch != null) {
-      unawaited(widget.service.sendTouch(widget.sessionId, touch));
+      unawaited(widget.service!.sendTouch(widget.sessionId!, touch));
     }
   }
 }
