@@ -1,10 +1,13 @@
 # Wired Android Auto
 
-The user has proven AOAP, accessory re-enumeration, bulk endpoints and Android
-Auto VersionResponse **1.7** on a real phone. The daemon now continues into
-TLS 1.2, discovery, main H.264 video, touch, and media/speech/system audio.
-**Post-version hardware acceptance is still pending.** Unit tests are not a
-claim that phone UI, audio, or the production embedder have worked on hardware.
+Current status at audited Argo revision `ee08a138`: the user reports live wired
+Android Auto video/audio and visible native renderer bars on Ubuntu VMware through
+unmodified IHS. Latest gesture refinement is code/test verified but not yet
+phone-tested; reconnect endurance and target-hardware acceptance remain open.
+See [acceptance and limitations](../../docs/status.md), including the outstanding
+IHS release-eventfd exhaustion issue. This is a development runbook, not product
+certification. [Setup](../../docs/setup.md) and [configuration](../../docs/configuration.md)
+provide the environment and option reference.
 
 ## Build and provision once
 
@@ -46,8 +49,10 @@ cd "$ARGO/native/projection"
 cargo build --release --features linux-usb,linux-media
 ```
 
-Keep your existing Argo-owned RSA identity. Only if one does not exist, create
-your own; no project/accessory credentials are provided or required:
+Keep your existing externally stored Argo identity. For local compatibility
+experiments only, if none exists, this generates a self-owned test identity. No
+credentials are provided by the repository; generation is not phone acceptance
+or a completed provisioning/certification workflow:
 
 ```bash
 install -d -m 700 "$HOME/.config/project-argo/android-auto"
@@ -75,34 +80,51 @@ phone still requires its TLS log. No certificate or private key is logged.
 
 ## Build the native view and Argo bundle
 
-Use the headers, pkg-config file and library from the **same IHS build** that
-will run Argo:
+Use headers/library from the **same IHS build** that will run Argo. Load the
+installed workspace environment and require the previous homescreen to be stopped
+before building or staging any native library:
 
 ```bash
+set -euo pipefail
 export ARGO="$HOME/dev/argo"
-export IHS_PREFIX="$HOME/dev/ivi-build/out/usr/local"
-export PKG_CONFIG_PATH="$IHS_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-
-cmake -S "$ARGO/native/projection/argo-projection-view" \
-  -B "$ARGO/native/projection/argo-projection-view/build" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build "$ARGO/native/projection/argo-projection-view/build"
-
-cd "$FLUTTER_WORKSPACE"
-emb bundle --app-path "$ARGO" --arch x86_64 --build
+export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
+source "$FLUTTER_WORKSPACE/setup_env.sh"
+export PATH="$HOME/.local/state/Dart/install/bin:$PATH"
 export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
-install -m 755 \
-  "$ARGO/native/projection/argo-projection-view/build/libargo_projection_view.so" \
+if pgrep -u "$UID" -x homescreen >/dev/null; then
+  echo 'Stop your previous homescreen before building/staging.' >&2
+  exit 1
+fi
+test -x "$IHS_PREFIX/bin/homescreen"
+test -f "$IHS_PREFIX/include/ihs/platform_view.h"
+test -f "$IHS_PREFIX/lib/libihs_shared.so"
+unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_LIBDIR
+cmake -S "$ARGO/native/projection/argo-projection-view" \
+  -B "$ARGO/build/native-projection" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DIHS_INCLUDE_DIR="$IHS_PREFIX/include" \
+  -DIHS_SHARED_LIBRARY="$IHS_PREFIX/lib/libihs_shared.so"
+cmake --build "$ARGO/build/native-projection"
+emb bundle --app-path "$ARGO" --workspace "$FLUTTER_WORKSPACE" \
+  --arch x86_64 --mode release --build --output "$BUNDLE"
+install -m 755 "$ARGO/build/native-projection/libargo_projection_view.so" \
   "$BUNDLE/lib/libargo_projection_view.so"
-test -f "$BUNDLE/lib/libveloce_lua_native.so"
+for library in libapp.so libflutter_engine.so libargo_projection_view.so libveloce_lua_native.so libsqlite3.so; do
+  test -f "$BUNDLE/lib/$library"
+done
 ```
+
+Do not apply a global pkg-config sysroot to normally installed GStreamer.
+`BUILD_COMPOSITOR` must already be enabled in the matching IHS host build; it is
+not a native-view CMake option. Ordinary app/view changes do not require an
+Engine or IHS rebuild. This recipe builds/packages only Argo's components.
 
 The native view queries IHS capabilities, format/modifier support and the active
 EGL/Vulkan device. The initial export path uses native BGRx conversion and fresh
 linear RGB DMA-BUF allocations, avoiding reuse before compositor release.
 IHS scales the source into the aspect-correct Flutter view. This is a correctness
 path, not a zero-copy decoder claim. No EGL/Vulkan backend name is assumed.
-SOFTWARE_SHM is used only if the host supplies an actual buffer; current upstream
+SOFTWARE_SHM is used only if the host supplies an actual buffer; the audited local
 IHS advertises that kind but its host adapter does not allocate one. A VM needs
 a usable render device/GBM linear allocation or a functioning host SHM grant.
 An unsupported grant produces a specific native diagnostic, not an invented
@@ -113,7 +135,9 @@ working renderer. Output renegotiation is implemented.
 Terminal 1 — start the standalone daemon **before plugging in the phone**:
 
 ```bash
+set -o pipefail
 export ARGO="$HOME/dev/argo"
+: "${XDG_RUNTIME_DIR:?Run in your desktop login session}"
 export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
 export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
 install -d -m 700 "$XDG_RUNTIME_DIR/argo"
@@ -134,32 +158,42 @@ is stopped; startup never unlinks another process's socket.
 Terminal 2 — run the actual existing homescreen executable:
 
 ```bash
+set -o pipefail
 export ARGO="$HOME/dev/argo"
+export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
+source "$FLUTTER_WORKSPACE/setup_env.sh"
 export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+: "${XDG_RUNTIME_DIR:?Run in your desktop login session}"
 export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/project-argo/android-auto/argo.crt"
 export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/project-argo/android-auto/argo.key"
 export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo/projection.sock"
 export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo/projection-video.sock"
+export ARGO_PROJECTION_RENDER_TEST=0
+unset ARGO_SIMULATION_SCENARIO ARGO_VEHICLE_INTEGRATIONS_DIR VELOCE_CAN_INPUT
+export ARGO_VEHICLE_PROFILE=generic
+export VELOCE_PLUGIN_DIR="$HOME/.local/share/project-argo/empty-plugins"
+mkdir -p "$VELOCE_PLUGIN_DIR"
 
 systemctl --user status pipewire wireplumber --no-pager
 gst-inspect-1.0 h264parse
 gst-inspect-1.0 pipewiresink
-
-cd "$HOME/dev/ivi-build"
-export LD_LIBRARY_PATH="$PWD/out/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LD_LIBRARY_PATH="$BUNDLE/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$IHS_PREFIX/lib:$BUNDLE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 ARGO_MODE=simulation \
 ARGO_HOST_POWER_BACKEND=disabled \
 ARGO_AUDIO_BACKEND=pipewire \
 ARGO_PROJECTION_BACKEND=android-auto \
 VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
-"$PWD/out/usr/local/bin/homescreen" -b "$BUNDLE" --w=1280 --h=720 \
+"$IHS_PREFIX/bin/homescreen" -b "$BUNDLE" --backend wayland-egl --width=1280 --height=720 \
   2>&1 | tee /tmp/argo-homescreen.log
 ```
 
-Use the existing vehicle/profile/plugin environment if your normal Argo launch
-requires it. Android Auto itself does not depend on a vehicle profile.
+The example deliberately uses generic identity and an empty plugin root. Android
+Auto does not depend on a vehicle profile. Both terminals need the same explicit
+socket and certificate paths: Dart still validates and transmits identity paths,
+while the standalone daemon loads its own environment. The default control paths
+differ between processes, so do not rely on implicit matching.
 Select **Media** in Argo, unlock the phone, and plug it in. Accept any phone-side
 Android Auto prompts. Then verify touch, music and a navigation announcement.
 Use **Return to Argo** / **Show projection** to switch the surface. Unplug must
@@ -198,7 +232,9 @@ the existing Argo preferences supplied before connection select supported
 800x480/1280x720/1920x1080 and 30/60 FPS. Unsupported sizes fail explicitly.
 Only night/driving-status sensors are currently advertised: absent vehicle
 inputs mean day mode and conservative driving restrictions, never fictitious
-speed/RPM/parking-brake data. Microphone capture is not advertised or implemented.
+speed/RPM/parking-brake data. Microphone channel 9 is advertised with PCM setup/open responses, but no native
+capture/upload pipeline is implemented. Do not treat that scaffolding as working
+voice input; see the current limitations.
 
 If a real run fails, share both logs and the last successful stage. Do not change
 unrelated protocol settings or credentials speculatively. Wired acceptance is
@@ -224,7 +260,8 @@ Native tests generate temporary RSA identities with OpenSSL; they do not embed
 credentials or open a phone/audio device. New coverage is limited to high-risk
 TLS, framing, channel, input and cleanup paths.
 
-Validation in the development environment: 38 Linux Rust tests passed (eight
+Historical validation before the latest refinement (not rerun for this documentation
+audit): 38 Linux Rust tests passed (eight
 new tests), strict all-feature Clippy and Rust formatting passed; 207 Flutter
 tests passed with five existing native-Lua skips, analyzer and diff checks passed.
 The native view passed C++ syntax checking against current IHS headers. A
@@ -236,7 +273,7 @@ Protocol behavior was cross-checked against
 [LIVI](https://github.com/f-io/LIVI) as a GPL behavioral reference only; no source,
 protobuf definitions or credentials were copied into Argo. Native API references:
 [IHS platform-view ABI](https://github.com/toyota-connected/ivi-homescreen/blob/main/shared/include/ihs/platform_view.h),
-[rustls](https://docs.rs/rustls/0.23.43/rustls/),
+[rustls](https://docs.rs/rustls/0.23.22/rustls/),
 [Vulkan DRM-device properties](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDrmPropertiesEXT.html).
 
 ## Phone-independent native renderer diagnostic
@@ -258,7 +295,11 @@ The launcher uses `FLUTTER_WORKSPACE` (default `$HOME/dev/infotainment`) and
 `IHS_PREFIX` (default `$HOME/dev/ivi-build/out/usr/local`). It loads the workspace
 environment, builds the existing native view and an x86_64 release/AOT bundle in
 `<workspace>/bundle/argo-render-test`, then runs the existing
-`<IHS prefix>/bin/homescreen --backend wayland-egl --w=1280 --h=720`.
+`<IHS prefix>/bin/homescreen --backend wayland-egl --width=1280 --height=720`.
+The launcher now uses the installed CLI's supported `--width`/`--height` options.
+The earlier `--w`/`--h` forms were forwarded as engine arguments, so the historical
+comparison began at 1920×720. Native pattern dimensions remain 1280×720; geometry
+logs/Compare size still establish the actual destination after window resizing.
 It does not rebuild IHS or Flutter Engine, update repositories, or require root.
 It refuses to stage while another launcher or the user's homescreen is running.
 Runtime output goes to `/tmp/argo-renderer-test.log`; a homescreen failure remains
@@ -313,7 +354,8 @@ with actual modifier `0x00ffffffffffffff` and no reported submission failures.
 The process environment had no projection socket/certificate variables. Stopping
 the launched homescreen logged native-view destruction and the final counters.
 The user observed a **blank surface** on Media. This reproduces the presentation
-failure without Android Auto; visible renderer acceptance has **not** passed.
+failure without Android Auto in the **old texture-layer path**. It is historical;
+subsequent user acceptance of moving bars is recorded below.
 
 
 ### Flutter/IHS composition contract
@@ -378,8 +420,9 @@ before and after). Native creation succeeded for ID 0 with logical dimensions
 1031.11×580; frames remained 1280×720 BGRx, stride 5120. The layer-tree regression
 verified platform-view composition rather than inferring it from a widget name
 or an accepted buffer submission.
-Visible animated-bar acceptance for the composition fix remains unconfirmed;
-the earlier blank-surface observation was from the old texture-layer path.
+Subsequent user confirmation established visible moving bars on the corrected
+path. The earlier blank-surface observation was from the old texture-layer path;
+see the measured comparison result below and the current acceptance matrix.
 
 ### Gesture ownership and daemon logging
 

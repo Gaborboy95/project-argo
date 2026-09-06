@@ -13,10 +13,15 @@ logical CAN subscriptions, and the current UI session remain alive.
 
 ## Fake systemctl
 
+Use [setup](../../docs/setup.md) for the workspace SDK and native prerequisites.
+These commands deliberately select a fake executable; do not remove its PATH
+override when testing. Normal development uses `ARGO_HOST_POWER_BACKEND=disabled`.
+
 Install the repository fake ahead of the real `systemctl` in this process's
 `PATH`. It records the requested operation and never changes host power:
 
 ```sh
+cd "$HOME/dev/argo"
 mkdir -p /tmp/argo-fake-systemctl
 cp tool/host_power/fake-systemctl /tmp/argo-fake-systemctl/systemctl
 chmod +x /tmp/argo-fake-systemctl/systemctl
@@ -26,6 +31,9 @@ chmod +x /tmp/argo-fake-systemctl/systemctl
 With an already configured `vcan0`, launch Argo from the repository root:
 
 ```sh
+cd "$HOME/dev/argo"
+unset VELOCE_PLUGIN_DIR ARGO_SIMULATION_SCENARIO
+ARGO_AUDIO_BACKEND=disabled ARGO_PROJECTION_BACKEND=disabled ARGO_PROJECTION_RENDER_TEST=0 \
 PATH="/tmp/argo-fake-systemctl:$PATH" \
 ARGO_FAKE_SYSTEMCTL_LOG=/tmp/argo-systemctl.log \
 ARGO_MODE=production \

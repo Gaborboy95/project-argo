@@ -24,6 +24,9 @@ Run Argo with the example external integration and no CAN input:
 
 ```bash
 cd "$HOME/dev/argo"
+unset VELOCE_PLUGIN_DIR
+ARGO_HOST_POWER_BACKEND=disabled \
+ARGO_PROJECTION_BACKEND=disabled ARGO_PROJECTION_RENDER_TEST=0 \
 ARGO_MODE=simulation \
 ARGO_VEHICLE_INTEGRATIONS_DIR="$PWD/tool/vehicle_integrations" \
 ARGO_VEHICLE_PROFILE=example-vehicle \
@@ -56,31 +59,34 @@ command is emitted only after `false -> true`.
 
 ## ivi-homescreen / emb
 
-Build a release bundle with the current `emb` CLI, then run it through the
-production embedder rather than Flutter's GTK runner:
+Follow the shared [bundle build/staging workflow](../projection/README.md#build-the-native-view-and-argo-bundle)
+first, stopping the previous homescreen before replacing libraries. Then launch
+with explicit paths and disabled host power/projection:
 
 ```bash
-cd "$FLUTTER_WORKSPACE"
-emb bundle \
-  --app-path "$HOME/dev/argo" \
-  --arch x86_64 \
-  --build
-
-cd "$HOME/dev/argo"
+set -o pipefail
+export ARGO="$HOME/dev/argo"
+export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
+source "$FLUTTER_WORKSPACE/setup_env.sh"
+export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+export LD_LIBRARY_PATH="$IHS_PREFIX/lib:$BUNDLE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+unset VELOCE_PLUGIN_DIR
 ARGO_MODE=simulation \
-ARGO_VEHICLE_INTEGRATIONS_DIR="$PWD/tool/vehicle_integrations" \
+ARGO_HOST_POWER_BACKEND=disabled \
+ARGO_PROJECTION_BACKEND=disabled ARGO_PROJECTION_RENDER_TEST=0 \
+ARGO_VEHICLE_INTEGRATIONS_DIR="$ARGO/tool/vehicle_integrations" \
 ARGO_VEHICLE_PROFILE=example-vehicle \
-ARGO_SIMULATION_SCENARIO="$PWD/tool/simulation/audio_controls.json" \
+ARGO_SIMULATION_SCENARIO="$ARGO/tool/simulation/audio_controls.json" \
 ARGO_AUDIO_BACKEND=pipewire \
-ivi-homescreen -b "$FLUTTER_WORKSPACE/bundle/argo-release-x86_64" \
-  --w=1280 --h=720
+VELOCE_LUA_LIBRARY="$BUNDLE/lib/libveloce_lua_native.so" \
+"$IHS_PREFIX/bin/homescreen" -b "$BUNDLE" --backend wayland-egl --width=1280 --height=720 \
+  2>&1 | tee /tmp/argo-audio-check.log
 ```
 
-If the local bundle name differs, use the directory printed by `emb bundle`.
-Repeat the `wpctl get-volume` check above. Argo does not yet add a media-player
-dependency; future GStreamer playback should use the opt-in
-`BUILD_PLUGIN_AUDIOPLAYERS_LINUX` integration supplied by
-`ivi-homescreen-plugins`, independently from this system master-control path.
+Repeat the `wpctl get-volume` check above. AA already has native daemon playback;
+it is separate from system master control. Argo has no general local-media player
+here, and this workflow does not require adding an audioplayers plugin to IHS.
 
 Balance/fader and EQ are never silently applied by this initial production
 backend. Their controls stay disabled until an installed PipeWire topology/DSP
