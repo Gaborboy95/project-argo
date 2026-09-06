@@ -109,6 +109,9 @@ final class ProjectionAudioStream {
     required this.role,
     required this.active,
     required this.hasFocus,
+    this.sampleRate,
+    this.bitsPerSample,
+    this.channelCount,
   });
 
   final String id;
@@ -116,6 +119,7 @@ final class ProjectionAudioStream {
   final ProjectionAudioRole role;
   final bool active;
   final bool hasFocus;
+  final int? sampleRate, bitsPerSample, channelCount;
 
   @override
   bool operator ==(Object other) =>
@@ -124,10 +128,22 @@ final class ProjectionAudioStream {
       sessionId == other.sessionId &&
       role == other.role &&
       active == other.active &&
-      hasFocus == other.hasFocus;
+      hasFocus == other.hasFocus &&
+      sampleRate == other.sampleRate &&
+      bitsPerSample == other.bitsPerSample &&
+      channelCount == other.channelCount;
 
   @override
-  int get hashCode => Object.hash(id, sessionId, role, active, hasFocus);
+  int get hashCode => Object.hash(
+    id,
+    sessionId,
+    role,
+    active,
+    hasFocus,
+    sampleRate,
+    bitsPerSample,
+    channelCount,
+  );
 }
 
 final class ProjectionSession {

@@ -94,10 +94,8 @@ impl Default for DisplayConfig {
 }
 impl DisplayConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(
-            (self.width, self.height),
-            (800, 480) | (1280, 720) | (1920, 1080)
-        ) || !matches!(self.fps, 30 | 60)
+        if !crate::configuration::MODES.contains(&(self.width, self.height))
+            || !crate::configuration::FPS.contains(&self.fps)
             || !(80..=640).contains(&self.dpi)
         {
             return Err(
@@ -180,10 +178,16 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
                 .number(7, 0), // MAIN display
         ),
     );
-    for (channel, role, rate, channels) in [(4, 3, 48000, 2), (5, 1, 16000, 1), (6, 2, 16000, 1)] {
+    for format in crate::configuration::AUDIO {
+        let (channel, role, rate, channels) = (
+            u64::from(format.channel),
+            u64::from(format.role),
+            u64::from(format.rate),
+            u64::from(format.channels),
+        );
         let config = Proto::default()
             .number(1, rate)
-            .number(2, 16)
+            .number(2, u64::from(format.bits))
             .number(3, channels);
         response = response.nested(
             1,

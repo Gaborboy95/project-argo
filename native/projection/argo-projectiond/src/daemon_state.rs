@@ -149,6 +149,10 @@ pub fn snapshot_messages(
                 writer.u8(i as u8);
                 writer.u8(u8::from(current.audio[i]));
                 writer.u8(u8::from(current.audio[i]));
+                let format = crate::configuration::AUDIO[i];
+                writer.u16(format.rate);
+                writer.u8(format.bits);
+                writer.u8(format.channels);
                 messages.push(Message {
                     kind: 5,
                     payload: writer.finish(),

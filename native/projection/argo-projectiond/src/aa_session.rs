@@ -101,7 +101,8 @@ pub async fn run(
     id: String,
     media: &mut SessionMedia,
 ) -> Result<(), String> {
-    let config = control.configuration.borrow().clone();
+    let selection = control.begin_session(&id);
+    let config = &selection.config;
     config.display.validate()?;
     let identity=config.identity.as_ref().ok_or("AA TLS identity missing: set ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond")?;
     let mut tls = AaTls::new(identity)?;

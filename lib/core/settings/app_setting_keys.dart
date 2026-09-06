@@ -69,7 +69,7 @@ abstract final class AppSettingKeys {
     id: 'projection.display.dpi',
     defaultValue: 160,
     serialize: (value) => value,
-    deserialize: _boundedInt('projection.display.dpi', 72, 640),
+    deserialize: _boundedInt('projection.display.dpi', 80, 640),
   );
   static final projectionFramesPerSecond = SettingKey<int>(
     id: 'projection.display.framesPerSecond',

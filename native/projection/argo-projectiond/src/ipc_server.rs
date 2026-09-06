@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,15 +10,16 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::aa_channels::DisplayConfig;
 use crate::daemon_state::{IPC_ERROR, IPC_HELLO, ProjectionRuntimeSnapshot, snapshot_messages};
-use crate::host_control::{HostControl, SessionConfig};
-use crate::identity::AndroidAutoIdentity;
+use crate::host_control::HostControl;
 use crate::ipc::{Decoder, Message, PayloadReader, encode, string_payload};
 
 pub fn bind(socket_path: &Path) -> io::Result<UnixListener> {
     if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
     }
     // Never unlink another live daemon's socket (or an arbitrary file).
     // A socket left by a crash must be removed explicitly by the operator.
@@ -92,6 +93,11 @@ async fn handle_client(
     let mut decoder = Decoder::default();
     let mut buffer = [0_u8; 16 * 1024];
     let mut hello_complete = false;
+    let mut lease = None;
+    let mut configuration = control.configuration.subscribe();
+    let mut revision = 0;
+    let mut accepted = true;
+    let mut reason = String::new();
     let mut sent_state = ProjectionRuntimeSnapshot::default();
     let hello_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
@@ -110,45 +116,61 @@ async fn handle_client(
                 let messages = match decoder.push(&buffer[..count]) {
                     Ok(messages) => messages,
                     Err(error) => {
-                        crate::daemon_log!(Error, "ipc-server", "argo-projectiond: malformed IPC: {error:?}");
+                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v2 builds.");
+                        let _=send_error(&mut client,&detail).await;
+                        crate::daemon_log!(Warn, "ipc-server", "{detail}");
                         return;
                     }
                 };
                 for message in messages {
                     if hello_complete {
-                        if let Err(error)=control.command(&message) {let _=send_error(&mut client,&error).await;}
+                        if message.kind==28 {
+                            let mut r=PayloadReader::new(&message.payload);
+                            let Some(request)=r.u32() else {let _=send_error(&mut client,"Malformed configuration revision").await;return;};
+                            if request<=revision {let _=send_error(&mut client,"Configuration revisions must increase").await;return;}
+                            revision=request;
+                            let parsed=crate::configuration::read_display(&mut r).filter(|_|r.done());
+                            let result=parsed.ok_or_else(||"Malformed display request".to_owned()).and_then(|d|{d.validate()?;Ok(d)});
+                            match result {
+                                Ok(display)=>{control.configuration.send_modify(|c|c.display=display);accepted=true;reason.clear();},
+                                Err(error)=>{accepted=false;reason=error;}
+                            }
+                            configuration.borrow_and_update();
+                            if send(&mut client,&control.configuration_message(revision,accepted,&reason)).await.is_err(){return;}
+                        } else if let Err(error)=control.command(&message) {let _=send_error(&mut client,&error).await;}
                         continue;
                     }
                     if message.kind != IPC_HELLO {
                         let _ = send_error(&mut client, "Projection hello required").await;
                         return;
                     }
-                    match parse_hello(&message) {
-                        Ok(mut config) => {
-                            if let Err(error) = config.identity.as_ref().unwrap().validate_files() {
-                                let text = format!("Android Auto identity validation failed: {error:?}");
-                                let _ = send_error(&mut client, &text).await;
-                                return;
-                            }
-                            if let Err(error)=config.display.validate() {let _=send_error(&mut client,&error).await;return;}
-                            config.media_socket=control.configuration.borrow().media_socket.clone();
-                            control.configuration.send_replace(config);
-                        }
-                        Err(error) => {
-                            let _ = send_error(&mut client, error).await;
-                            return;
+                    if !message.payload.is_empty() {
+                        let _=send_error(&mut client,"Malformed projection hello; IPC v2 hello has no payload or identity paths").await;return;
+                    }
+                    if lease.is_none() {
+                        match control.client_lease.clone().try_acquire_owned(){
+                            Ok(permit)=>lease=Some(permit),
+                            Err(_)=>{let _=send_error(&mut client,"Another Argo control client owns projection configuration; close it first").await;return;}
                         }
                     }
                     if send(&mut client, &Message { kind: IPC_HELLO, payload: Vec::new() }).await.is_err() {
                         return;
                     }
                     hello_complete = true;
+                    if send(&mut client,&crate::configuration::capabilities(control.readiness,&control.readiness_detail)).await.is_err(){return;}
+                    if send(&mut client,&control.configuration_message(revision,accepted,&reason)).await.is_err(){return;}
+                    configuration.borrow_and_update();
                     let current = state.borrow().clone();
                     if send_state_change(&mut client, &sent_state, &current).await.is_err() {
                         return;
                     }
                     sent_state = current;
                 }
+            }
+            changed = configuration.changed(), if hello_complete => {
+                if changed.is_err(){return;}
+                configuration.borrow_and_update();
+                if send(&mut client,&control.configuration_message(revision,accepted,&reason)).await.is_err(){return;}
             }
             changed = state.changed(), if hello_complete => {
                 if changed.is_err() {
@@ -162,37 +184,6 @@ async fn handle_client(
             }
         }
     }
-}
-
-fn parse_hello(message: &Message) -> Result<SessionConfig, &'static str> {
-    let mut payload = PayloadReader::new(&message.payload);
-    let parsed = (|| {
-        let width = payload.u16()?;
-        let height = payload.u16()?;
-        let dpi = payload.u16()?;
-        let fps = payload.u8()?;
-        let driver_side = payload.u8()?;
-        if driver_side > 1 {
-            return None;
-        }
-        let certificate = payload.string()?;
-        let private_key = payload.string()?;
-        payload.done().then_some(SessionConfig {
-            media_socket: None,
-            display: DisplayConfig {
-                width,
-                height,
-                dpi,
-                fps,
-                right_driver: driver_side == 1,
-            },
-            identity: Some(AndroidAutoIdentity {
-                certificate: certificate.into(),
-                private_key: private_key.into(),
-            }),
-        })
-    })();
-    parsed.ok_or("Malformed projection hello")
 }
 
 async fn send_state_change(
@@ -239,6 +230,126 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    async fn receive_kind(client: &mut UnixStream, kind: u16) -> Message {
+        let mut decoder = Decoder::default();
+        let mut bytes = [0; 4096];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut bytes))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(n > 0);
+            for message in decoder.push(&bytes[..n]).unwrap() {
+                if message.kind == kind {
+                    return message;
+                }
+            }
+        }
+    }
+    async fn request(
+        client: &mut UnixStream,
+        revision: u32,
+        display: &crate::aa_channels::DisplayConfig,
+    ) -> Message {
+        let mut w = crate::ipc::PayloadWriter::default();
+        w.u32(revision);
+        crate::configuration::write_display(&mut w, display);
+        send(
+            client,
+            &Message {
+                kind: 28,
+                payload: w.finish(),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            let message = receive_kind(client, 10).await;
+            if PayloadReader::new(&message.payload).u32() == Some(revision) {
+                return message;
+            }
+        }
+    }
+    #[tokio::test]
+    async fn credential_free_configuration_is_validated_frozen_and_single_owner() {
+        let control = HostControl::default();
+        // A standalone phone can start before Argo attaches. Its selection is immutable.
+        let standalone = control.begin_session("standalone");
+        let (_state, snapshot) = watch::channel(ProjectionRuntimeSnapshot::default());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(handle_client(server, snapshot.clone(), control.clone()));
+        send(
+            &mut client,
+            &Message {
+                kind: IPC_HELLO,
+                payload: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let initial = receive_kind(&mut client, 9).await;
+        assert_eq!(PayloadReader::new(&initial.payload).u8(), Some(1)); // identity missing, control works
+        assert!(control.configuration.borrow().identity.is_none());
+        let mut display = crate::aa_channels::DisplayConfig {
+            dpi: 180,
+            ..Default::default()
+        };
+        let reply = request(&mut client, 1, &display).await;
+        let mut r = PayloadReader::new(&reply.payload);
+        assert_eq!(r.u32(), Some(1));
+        assert_eq!(r.u8(), Some(1));
+        assert_eq!(
+            control.configuration.borrow().active.as_ref().unwrap().1,
+            standalone.config.display
+        );
+        assert_eq!(standalone.config.display.dpi, 160);
+        drop(standalone);
+        let first = control.begin_session("first");
+        assert_eq!(first.config.display, display);
+        display.right_driver = true;
+        request(&mut client, 2, &display).await;
+        assert_eq!(
+            control.configuration.borrow().active.as_ref().unwrap().1,
+            first.config.display
+        );
+        assert!(!first.config.display.right_driver);
+        let invalid = crate::aa_channels::DisplayConfig {
+            width: 801,
+            ..display.clone()
+        };
+        let reply = request(&mut client, 3, &invalid).await;
+        let mut r = PayloadReader::new(&reply.payload);
+        assert_eq!(r.u32(), Some(3));
+        assert_eq!(r.u8(), Some(0));
+        assert_eq!(control.configuration.borrow().display, display);
+        let (mut other, server) = UnixStream::pair().unwrap();
+        let second = tokio::spawn(handle_client(server, snapshot, control.clone()));
+        send(
+            &mut other,
+            &Message {
+                kind: IPC_HELLO,
+                payload: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            PayloadReader::new(&receive_kind(&mut other, IPC_ERROR).await.payload)
+                .string()
+                .unwrap()
+                .contains("Another Argo")
+        );
+        second.await.unwrap();
+        drop(first);
+        assert!(control.configuration.borrow().active.is_none());
+        let next = control.begin_session("next");
+        assert_eq!(next.config.display, display);
+        assert!(next.config.identity.is_none());
+        drop(next);
+        drop(client);
+        task.await.unwrap();
     }
 
     #[tokio::test]
@@ -313,7 +424,10 @@ mod tests {
         assert_eq!(messages[0].kind, IPC_ERROR);
         assert_eq!(
             PayloadReader::new(&messages[0].payload).string(),
-            Some("Malformed projection hello".to_owned())
+            Some(
+                "Malformed projection hello; IPC v2 hello has no payload or identity paths"
+                    .to_owned()
+            )
         );
         tokio::time::timeout(Duration::from_secs(1), task)
             .await

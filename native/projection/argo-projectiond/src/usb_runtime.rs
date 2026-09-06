@@ -338,6 +338,7 @@ fn start_session(
         let mut media = crate::native_playback::SessionMedia::default();
         let mut version_complete = false;
         let session = async {
+            let _selection = control.begin_session(&session_id);
             let response = tokio::time::timeout(SETUP_TIMEOUT, negotiate_version(&mut transport))
                 .await
                 .map_err(|_| "VersionResponse timeout".to_owned())?

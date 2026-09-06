@@ -79,8 +79,6 @@ void main() {
           'ARGO_PROJECTION_MEDIA_SOCKET': '/must-not-connect-video',
         },
         isLinux: true,
-        identityValidator: (_) =>
-            throw StateError('Must not validate AA identity'),
         transportFactory: (_) => throw StateError('Must not contact AA daemon'),
         viewRegistryLoader: ({libraryPath}) {
           registrations++;

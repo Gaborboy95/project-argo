@@ -3,7 +3,8 @@ import '../core/diagnostics/diagnostics_service.dart';
 import '../core/lifecycle/app_lifecycle_coordinator.dart';
 import '../core/projection/projection_backend.dart';
 import '../core/projection/projection_backend_type.dart';
-import '../core/projection/projection_preferences.dart';
+import '../core/projection/projection_settings_service.dart';
+import '../core/projection/projection_configuration.dart';
 import '../core/projection/projection_presentation_options.dart';
 import '../core/projection/projection_render_test.dart';
 import '../core/projection/projection_service.dart';
@@ -20,12 +21,12 @@ Future<ProjectionService> registerProjectionServices({
   required Map<String, String> environment,
   bool? isLinux,
   ProjectionControlTransportFactory? transportFactory,
-  AndroidAutoIdentityValidator? identityValidator,
   ProjectionViewRegistry Function({String? libraryPath})? viewRegistryLoader,
 }) async {
   final renderTest = ProjectionRenderTest.fromEnvironment(environment);
-  final preferences = ProjectionPreferences.fromSettings(
+  final preferences = await ProjectionSettingsService.load(
     services.get<SettingsService>(),
+    diagnostics,
   );
   final backend = await selectProjectionBackend(
     environment: environment,
@@ -33,7 +34,19 @@ Future<ProjectionService> registerProjectionServices({
     diagnostics: diagnostics,
     isLinux: isLinux,
     transportFactory: transportFactory,
-    identityValidator: identityValidator,
+  );
+  final projectionSettings = ProjectionSettingsService(
+    settings: services.get<SettingsService>(),
+    requested: preferences,
+    backend: backend is ProjectionConfigurationBackend
+        ? backend as ProjectionConfigurationBackend
+        : null,
+  );
+  services.register(projectionSettings);
+  lifecycle.registerShutdown(
+    name: 'projection.settings',
+    phase: AppShutdownPhase.stopActivity,
+    shutdown: projectionSettings.close,
   );
   final backendType = ProjectionBackendType.fromEnvironment(environment);
   ProjectionViewRegistry? viewRegistry;

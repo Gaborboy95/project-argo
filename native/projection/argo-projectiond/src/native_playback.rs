@@ -9,7 +9,14 @@ pub struct VideoFeed {
 }
 impl VideoFeed {
     pub fn open(path: PathBuf) -> Result<Self, String> {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        if let Some(parent) = path.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| format!("native video socket directory: {e}"))?;
+        }
         let listener =
             UnixListener::bind(&path).map_err(|e| format!("native video socket: {e}"))?;
         if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
@@ -180,12 +187,12 @@ mod audio {
     impl AudioPlayback {
         pub fn open(channel: u8) -> Result<Self, String> {
             gst::init().map_err(|e| e.to_string())?;
-            let (rate, channels, role) = match channel {
-                4 => (48000, 2, "Music"),
-                5 => (16000, 1, "Navigation"),
-                6 => (16000, 1, "Notification"),
-                _ => return Err("unsupported audio channel".into()),
-            };
+            let format = crate::configuration::audio_format(channel)?;
+            let (rate, channels, role) = (
+                i32::from(format.rate),
+                i32::from(format.channels),
+                format.pipewire_role,
+            );
             let pipeline=gst::parse::launch(&format!("appsrc name=input is-live=true format=time do-timestamp=true max-bytes=1048576 ! queue max-size-bytes=1048576 max-size-buffers=32 max-size-time=0 ! audioconvert ! audioresample ! volume name=source_gain ! pipewiresink stream-properties=\"props,media.role=(string){role}\""))
                 .map_err(|e|format!("native audio pipeline: {e}"))?.downcast::<gst::Pipeline>().map_err(|_|"invalid native audio pipeline")?;
             let input = pipeline

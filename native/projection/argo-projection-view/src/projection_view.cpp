@@ -145,8 +145,16 @@ struct ViewState {
           "video/x-raw,format=BGRx,width=1280,height=720,"
           "framerate=30/1,pixel-aspect-ratio=1/1 ! ";
     } else {
-      const char* socket_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
-      if (socket_path == nullptr || socket_path[0] == '\0') {
+      const char* override_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
+      const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+      const std::string resolved = override_path != nullptr ? override_path :
+          std::string(runtime != nullptr ? runtime : "/run") + "/argo/projection-video.sock";
+      const char* socket_path = resolved.c_str();
+      if (resolved.empty() || resolved.front() != '/' || resolved.back() == '/' ||
+          resolved.find_first_of(" \t\r\n\v\f") == 0 ||
+          resolved.find_last_of(" \t\r\n\v\f") == resolved.size() - 1 ||
+          resolved.size() >= sizeof(sockaddr_un{}.sun_path)) {
+        std::fprintf(stderr, "Argo projection: invalid media socket endpoint\n");
         return false;
       }
       media_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);

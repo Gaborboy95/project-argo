@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 abstract final class ProjectionIpcProtocol {
   static const int magic = 0x4152474f; // ARGO
-  static const int version = 1;
+  static const int version = 2;
   static const int headerBytes = 12;
   static const int maximumPayloadBytes = 64 * 1024;
   static const int maximumBufferedBytes = 256 * 1024;
@@ -20,6 +20,9 @@ enum ProjectionIpcKind {
   error(6),
   deviceRemoved(7),
   sessionRemoved(8),
+  capabilities(9),
+  configuration(10),
+  configure(28),
   connect(20),
   disconnect(21),
   activate(22),
@@ -92,7 +95,9 @@ final class ProjectionIpcDecoder {
       }
       if (header.getUint16(4) != ProjectionIpcProtocol.version) {
         _buffer.clear();
-        throw const FormatException('Unsupported projection IPC version.');
+        throw const FormatException(
+          'Incompatible projection IPC version; use matching Argo/daemon IPC v2 builds.',
+        );
       }
       final kind = ProjectionIpcKind.tryParse(header.getUint16(6));
       if (kind == null) {
@@ -162,15 +167,21 @@ final class UnixProjectionControlTransport
       StreamController<ProjectionIpcMessage>.broadcast(sync: true);
   StreamSubscription<List<int>>? _subscription;
   bool _closed = false;
+  Future<void> _writeTail = Future<void>.value();
 
   @override
   Stream<ProjectionIpcMessage> get messages => _messages.stream;
 
   @override
-  Future<void> send(ProjectionIpcMessage message) async {
-    if (_closed) throw StateError('Projection IPC transport is closed.');
-    _socket.add(_codec.encode(message));
-    await _socket.flush();
+  Future<void> send(ProjectionIpcMessage message) {
+    final bytes = _codec.encode(message);
+    final operation = _writeTail.then((_) async {
+      if (_closed) throw StateError('Projection IPC transport is closed.');
+      _socket.add(bytes);
+      await _socket.flush();
+    });
+    _writeTail = operation.catchError((Object _) {});
+    return operation;
   }
 
   @override
@@ -203,6 +214,11 @@ final class ProjectionIpcWriter {
     _bytes.add(data.buffer.asUint8List());
   }
 
+  void uint32(int value) {
+    final data = ByteData(4)..setUint32(0, value);
+    _bytes.add(data.buffer.asUint8List());
+  }
+
   void string(String value) {
     final encoded = utf8.encode(value);
     if (encoded.length > 4096) {
@@ -221,6 +237,7 @@ final class ProjectionIpcReader {
   int _offset = 0;
 
   int uint8() => _read(1).getUint8(0);
+  int uint32() => _read(4).getUint32(0);
   int uint16() => _read(2).getUint16(0);
   int int16() => _read(2).getInt16(0);
   double float32() => _read(4).getFloat32(0);

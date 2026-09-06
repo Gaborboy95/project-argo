@@ -394,6 +394,7 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         control
             .configuration
             .send_replace(crate::host_control::SessionConfig {
+                active: None,
                 display: DisplayConfig::default(),
                 identity: Some(fixture.identity.clone()),
                 media_socket: Some(path.clone()),

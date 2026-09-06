@@ -9,6 +9,7 @@ pub mod aa_channels;
 pub mod aa_session;
 pub mod aa_tls;
 pub mod aa_wire;
+pub mod configuration;
 pub mod daemon_state;
 pub mod host_control;
 pub mod identity;

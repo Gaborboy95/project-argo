@@ -18,6 +18,20 @@ void main() {
   });
 
   test('malformed IPC and oversized payload are rejected', () {
+    final old = const ProjectionIpcCodec().encode(
+      const ProjectionIpcMessage(ProjectionIpcKind.hello),
+    );
+    old[5] = 1;
+    expect(
+      () => ProjectionIpcDecoder().add(old),
+      throwsA(
+        isA<FormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('matching Argo/daemon IPC v2'),
+        ),
+      ),
+    );
     final decoder = ProjectionIpcDecoder();
     expect(() => decoder.add(Uint8List(12)), throwsFormatException);
     expect(

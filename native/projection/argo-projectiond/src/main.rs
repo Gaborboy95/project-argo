@@ -1,18 +1,15 @@
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    use std::path::PathBuf;
     argo_projectiond::logging::init().map_err(std::io::Error::other)?;
     argo_projectiond::daemon_log!(Info, "daemon", "starting");
 
     use argo_projectiond::daemon_state::ProjectionRuntimeSnapshot;
     use tokio::sync::watch;
 
-    let socket_path = PathBuf::from(std::env::var("ARGO_PROJECTION_SOCKET").unwrap_or_else(|_| {
-        std::env::var("XDG_RUNTIME_DIR")
-            .map(|path| format!("{path}/argo/projection.sock"))
-            .unwrap_or_else(|_| "/run/argo/projection.sock".to_owned())
-    }));
+    let socket_path =
+        argo_projectiond::configuration::endpoint("ARGO_PROJECTION_SOCKET", "projection.sock")
+            .map_err(std::io::Error::other)?;
     let listener = argo_projectiond::ipc_server::bind(&socket_path)?;
     let (state_tx, state_rx) = watch::channel(ProjectionRuntimeSnapshot::default());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

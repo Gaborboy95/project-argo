@@ -11,12 +11,16 @@ final class ProjectionPreferences {
     required this.driverSide,
     required this.safeInsets,
   }) {
-    if (width < 640 || width > 3840 || height < 360 || height > 2160) {
+    if (!const [
+      (800, 480),
+      (1280, 720),
+      (1920, 1080),
+    ].contains((width, height))) {
       throw ArgumentError(
         'Projection dimensions are outside supported bounds.',
       );
     }
-    if (dpi < 72 ||
+    if (dpi < 80 ||
         dpi > 640 ||
         (framesPerSecond != 30 && framesPerSecond != 60)) {
       throw ArgumentError('Projection DPI or FPS is outside supported bounds.');
@@ -41,6 +45,43 @@ final class ProjectionPreferences {
       bottom: settings.get(AppSettingKeys.projectionSafeInsetBottom).toDouble(),
     ),
   );
+
+  static ProjectionPreferences defaults() => ProjectionPreferences(
+    width: 1280,
+    height: 720,
+    dpi: 160,
+    framesPerSecond: 30,
+    driverSide: ProjectionDriverSide.left,
+    safeInsets: const ProjectionInsets(),
+  );
+  ProjectionPreferences copyWith({
+    int? width,
+    int? height,
+    int? dpi,
+    int? framesPerSecond,
+    ProjectionDriverSide? driverSide,
+  }) => ProjectionPreferences(
+    width: width ?? this.width,
+    height: height ?? this.height,
+    dpi: dpi ?? this.dpi,
+    framesPerSecond: framesPerSecond ?? this.framesPerSecond,
+    driverSide: driverSide ?? this.driverSide,
+    safeInsets: safeInsets,
+  );
+  @override
+  bool operator ==(Object other) =>
+      other is ProjectionPreferences &&
+      width == other.width &&
+      height == other.height &&
+      dpi == other.dpi &&
+      framesPerSecond == other.framesPerSecond &&
+      driverSide == other.driverSide;
+  @override
+  int get hashCode =>
+      Object.hash(width, height, dpi, framesPerSecond, driverSide);
+  @override
+  String toString() =>
+      '$width×$height, $framesPerSecond FPS, $dpi DPI, ${driverSide.name} driver';
 
   final int width;
   final int height;

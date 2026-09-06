@@ -6,13 +6,9 @@ import '../../core/projection/projection_backend.dart';
 import '../../core/projection/projection_backend_type.dart';
 import '../../core/projection/projection_preferences.dart';
 import '../../core/projection/projection_render_test.dart';
-import 'android_auto_identity.dart';
+import 'projection_endpoints.dart';
 import 'android_auto_projection_backend.dart';
 import 'projection_ipc.dart';
-
-typedef AndroidAutoIdentityValidator = Future<void> Function(
-  AndroidAutoIdentity identity,
-);
 
 Future<ProjectionBackend> selectProjectionBackend({
   required Map<String, String> environment,
@@ -20,7 +16,6 @@ Future<ProjectionBackend> selectProjectionBackend({
   required DiagnosticsService diagnostics,
   bool? isLinux,
   ProjectionControlTransportFactory? transportFactory,
-  AndroidAutoIdentityValidator? identityValidator,
 }) async {
   ProjectionRenderTest.fromEnvironment(environment);
   final type = ProjectionBackendType.fromEnvironment(environment);
@@ -33,14 +28,13 @@ Future<ProjectionBackend> selectProjectionBackend({
     );
   }
 
-  final identity = AndroidAutoIdentity.fromEnvironment(environment);
-  await (identityValidator ?? (value) => value.validate())(identity);
-  final socket = environment['ARGO_PROJECTION_SOCKET']?.trim();
+  final socket = projectionEndpoint(
+    environment,
+    'ARGO_PROJECTION_SOCKET',
+    'projection.sock',
+  );
   return AndroidAutoProjectionBackend(
-    socketPath: socket == null || socket.isEmpty
-        ? '/run/argo/projection.sock'
-        : socket,
-    identity: identity,
+    socketPath: socket,
     preferences: preferences,
     diagnostics: diagnostics,
     transportFactory: transportFactory,

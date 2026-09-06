@@ -5,13 +5,13 @@ import '../../core/projection/projection_backend.dart';
 import '../../core/projection/projection_models.dart';
 import '../../core/projection/projection_preferences.dart';
 import '../../core/projection/projection_types.dart';
-import 'android_auto_identity.dart';
+import '../../core/projection/projection_configuration.dart';
 import 'projection_ipc.dart';
 
-final class AndroidAutoProjectionBackend implements ProjectionBackend {
+final class AndroidAutoProjectionBackend
+    implements ProjectionBackend, ProjectionConfigurationBackend {
   AndroidAutoProjectionBackend({
     required this.socketPath,
-    required this.identity,
     required this.preferences,
     required this.diagnostics,
     ProjectionControlTransportFactory? transportFactory,
@@ -19,8 +19,18 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
            transportFactory ?? UnixProjectionControlTransport.connect;
 
   final String socketPath;
-  final AndroidAutoIdentity identity;
-  final ProjectionPreferences preferences;
+  ProjectionPreferences preferences;
+  ProjectionConfigurationState _configuration =
+      const ProjectionConfigurationState();
+  final _configurationChanges =
+      StreamController<ProjectionConfigurationState>.broadcast(sync: true);
+  int _revision = 0;
+  bool _hello = false;
+  @override
+  ProjectionConfigurationState get configuration => _configuration;
+  @override
+  Stream<ProjectionConfigurationState> get configurationChanges =>
+      _configurationChanges.stream;
   final DiagnosticsService diagnostics;
   final ProjectionControlTransportFactory _transportFactory;
   final StreamController<ProjectionSnapshot> _changes =
@@ -53,23 +63,19 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
       _subscription = transport.messages.listen(
         _handleMessage,
         onError: (Object error, StackTrace stackTrace) {
-          _fail('Projection sidecar protocol failed.', error, stackTrace);
+          _fail(
+            'Projection sidecar protocol failed: $error',
+            error,
+            stackTrace,
+          );
         },
         onDone: () {
-          if (!_closed) _fail('Projection sidecar disconnected.');
+          if (!_closed && (_hello || _current.failureMessage == null)) {
+            _fail('Projection sidecar disconnected.');
+          }
         },
       );
-      final writer = ProjectionIpcWriter()
-        ..uint16(preferences.width)
-        ..uint16(preferences.height)
-        ..uint16(preferences.dpi)
-        ..uint8(preferences.framesPerSecond)
-        ..uint8(preferences.driverSide.index)
-        ..string(identity.certificateFile.path)
-        ..string(identity.privateKeyFile.path);
-      await transport.send(
-        ProjectionIpcMessage(ProjectionIpcKind.hello, writer.takeBytes()),
-      );
+      await transport.send(const ProjectionIpcMessage(ProjectionIpcKind.hello));
     } on Object catch (error, stackTrace) {
       _fail(
         'Could not connect to Android Auto projection sidecar at "$socketPath".',
@@ -85,8 +91,24 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
       switch (message.kind) {
         case ProjectionIpcKind.hello:
           if (!reader.isDone) throw const FormatException('Malformed hello.');
-          _publish(backendAvailable: true);
+          _hello = true;
           return;
+        case ProjectionIpcKind.capabilities:
+          _handleCapabilities(reader);
+          unawaited(
+            requestConfiguration(preferences)
+                .catchError((Object error, StackTrace stack) {
+                  _fail('Could not send projection preferences.', error, stack);
+                }),
+          );
+          return;
+        case ProjectionIpcKind.configuration:
+          _handleConfiguration(reader);
+          return;
+        case ProjectionIpcKind.configure:
+          throw const FormatException(
+            'Daemon sent client configuration request.',
+          );
         case ProjectionIpcKind.device:
           final device = ProjectionDevice(
             id: reader.string(),
@@ -157,8 +179,128 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
           );
       }
     } on Object catch (error, stackTrace) {
-      _fail('Malformed projection IPC message.', error, stackTrace);
+      _fail('Malformed projection IPC message: $error', error, stackTrace);
     }
+  }
+
+  ProjectionPreferences _readPreferences(ProjectionIpcReader r) {
+    final width = r.uint16(),
+        height = r.uint16(),
+        dpi = r.uint16(),
+        fps = r.uint8(),
+        side = r.uint8();
+    if (side > 1) throw const FormatException('Invalid driver side');
+    return ProjectionPreferences(
+      width: width,
+      height: height,
+      dpi: dpi,
+      framesPerSecond: fps,
+      driverSide: ProjectionDriverSide.values[side],
+      safeInsets: const ProjectionInsets(),
+    );
+  }
+
+  void _handleCapabilities(ProjectionIpcReader r) {
+    if (!_hello) throw const FormatException('Capabilities before hello');
+    final status = r.uint8();
+    if (status > 3) throw const FormatException('Unknown readiness');
+    final detail = r.string();
+    final resolutions = <(int, int)>[];
+    final count = r.uint8();
+    for (var i = 0; i < count; i++) {
+      resolutions.add((r.uint16(), r.uint16()));
+    }
+    final fps = <int>[];
+    final fpsCount = r.uint8();
+    for (var i = 0; i < fpsCount; i++) {
+      fps.add(r.uint8());
+    }
+    final minimum = r.uint16(), maximum = r.uint16();
+    final defaults = _readPreferences(r);
+    final audio = <ProjectionAudioFormat>[];
+    final audioCount = r.uint8();
+    for (var i = 0; i < audioCount; i++) {
+      final role = r.uint8();
+      if (role > 2) throw const FormatException('Invalid audio role');
+      audio.add(
+        ProjectionAudioFormat(
+          ['Media', 'Speech/navigation', 'System'][role],
+          r.uint16(),
+          r.uint8(),
+          r.uint8(),
+        ),
+      );
+    }
+    _requireDone(r);
+    final caps = ProjectionCapabilities(
+      resolutions: resolutions,
+      frameRates: fps,
+      minimumDpi: minimum,
+      maximumDpi: maximum,
+      defaults: defaults,
+      audio: audio,
+    );
+    if (!caps.supports(defaults)) {
+      throw const FormatException('Invalid capability defaults');
+    }
+    _configuration = ProjectionConfigurationState(
+      readiness: ProjectionReadiness.values[status + 1],
+      message: detail,
+      capabilities: caps,
+    );
+    _configurationChanges.add(_configuration);
+    _publish(
+      backendAvailable: status == 0,
+      failureMessage: status == 0 ? null : detail,
+    );
+  }
+
+  void _handleConfiguration(ProjectionIpcReader r) {
+    final revision = r.uint32();
+    final accepted = r.uint8();
+    final reason = r.string();
+    final pending = _readPreferences(r);
+    final id = r.string();
+    final active = id.isEmpty ? null : _readPreferences(r);
+    _requireDone(r);
+    if (accepted > 1) {
+      throw const FormatException('Invalid configuration acknowledgement');
+    }
+    // Initial session snapshot is authoritative even while our first request is in flight.
+    if (revision < _configuration.revision ||
+        (revision != 0 && revision < _revision)) {
+      return;
+    }
+    _configuration = ProjectionConfigurationState(
+      readiness: _configuration.readiness,
+      message: _configuration.message,
+      capabilities: _configuration.capabilities,
+      pending: pending,
+      active: active,
+      sessionId: id.isEmpty ? null : id,
+      revision: revision,
+      accepted: accepted == 1,
+      rejection: reason.isEmpty ? null : reason,
+    );
+    _configurationChanges.add(_configuration);
+  }
+
+  @override
+  Future<void> requestConfiguration(ProjectionPreferences value) async {
+    preferences = value;
+    if (!_hello || _transport == null || _closed) {
+      throw StateError('Projection control unavailable');
+    }
+    final w = ProjectionIpcWriter()
+      ..uint32(++_revision)
+      ..uint16(value.width)
+      ..uint16(value.height)
+      ..uint16(value.dpi)
+      ..uint8(value.framesPerSecond)
+      ..uint8(value.driverSide.index);
+    await _transport!.send(
+      ProjectionIpcMessage(ProjectionIpcKind.configure, w.takeBytes()),
+    );
   }
 
   void _handleVideoStream(ProjectionIpcReader reader) {
@@ -219,6 +361,9 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
       role: _enumAt(ProjectionAudioRole.values, reader.uint8()),
       active: reader.uint8() != 0,
       hasFocus: reader.uint8() != 0,
+      sampleRate: reader.uint16(),
+      bitsPerSample: reader.uint8(),
+      channelCount: reader.uint8(),
     );
     _requireDone(reader);
     final streams = [
@@ -256,7 +401,11 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
       devices: _devices.values,
       sessions: _sessions.values,
       activeSessionId: _activeSessionId,
-      failureMessage: failureMessage,
+      failureMessage:
+          failureMessage ??
+          ((backendAvailable ?? _current.backendAvailable)
+              ? null
+              : _configuration.message),
     );
     if (next == _current) return;
     _current = next;
@@ -265,6 +414,9 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
 
   void _fail(String message, [Object? error, StackTrace? stackTrace]) {
     if (_closed) return;
+    _hello = false;
+    _configuration = ProjectionConfigurationState(message: message);
+    _configurationChanges.add(_configuration);
     _devices.clear();
     _sessions.clear();
     _activeSessionId = null;
@@ -366,6 +518,7 @@ final class AndroidAutoProjectionBackend implements ProjectionBackend {
     _closed = true;
     await _subscription?.cancel();
     await _transport?.close();
+    await _configurationChanges.close();
     await _changes.close();
   }
 }
