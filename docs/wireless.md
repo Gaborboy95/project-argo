@@ -1,6 +1,8 @@
 # Wireless Android Auto on the Mu — development path
 
-This path is implemented for operator testing; it is not phone-accepted yet.
+The operator confirmed wireless Android Auto works on 2026-09-08 with the
+`argo-wireless-start-ipc5-20260908` release. This confirms working startup; the
+full feature-by-feature acceptance checklist below is not yet individually signed off.
 It reuses `aa_session`, daemon identity, fixed session settings, native PCM/video,
 input, metadata, Home/Media presentation and Veloce. No HFP call or A2DP feature
 is added. Wired trust and GstSystemClock remain unchanged.
@@ -57,7 +59,9 @@ selected-device admission, not by granting the device access to unrelated profil
 The TCP listener exists only inside that owned attempt, bound to the AP's actual
 IPv4 address **and SO_BINDTODEVICE**, port 5288. It rejects pre-bootstrap traffic,
 out-of-network peers and second peers. Three unwanted Bluetooth requests revoke
-the attempt. The phone must report successful Wi-Fi join before TCP admission.
+the attempt. TCP admission requires successful version negotiation, delivered credentials and
+accepted StartResponse on the selected authenticated Bluetooth link. ConnectionStatus
+is processed if sent, but is not required before the TCP AA handshake.
 Fresh, per-attempt WPA2/RSN/CCMP credentials are sent only on the selected
 Bluetooth link. The credential holder entering within the bounded window is
 associated with that bootstrap. **This is not a cryptographic binding of TCP to
@@ -347,3 +351,73 @@ warnings denied. The daemon release build passes. Dart/UI code is unchanged;
 its previously verified release artifacts are reused, with hash comparison of
 all app/Engine/native library assets during staging. No live phone connection,
 network mutation or process restart was performed by the agent.
+
+
+## TCP / Bluetooth status ordering correction (2026-09-08)
+
+The next real-phone log confirmed authenticated RFCOMM, WPP 6.0 with status 0,
+Wi-Fi credential delivery and accepted StartResponse. Twice the daemon then
+reported `TCP peer outside bootstrap admission; attempt revoked`, before any
+successful ConnectionStatus was logged. The old predicate conflated an
+out-of-subnet peer with a peer arriving before Bluetooth join confirmation.
+
+The listener now retains one in-subnet candidate while WPP continues. It does
+not read AA bytes, start TLS, or allocate session-owned media until a successful
+Bluetooth ConnectionStatus arrives. The original 65-second admission deadline
+is not extended. A second candidate, out-of-subnet peer, failed/closed bootstrap,
+explicit Disconnect or shutdown closes the candidate; pending TCP is not proof
+of phone identity. The existing AP credential possession/development admission
+limitations remain. Join-before-TCP also updates shared Wi-Fi state reliably.
+Logs distinguish subnet rejection from waiting for join confirmation.
+
+Release: `$HOME/dev/infotainment/bundle/argo-wireless-admission-ipc5-20260908`.
+The source launcher selects this bundle. Stop the previous pair, start daemon
+and app, then explicitly Enable/Connect. Existing bundles remain untouched.
+The app and all native libraries are reused unchanged; daemon IPC remains 5.
+54 Rust tests pass, including real loopback sockets exercising both orderings,
+preserved AA bytes, missing join deadline, second candidate and cancellation.
+Clippy with warnings denied and daemon release build pass. Phone retry is pending;
+if this phone never reports join before AA starts, this conservative admission
+policy will still stop at that layer instead of silently relaxing authentication.
+
+
+## Remove the Bluetooth ConnectionStatus dependency (2026-09-08)
+
+Phone retry on both 2412 and 5745 MHz confirmed accepted StartResponse and an
+in-subnet TCP connection, followed by RFCOMM reset while Argo waited for
+ConnectionStatus. The operator independently saw Wi-Fi connected via Android Auto.
+The previous bounded wait therefore did not resolve the startup stall.
+
+Admission now requires BOTH fresh credentials delivered to the selected paired,
+authenticated RFCOMM peer AND a successful StartResponse after WPP version
+negotiation. One TCP candidate is admitted only on the interface-bound AP listener,
+in the attempt subnet, within the original deadline; pairing is rechecked before
+AA begins. Bare TCP, version negotiation alone, or StartResponse without credential
+delivery cannot authorize admission. ConnectionStatus is not treated as additional
+identity proof: a successful status was only a report by the already authenticated
+bootstrap peer. It may arrive late or be absent. Explicit negative WPP statuses
+still fail setup/session; RFCOMM closure/idle expiry after accepted startup does not
+terminate Wi-Fi. Shared Wi-Fi connected state is set when TCP is admitted, not
+when Bluetooth merely accepts startup. TLS handshake-signature checks are unchanged.
+
+This is an explicit revision to the existing **development-only** admission policy,
+still gated by ARGO_WIRELESS_DEVELOPMENT=1. The TCP peer is associated by fresh AP
+credential possession after authenticated bootstrap, not cryptographic phone
+identity. A compromised AP credential holder can still race the intended phone;
+IP address or TLS completion does not remove this limitation.
+
+[LIVI's pinned wireless path](https://github.com/f-io/LIVI/blob/c4ed3f1f7982cf10f899a92867ffd34b4269fee5/native/livi-helperd/bin/livi-helperd/src/aa.rs)
+also processes ConnectionStatus as a separate bootstrap event. No reference code,
+credentials or identity material were copied.
+
+New release: `$HOME/dev/infotainment/bundle/argo-wireless-start-ipc5-20260908`.
+Restart the matched pair using the source launcher, then explicitly Enable/Connect.
+54 Rust tests pass, including authorization before ConnectionStatus, no authorization
+from StartResponse alone, both TCP/start orderings, preserved bytes, deadlines,
+cancellation and second-peer rejection. Clippy and daemon release build pass.
+App/Engine/native libraries are reused unchanged. After retrying this release,
+the operator reported “It works!” on 2026-09-08, confirming wireless AA startup.
+Picture/audio/input, metadata/Lua, presentation ownership, reconnect/disable,
+internet access and wired regression checks still need individual acceptance
+records; this report does not imply every item was separately exercised. Previous
+bundles are preserved. See [the current handoff](wireless-handoff-2026-09-08.md).

@@ -72,7 +72,7 @@ fn status_label(code: i64) -> &'static str {
 pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut S,
     ap: &AccessPoint,
-    joined: watch::Sender<bool>,
+    authorized: watch::Sender<bool>,
 ) -> Result<(), String> {
     crate::daemon_log!(
         Info,
@@ -137,9 +137,8 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     let mut started = false;
     let mut messages = 0u32;
     loop {
-        // After joining, RFCOMM is independent; keep responding to phone pings
-        // but never end the Wi-Fi projection when RFCOMM closes.
-        let frame = if *joined.borrow() {
+        // After accepted startup, RFCOMM is independent of Wi-Fi transport.
+        let frame = if *authorized.borrow() {
             tokio::time::timeout(Duration::from_secs(30), receive(socket))
                 .await
                 .map_err(|_| "WPP idle timeout")?
@@ -150,7 +149,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         };
         let (id, body) = frame?;
         messages += 1;
-        if !*joined.borrow() && messages > 64 {
+        if !*authorized.borrow() && messages > 64 {
             return Err("WPP message budget exhausted".into());
         }
         match id {
@@ -192,11 +191,16 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
                     "wireless-bootstrap",
                     "Phone reports successful AP association"
                 );
-                joined.send_replace(true);
             }
             8 => send(socket, 9, &body).await?,
             9 => {}
             _ => return Err(format!("Unexpected WPP message {id}")),
+        }
+        // Start acceptance plus credential delivery authorizes this bounded
+        // development admission attempt. ConnectionStatus may be delayed until
+        // AA begins, so it is telemetry/error reporting, not a prerequisite.
+        if offered && started && !*authorized.borrow() {
+            authorized.send_replace(true);
         }
     }
 }
@@ -237,8 +241,8 @@ mod exchange_tests {
             ap.band = band;
             ap.channel = channel;
             let (mut hu, mut phone) = tokio::io::duplex(8192);
-            let (joined, _) = watch::channel(false);
-            let task = tokio::spawn(async move { run(&mut hu, &ap, joined).await });
+            let (authorized, _) = watch::channel(false);
+            let task = tokio::spawn(async move { run(&mut hu, &ap, authorized).await });
             assert_eq!(receive(&mut phone).await.unwrap(), (4, expected));
             drop(phone);
             assert!(task.await.unwrap().is_err());
@@ -248,8 +252,8 @@ mod exchange_tests {
     async fn version_deadline_and_real_exchange_keepalive_are_bounded() {
         let ap = crate::connectivity::network::tests::ap();
         let (mut hu, mut phone) = tokio::io::duplex(8192);
-        let (joined, rx) = watch::channel(false);
-        let task = tokio::spawn(async move { run(&mut hu, &ap, joined).await });
+        let (authorized, rx) = watch::channel(false);
+        let task = tokio::spawn(async move { run(&mut hu, &ap, authorized).await });
         assert_eq!(receive(&mut phone).await.unwrap().0, 4);
         send(
             &mut phone,
@@ -263,23 +267,32 @@ mod exchange_tests {
         .await
         .unwrap();
         assert_eq!(receive(&mut phone).await.unwrap().0, 1);
+        // Neither acceptance alone nor TCP presence authorizes an attempt.
         send(&mut phone, 7, &[24, 0]).await.unwrap();
+        send(&mut phone, 8, &[8, 1]).await.unwrap();
+        assert_eq!(receive(&mut phone).await.unwrap().0, 9);
+        assert!(!*rx.borrow());
         send(&mut phone, 2, &[]).await.unwrap();
         let info = receive(&mut phone).await.unwrap();
         assert_eq!(info.0, 3);
         assert_eq!(numbers(&info.1).unwrap().get(&4), Some(&8));
+        // A phone can omit ConnectionStatus until TCP AA begins. The accepted
+        // authenticated bootstrap must already authorize TCP at this point.
+        send(&mut phone, 8, &[8, 2]).await.unwrap();
+        assert_eq!(receive(&mut phone).await.unwrap().0, 9);
+        assert!(*rx.borrow());
         send(&mut phone, 6, &[8, 0]).await.unwrap();
         send(&mut phone, 8, &[8, 42]).await.unwrap();
         assert_eq!(receive(&mut phone).await.unwrap(), (9, vec![8, 42]));
         assert!(*rx.borrow());
         drop(phone);
         assert!(task.await.unwrap().is_err());
-        assert!(*rx.borrow()); // RFCOMM EOF does not revoke Wi-Fi.
+        assert!(*rx.borrow()); // RFCOMM EOF does not revoke accepted bootstrap.
         let ap = crate::connectivity::network::tests::ap();
         let (mut hu, _phone) = tokio::io::duplex(8192);
-        let (joined, _) = watch::channel(false);
+        let (authorized, _) = watch::channel(false);
         assert!(
-            run(&mut hu, &ap, joined)
+            run(&mut hu, &ap, authorized)
                 .await
                 .unwrap_err()
                 .contains("version timed out")
