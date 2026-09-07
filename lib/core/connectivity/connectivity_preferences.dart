@@ -26,6 +26,12 @@ final class ConnectivityPreferences implements ConnectivityService {
   }
 
   Future<void> _restoreChoices(ConnectivitySnapshot state) async {
+    if (state.band != null) {
+      await backend.connectivityCommand(
+        'band',
+        target: settings.get(AppSettingKeys.connectivityBand),
+      );
+    }
     final adapter = settings.get(AppSettingKeys.connectivityAdapter);
     final interface = settings.get(AppSettingKeys.connectivityInterface);
     final phone = settings.get(AppSettingKeys.connectivityPhone);
@@ -64,6 +70,7 @@ final class ConnectivityPreferences implements ConnectivityService {
       'adapter' => AppSettingKeys.connectivityAdapter,
       'interface' => AppSettingKeys.connectivityInterface,
       'select' => AppSettingKeys.connectivityPhone,
+      'band' => AppSettingKeys.connectivityBand,
       _ => null,
     };
     if (key != null) await settings.set(key, target);

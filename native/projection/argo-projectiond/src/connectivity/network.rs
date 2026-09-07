@@ -19,11 +19,47 @@ fn section(
 pub struct Network {
     bus: Connection,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub enum ApBand {
+    #[serde(rename = "2.4ghz")]
+    Ghz2,
+    #[default]
+    #[serde(rename = "5ghz")]
+    Ghz5,
+}
+impl ApBand {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "2.4ghz" => Ok(Self::Ghz2),
+            "5ghz" => Ok(Self::Ghz5),
+            _ => Err("AP band must be 2.4ghz or 5ghz".into()),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ghz2 => "2.4 GHz",
+            Self::Ghz5 => "5 GHz",
+        }
+    }
+    fn nm_band(self) -> &'static str {
+        match self {
+            Self::Ghz2 => "bg",
+            Self::Ghz5 => "a",
+        }
+    }
+    pub fn frequency(self, channel: u16) -> u32 {
+        match self {
+            Self::Ghz2 => 2407 + u32::from(channel) * 5,
+            Self::Ghz5 => 5000 + u32::from(channel) * 5,
+        }
+    }
+}
 /// Secrets deliberately have no Debug or Serialize implementation.
 pub struct AccessPoint {
     pub interface: String,
     pub address: Ipv4Addr,
     pub channel: u16,
+    pub band: ApBand,
     pub ssid: String,
     pub password: String,
     pub bssid: String,
@@ -75,7 +111,7 @@ impl Network {
             .await
             .map_err(|e| e.to_string())
     }
-    pub async fn prepare(&self, interface: &str) -> Result<AccessPoint, String> {
+    pub async fn prepare(&self, interface: &str, band: ApBand) -> Result<AccessPoint, String> {
         if !self.interfaces().await?.iter().any(|r| r.id == interface) {
             return Err("Select an available Wi-Fi interface".into());
         }
@@ -100,10 +136,17 @@ impl Network {
             .get_property("WirelessCapabilities")
             .await
             .map_err(|e| e.to_string())?;
-        if caps & 0x40 == 0 || caps & 0x400 == 0 {
-            return Err("Selected radio lacks AP / 5 GHz support".into());
+        let band_cap = match band {
+            ApBand::Ghz2 => 0x200,
+            ApBand::Ghz5 => 0x400,
+        };
+        if caps & 0x40 == 0 || caps & band_cap == 0 {
+            return Err(format!(
+                "Selected radio lacks AP / {} support",
+                band.label()
+            ));
         }
-        let channel = permitted_channel(interface).await?;
+        let channel = permitted_channel(interface, band).await?;
         let mut random = [0; 24];
         std::fs::File::open("/dev/urandom")
             .and_then(|mut f| f.read_exact(&mut random))
@@ -129,6 +172,7 @@ impl Network {
             interface: interface.into(),
             address,
             channel,
+            band,
             ssid: format!("Argo Projection {:02X}{:02X}", random[1], random[2]),
             password: random[3..].iter().map(|v| format!("{v:02x}")).collect(),
             bssid: String::new(),
@@ -158,7 +202,7 @@ impl Network {
             section([
                 ("ssid", value(ap.ssid.as_bytes().to_vec())),
                 ("mode", value("ap")),
-                ("band", value("a")),
+                ("band", value(ap.band.nm_band())),
                 ("channel", value(u32::from(ap.channel))),
             ]),
         );
@@ -303,7 +347,7 @@ fn dhcp_for_address(address: Ipv4Addr) -> bool {
 
 /// Read-only regulatory inspection. Control always uses NM D-Bus. Fail closed
 /// if iw output or sysfs cannot prove a non-DFS channel without NO-IR.
-async fn permitted_channel(interface: &str) -> Result<u16, String> {
+async fn permitted_channel(interface: &str, band: ApBand) -> Result<u16, String> {
     let phy = std::fs::read_link(format!("/sys/class/net/{interface}/phy80211"))
         .map_err(|e| e.to_string())?;
     let phy = phy
@@ -323,23 +367,38 @@ async fn permitted_channel(interface: &str) -> Result<u16, String> {
     if !output.status.success() {
         return Err("Cannot inspect regulatory channel permissions".into());
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    // Upper channels avoid the indoor-only lower-band restriction. No country changes.
-    for channel in [149u16, 153, 157, 161, 165] {
-        if text.lines().any(|l| {
-            l.contains(&format!("[{channel}]"))
-                && l.contains("MHz")
-                && l.contains("dBm")
-                && !l.contains("disabled")
-                && !l.contains("no IR")
-                && !l.contains("radar")
-                && !l.contains("indoor")
+    choose_channel(&String::from_utf8_lossy(&output.stdout), band)
+}
+fn choose_channel(info: &str, band: ApBand) -> Result<u16, String> {
+    // No automatic cross-band fallback. Exclude DFS and indoor-only channels
+    // because this deployment does not establish indoor operation or perform CAC.
+    let candidates: &[u16] = match band {
+        ApBand::Ghz2 => &[1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13],
+        ApBand::Ghz5 => &[149, 153, 157, 161, 165],
+    };
+    for &channel in candidates {
+        if info.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            // Match frequency too: 6 GHz reuses 2.4/5 GHz channel numbers.
+            fields.first() == Some(&"*")
+                && fields.get(1).and_then(|v| v.parse::<f64>().ok())
+                    == Some(f64::from(band.frequency(channel)))
+                && fields.get(2) == Some(&"MHz")
+                && fields.get(3) == Some(&format!("[{channel}]").as_str())
+                && line.contains("dBm")
+                && !["disabled", "no ir", "radar", "indoor", "no 20mhz"]
+                    .iter()
+                    .any(|restriction| line.to_ascii_lowercase().contains(restriction))
         }) {
             return Ok(channel);
         }
     }
-    Err("No proven permitted non-DFS 5 GHz AP channel in 149–165. Regulatory settings were not changed.".into())
+    Err(format!(
+        "No proven permitted non-DFS {} AP channel. Regulatory settings were not changed; select another AP band if permitted.",
+        band.label()
+    ))
 }
+
 async fn firewall(action: &str, interface: &str) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let path = "/usr/local/libexec/argo-projection-firewall";
@@ -422,6 +481,28 @@ async fn cleanup(system: &impl CleanupAdapter, ap: &mut AccessPoint) -> Result<(
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
+    #[test]
+    fn channels_respect_selected_band_and_regulatory_restrictions() {
+        let info = "* 2412 MHz [1] (20.0 dBm) (no IR)\n* 2437.0 MHz [6] (20.0 dBm)\n* 2462 MHz [11] (disabled)\n* 5745.0 MHz [149] (13.0 dBm)\n* 5955 MHz [1] (23.0 dBm)";
+        assert_eq!(choose_channel(info, ApBand::Ghz2).unwrap(), 6);
+        assert_eq!(choose_channel(info, ApBand::Ghz5).unwrap(), 149);
+        for restriction in [
+            "no IR",
+            "disabled",
+            "radar detection",
+            "indoor only",
+            "no 20MHz",
+        ] {
+            let blocked = format!(
+                "* 2412 MHz [1] (20.0 dBm) ({restriction})\n* 5955 MHz [1] (23.0 dBm)\n* 5745.0 MHz [149] (13.0 dBm)"
+            );
+            assert!(choose_channel(&blocked, ApBand::Ghz2).is_err());
+        }
+        assert!(choose_channel("* 2412 MHz [1] (20.0 dBm)", ApBand::Ghz5).is_err());
+        assert!(ApBand::parse("auto").is_err());
+        assert_eq!(ApBand::Ghz2.nm_band(), "bg");
+        assert_eq!(ApBand::Ghz5.nm_band(), "a");
+    }
     struct Fake {
         fail: bool,
         calls: Mutex<Vec<String>>,
@@ -445,6 +526,7 @@ pub(crate) mod tests {
             interface: "testwifi".into(),
             address: Ipv4Addr::new(10, 77, 1, 1),
             channel: 149,
+            band: ApBand::Ghz5,
             ssid: "unit-test".into(),
             password: "test-only-credential".into(),
             bssid: "02:00:00:00:00:01".into(),

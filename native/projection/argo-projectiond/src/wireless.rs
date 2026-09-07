@@ -1,5 +1,6 @@
 //! One connectivity worker; wireless bootstrap and projection consume shared
 //! BlueZ state. A single semaphore arbitrates USB/Wi-Fi before resource setup.
+use crate::connectivity::network::ApBand;
 use crate::{
     connectivity::{Request, bluetooth::Bluetooth, network::Network},
     daemon_state::ProjectionRuntimeSnapshot,
@@ -115,7 +116,12 @@ async fn process_request(
 
     match r.action.as_str() {
         "confirm" => bt.respond(r.prompt, r.accept),
-        "adapter" | "interface" | "select" => {
+        "adapter" | "interface" | "select" | "band" => {
+            let band = if r.action == "band" {
+                Some(ApBand::parse(&r.target)?)
+            } else {
+                None
+            };
             if r.action == "select"
                 && !bt
                     .device(&r.target)?
@@ -128,6 +134,7 @@ async fn process_request(
             c.state.send_modify(|s| match r.action.as_str() {
                 "adapter" => s.adapter = r.target.clone(),
                 "interface" => s.interface = r.target.clone(),
+                "band" => s.band = band.expect("validated band"),
                 _ => s.selected = r.target.clone(),
             });
             if activity.is_some() {
@@ -264,6 +271,7 @@ async fn process_request(
                     state,
                     config.selected,
                     config.interface,
+                    config.band,
                     cancelled,
                 )
                 .await;
@@ -281,6 +289,7 @@ async fn reconnect(
     state: watch::Sender<ProjectionRuntimeSnapshot>,
     selected: String,
     interface: String,
+    band: ApBand,
     mut cancel: watch::Receiver<bool>,
 ) {
     for attempt in 0..3 {
@@ -298,8 +307,16 @@ async fn reconnect(
             );
             tokio::select! { biased; _ = cancel.changed() => break, _ = tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))) => {} }
         }
-        let result =
-            attempt_connection(&bt, &host, &state, &selected, &interface, cancel.clone()).await;
+        let result = attempt_connection(
+            &bt,
+            &host,
+            &state,
+            &selected,
+            &interface,
+            band,
+            cancel.clone(),
+        )
+        .await;
         match result {
             Ok(()) => {
                 host.connectivity.progress(
@@ -324,6 +341,7 @@ async fn attempt_connection(
     state: &watch::Sender<ProjectionRuntimeSnapshot>,
     selected: &str,
     interface: &str,
+    band: ApBand,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let network = Network::open().await?;
@@ -332,11 +350,13 @@ async fn attempt_connection(
     let mut ap = tokio::select! {
         biased;
         _ = cancel.changed() => return Ok(()),
-        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface)) => result.map_err(|_| "Wireless network preflight timed out")??,
+        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface, band)) => result.map_err(|_| "Wireless network preflight timed out")??,
     };
     let mut media = crate::native_playback::SessionMedia::default();
     let operation = async {
         network.activate(&mut ap).await?;
+        c.state
+            .send_modify(|s| s.ap_frequency_mhz = Some(ap.band.frequency(ap.channel)));
         c.progress("bootstrap", "AP and DHCP ready; waiting for selected phone's Bluetooth bootstrap. Check phone prompts / desktop HFP connection.");
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
@@ -510,7 +530,10 @@ async fn attempt_connection(
         crate::daemon_log!(Warn, "wireless", "{message}");
         return Err(message);
     }
-    c.state.send_modify(|s| s.cleanup_error.clear());
+    c.state.send_modify(|s| {
+        s.cleanup_error.clear();
+        s.ap_frequency_mhz = None;
+    });
     result
 }
 

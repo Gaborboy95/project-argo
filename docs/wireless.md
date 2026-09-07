@@ -19,7 +19,11 @@ at most two channels. This feature uses one AP and requires idle Wi-Fi.
 Current regulatory domain is **DE**, unchanged. 36–48 permit indoor operation;
 52–144 require DFS. 149–165 are reported enabled at 13 dBm without NO-IR/DFS;
 169–177 disabled. The implementation rechecks the selected phy and chooses
-149–165 only, failing closed if no such non-DFS channel is proven. This is
+149–165 for the default 5 GHz band. The saved 2.4 GHz selection tries channels
+1/6/11 first, then other permitted channels in 1–13. Neither selection falls
+back to the other band. Disabled, NO-IR, DFS and indoor-only channels are excluded;
+frequency is checked as well as channel number to distinguish reused 6 GHz numbers.
+It fails closed if no permitted channel in the selected band is proven. This is
 read-only `iw` inspection, not a regulatory change. NM controls the AP via D-Bus.
 No claim is made that radio capabilities prove successful AP operation.
 
@@ -175,7 +179,8 @@ Wired rollback was copied before staging:
 Original `$HOME/dev/infotainment/bundle/argo-render-test` is untouched and is LIVE,
 not the renderer diagnostic. Do not use run_renderer_test.sh for this workflow.
 
-New release: `$HOME/dev/infotainment/bundle/argo-wireless-ipc5-20260907`.
+Band-selection release: `$HOME/dev/infotainment/bundle/argo-wireless-bands-ipc5-20260908`.
+Previous wireless release remains at `argo-wireless-ipc5-20260907`.
 It includes its matching `bin/argo-projectiond`; the native-view library is copied
 unchanged from the wired rollback. Neither Engine, IHS nor the view is rebuilt. Use separate sockets for isolated
 read-only checks. Never run two hardware-enabled projection daemons together.
@@ -190,8 +195,8 @@ Launch from two desktop terminals, after stopping the previous app/daemon:
 ```sh
 # Terminal 1: reuse the two external identity paths from your wired launch.
 # These variables are already documented by the wired runbook; do not copy keys.
-export ARGO_ANDROID_AUTO_CERT_FILE=/your/existing/argo.crt
-export ARGO_ANDROID_AUTO_KEY_FILE=/your/existing/argo.key
+export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/argo-cert/argo.crt"
+export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/argo-cert/argo.key"
 export ARGO_WIRELESS_DEVELOPMENT=1
 "$HOME/dev/argo/tool/connectivity/run-release.sh" daemon
 
@@ -259,3 +264,48 @@ WPP version-status compatibility, TLS with this phone and all phone acceptance
 steps remain untested. This is a staged development implementation, not completed
 end-to-end wireless acceptance. See the bundle's `BUILD-MANIFEST.txt` for hashes
 and the final source revision.
+
+
+## Band-selection correction (2026-09-08)
+
+Settings → Devices & connectivity → **Projection AP band** selects 2.4 GHz or
+5 GHz (the existing default). The choice is saved; it does not enable wireless,
+activate an AP or disconnect an existing network. During any connection/retry,
+the band is frozen. To apply a changed choice, explicitly Disconnect, wait for
+cleanup, then Connect. The card displays the active AP configuration frequency
+separately from the saved choice. If cleanup fails this value is retained for
+inspection; it is configured frequency, not an independent RF measurement.
+
+The NetworkManager profile uses `bg` or `a` and the selected channel, and WPP's
+version offer sends the corresponding 2.4/5 GHz frequency. This follows NM's
+[wireless settings](https://www.networkmanager.dev/docs/api/latest/settings-802-11-wireless.html)
+and [capability flags](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/nm-dbus-types.html).
+No channel/country override is provided. IPC 5 gains additive `band` and
+`ap_frequency_mhz` connectivity fields and validated `band` requests. Older
+applications ignore these fields; the new application shows an upgrade notice
+with an older daemon, instead of presenting a nonfunctional selector. Stage
+and launch the matched pair above.
+
+Read-only check on this date: wlp2s0 is a station on P-Home, channel 36;
+DE restrictions are unchanged. Channels 1/6/11 show 20 dBm and 149–165 show
+13 dBm without NO-IR/DFS. `iw` prints decimal frequencies, which the channel
+filter accepts. **enp3s0 is unavailable**; the default route is currently via
+192.168.0.1 on wlp2s0. This differs from the earlier Ethernet-connected preflight.
+No connections were changed. Restore management Ethernet (or use a separate
+idle Wi-Fi adapter) before freeing the current Wi-Fi connection explicitly in
+the desktop network UI. Argo will refuse to take over an active station.
+
+Operator band test: select 2.4 GHz, disconnect USB data, Enable and Connect;
+verify the card's active configuration and independently run `iw dev` to verify
+AP mode/frequency. Approve phone prompts. Then check phone association and live
+AA, including the phone's internet access. A working 2.4 GHz AP alone does not
+prove this phone supports AA startup in that band. No AP activation or phone
+acceptance was performed for this correction; the reported AA connection issue
+remains unverified until this controlled test. The wired/audio/TLS/session engine
+and native-view library are unchanged.
+
+Correction verification: 52 Rust tests passed; Clippy with warnings denied and
+Flutter analysis passed. The full Flutter suite passed (225 tests), followed by
+the three connectivity widget/persistence tests after adding the saved-band
+regression. Rust and Flutter release builds passed. Real AP/phone acceptance
+remains pending; original wired and previous wireless bundles are preserved.

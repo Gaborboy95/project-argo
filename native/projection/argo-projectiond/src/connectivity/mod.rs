@@ -38,6 +38,8 @@ pub struct Snapshot {
     pub detail: String,
     pub wifi_connected: bool,
     pub cleanup_error: String,
+    pub band: network::ApBand,
+    pub ap_frequency_mhz: Option<u32>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

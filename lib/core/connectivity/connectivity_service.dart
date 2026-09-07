@@ -43,6 +43,8 @@ final class ConnectivitySnapshot {
     this.detail = 'Connectivity daemon unavailable',
     this.cleanupError = '',
     this.prompt,
+    this.band,
+    this.apFrequencyMhz,
   });
   final bool available, enabled, discovering, wifiConnected;
   final List<ConnectivityRadio> adapters, networks;
@@ -50,6 +52,10 @@ final class ConnectivitySnapshot {
   final String adapter, interface, selected, phase, detail;
   final String cleanupError;
   final PairingPrompt? prompt;
+
+  /// Null means the daemon predates selectable AP bands.
+  final String? band;
+  final int? apFrequencyMhz;
   factory ConnectivitySnapshot.fromJson(Map<String, dynamic> j) {
     List<ConnectivityRadio> radios(String key) => (j[key] as List)
         .map((r) => ConnectivityRadio(r['id'] as String, r['name'] as String))
@@ -78,6 +84,8 @@ final class ConnectivitySnapshot {
       phase: j['phase'] as String,
       detail: j['detail'] as String,
       cleanupError: j['cleanup_error'] as String? ?? '',
+      band: j['band'] as String?,
+      apFrequencyMhz: j['ap_frequency_mhz'] as int?,
       prompt: p == null
           ? null
           : PairingPrompt(

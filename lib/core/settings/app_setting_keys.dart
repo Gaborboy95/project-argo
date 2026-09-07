@@ -17,6 +17,15 @@ abstract final class AppSettingKeys {
     'projectionInterface',
   );
   static final connectivityPhone = _connectivityReference('projectionPhone');
+  static final connectivityBand = SettingKey<String>(
+    id: 'connectivity.projectionBand',
+    defaultValue: '5ghz',
+    serialize: _serializeString,
+    deserialize: (value) {
+      if (value == '2.4ghz' || value == '5ghz') return value as String;
+      throw const FormatException('Expected 2.4ghz or 5ghz.');
+    },
+  );
   static final appearanceThemeMode = SettingKey<String>(
     id: 'appearance.themeMode',
     defaultValue: 'dark',
@@ -140,6 +149,7 @@ abstract final class AppSettingKeys {
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)
+    ..register(connectivityBand)
     ..register(appearanceThemeMode)
     ..register(appearanceSeedColor)
     ..register(lastModule)

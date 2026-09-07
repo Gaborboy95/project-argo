@@ -191,7 +191,9 @@ shaders and vehicle-driven day/night selection remain future work.
 Settings → Devices & connectivity saves `connectivity.bluetoothAdapter`,
 `connectivity.projectionInterface`, and `connectivity.projectionPhone` as bounded
 string references (default empty). BlueZ owns bonds and NM owns AP profiles; no
-secrets are saved in these preferences. Selection changes during a session apply
+secrets are saved in these preferences. `connectivity.projectionBand` stores
+`2.4ghz` or `5ghz` (default `5ghz`); the daemon validates it and uses only permitted
+channels in that band, without automatic cross-band fallback. Selection changes during a session apply
 on the next connection. Enable/Connect are explicit and never restored at launch.
 The daemon gate `ARGO_WIRELESS_DEVELOPMENT=1` permits the development admission
 policy but does not enable wireless, start discovery, register AA or create an AP.

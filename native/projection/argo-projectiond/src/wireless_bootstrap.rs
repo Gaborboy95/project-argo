@@ -52,7 +52,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     ap: &AccessPoint,
     joined: watch::Sender<bool>,
 ) -> Result<(), String> {
-    let frequency = 5000 + u64::from(ap.channel) * 5;
+    let frequency = u64::from(ap.band.frequency(ap.channel));
     let mut packed = Vec::new();
     let mut n = frequency;
     while n >= 128 {
@@ -165,6 +165,24 @@ mod tests {
 #[cfg(test)]
 mod exchange_tests {
     use super::*;
+    #[tokio::test]
+    async fn version_offer_uses_selected_ap_frequency_in_both_bands() {
+        use crate::connectivity::network::ApBand;
+        for (band, channel, expected) in [
+            (ApBand::Ghz2, 6, vec![8, 6, 16, 0, 34, 2, 0x85, 0x13]),
+            (ApBand::Ghz5, 149, vec![8, 6, 16, 0, 34, 2, 0xf1, 0x2c]),
+        ] {
+            let mut ap = crate::connectivity::network::tests::ap();
+            ap.band = band;
+            ap.channel = channel;
+            let (mut hu, mut phone) = tokio::io::duplex(8192);
+            let (joined, _) = watch::channel(false);
+            let task = tokio::spawn(async move { run(&mut hu, &ap, joined).await });
+            assert_eq!(receive(&mut phone).await.unwrap(), (4, expected));
+            drop(phone);
+            assert!(task.await.unwrap().is_err());
+        }
+    }
     #[tokio::test(start_paused = true)]
     async fn version_deadline_and_real_exchange_keepalive_are_bounded() {
         let ap = crate::connectivity::network::tests::ap();

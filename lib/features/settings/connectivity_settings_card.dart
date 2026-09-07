@@ -100,6 +100,35 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
                           }
                         : null,
                   ),
+              if (s.band == '2.4ghz' || s.band == '5ghz')
+                DropdownButtonFormField<String>(
+                  key: ValueKey('band:${s.band}'),
+                  initialValue: s.band,
+                  decoration: const InputDecoration(
+                    labelText: 'Projection AP band',
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: '2.4ghz', child: Text('2.4 GHz')),
+                    DropdownMenuItem(value: '5ghz', child: Text('5 GHz')),
+                  ],
+                  onChanged: s.available
+                      ? (v) {
+                          if (v != null) command('band', target: v);
+                        }
+                      : null,
+                )
+              else if (s.available)
+                const Text(
+                  'AP band selection requires the updated connectivity daemon.',
+                ),
+              if (active)
+                const Text(
+                  'Band changes apply after Disconnect, then Connect. The current attempt keeps its band.',
+                ),
+              if (s.apFrequencyMhz != null)
+                Text(
+                  'Active AP configuration: ${s.apFrequencyMhz! < 3000 ? "2.4" : "5"} GHz (${s.apFrequencyMhz} MHz)',
+                ),
               Wrap(
                 spacing: 8,
                 children: [
