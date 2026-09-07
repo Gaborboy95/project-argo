@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 pub const MAGIC: u32 = 0x4152_474f;
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
 pub const HEADER_LEN: usize = 12;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 pub const MAX_BUFFERED: usize = 256 * 1024;

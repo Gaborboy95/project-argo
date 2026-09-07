@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/projection/projection_service.dart';
 import 'package:argo/core/projection/projection_models.dart';
@@ -25,6 +27,45 @@ void main() {
     framesPerSecond: 30,
     driverSide: ProjectionDriverSide.left,
     safeInsets: const ProjectionInsets(),
+  );
+
+  test(
+    'IPC v5 connectivity is independent of AA readiness and closes truthfully',
+    () async {
+      final transport = _FakeTransport();
+      final backend = AndroidAutoProjectionBackend(
+        socketPath: '/tmp/test.sock',
+        preferences: preferences,
+        diagnostics: DiagnosticsService(),
+        transportFactory: (_) async => transport,
+      );
+      await backend.start();
+      transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+      final hex = File('test/fixtures/projection/ipc_v5_connectivity.hex')
+          .readAsStringSync()
+          .trim();
+      transport.emit(
+        ProjectionIpcDecoder().add([
+          for (var i = 0; i < hex.length; i += 2)
+            int.parse(hex.substring(i, i + 2), radix: 16),
+        ]).single,
+      );
+      expect(backend.connectivity.available, isTrue);
+      expect(backend.connectivity.enabled, isFalse);
+      expect(backend.connectivity.prompt!.device, 'hci0/02:00:00:00:00:01');
+      expect(transport.sent.length, 1); // No automatic pairing confirmation.
+      await backend.connectivityCommand('confirm', prompt: 42, accept: false);
+      expect(jsonDecode(utf8.decode(transport.sent.last.payload)), {
+        'action': 'confirm',
+        'target': '',
+        'accept': false,
+        'prompt': 42,
+      });
+      await transport.crash();
+      expect(backend.connectivity.available, isFalse);
+      expect(backend.connectivity.prompt, isNull);
+      await backend.close();
+    },
   );
 
   test('shared metadata snapshot is current, deduplicated and scoped to its originating session', () async {
@@ -62,7 +103,7 @@ void main() {
       ),
     );
     session('aa-wired:device');
-    final hex = File('test/fixtures/projection/ipc_v4_metadata.hex')
+    final hex = File('test/fixtures/projection/ipc_v5_metadata.hex')
         .readAsStringSync()
         .trim();
     final packet = ProjectionIpcDecoder().add([
@@ -89,7 +130,7 @@ void main() {
     final subscription = media.changes.listen((_) => changes++);
     transport.emit(packet);
     expect(changes, 0);
-    final returnHex = File('test/fixtures/projection/ipc_v4_host_return.hex')
+    final returnHex = File('test/fixtures/projection/ipc_v5_host_return.hex')
         .readAsStringSync()
         .trim();
     transport.emit(
@@ -344,7 +385,7 @@ final class _FakeTransport implements ProjectionControlTransport {
 }
 
 ProjectionIpcMessage _capabilities() {
-  final hex = File('test/fixtures/projection/ipc_v4_capabilities.hex')
+  final hex = File('test/fixtures/projection/ipc_v5_capabilities.hex')
       .readAsStringSync()
       .trim();
   final bytes = [

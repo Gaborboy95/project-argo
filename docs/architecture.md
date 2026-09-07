@@ -94,14 +94,14 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v4 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v5 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
 loads them from its environment. The native video feed is separately framed/bounded. Argo connects to an already
 running daemon and does not provide automatic daemon respawn supervision.
 
-IPC v4 appends a u32 host-return revision to session messages (kind 3), and a
+The presentation fields introduced in IPC v4 and retained in v5 append a u32 host-return revision to session messages (kind 3), and a
 u32 presentation revision to video messages (kind 4). Both are session-scoped,
 start at zero and use network byte order. Explicit phone UNFOCUSED requests advance
 the first; AV stop does not. The application compares revisions only for the same
@@ -200,7 +200,7 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
-## Projection configuration ownership (IPC v4)
+## Projection configuration ownership (IPC v5)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -230,7 +230,7 @@ height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
 | 5 audio stream | Existing session/stream IDs, role/active/focus, then selected PCM rate:u16, bits:u8, channels:u8. |
 
 Other message kinds preserve their existing bounded control responsibilities.
-The shared hex fixture in `test/fixtures/projection/ipc_v4_capabilities.hex` is
+The shared hex fixture in `test/fixtures/projection/ipc_v5_capabilities.hex` is
 checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2/v3 bundles.
 
 HostControl serializes request selection and session freezing through its watch
@@ -311,3 +311,20 @@ The IndexedStack, shell and native surface are not keyed by appearance; theme
 updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
 System-mode resolution uses Flutter's host brightness only; a future normalized
 vehicle day/night source would require a separate explicit policy.
+
+## Shared connectivity and wireless admission (IPC v5)
+
+The existing daemon contains the protocol-neutral BlueZ device/pairing adapter
+and NetworkManager AP adapter in `connectivity/`. The single non-default agent
+delivers device-scoped, expiring prompts through the existing control connection.
+A separate `wireless` owner consumes these adapters and the existing `aa_session`,
+using `wireless_bootstrap` for RFCOMM and `TcpAaTransport` for admitted Wi-Fi.
+A shared session semaphore is acquired before USB publishes session state/AOAP
+or wireless opens any AP/listener. It is released after owned cleanup.
+No alternate renderer/audio/channel engine exists. Public transport `wifi` flows
+through existing media/Veloce mappings; private radio identity stays in connectivity.
+IPC v5 adds kind 30 status and kind 31 commands; all control remains bounded and
+credential-free. Client closure cancels connectivity through a separate watch
+revision, even when the command queue is full.
+[Wireless runbook](wireless.md) specifies framing, security assumptions, reference
+revisions, AP ownership, service-loss behavior and incomplete hardware acceptance.

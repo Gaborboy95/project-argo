@@ -28,3 +28,8 @@ pub mod usb_runtime;
 mod wired_tests;
 
 pub mod metadata;
+
+pub mod connectivity;
+pub mod tcp_transport;
+pub mod wireless;
+pub mod wireless_bootstrap;

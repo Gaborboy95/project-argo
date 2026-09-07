@@ -26,6 +26,8 @@ pub struct HostControl {
     pub configuration: watch::Sender<SessionConfig>,
     pub commands: broadcast::Sender<Command>,
     pub client_lease: Arc<Semaphore>,
+    pub session_lease: Arc<Semaphore>,
+    pub connectivity: crate::connectivity::Control,
     pub readiness: u8,
     pub readiness_detail: String,
 }
@@ -37,6 +39,8 @@ impl Default for HostControl {
             configuration,
             commands,
             client_lease: Arc::new(Semaphore::new(1)),
+            session_lease: Arc::new(Semaphore::new(1)),
+            connectivity: crate::connectivity::Control::new().0,
             readiness: 1,
             readiness_detail: "Configure ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond, then restart it.".into(),
         }

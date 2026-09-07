@@ -590,3 +590,48 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
     .await
     .expect("memory AA session must complete within its bound");
 }
+
+#[test]
+fn wireless_verifies_handshake_signature_separately_from_legacy_chain_policy() {
+    let fixture = IdentityFixture::new();
+    for corrupt in [false, true] {
+        let mut phone = fixture.server();
+        let mut hu = AaTls::test_wireless(&fixture.identity).unwrap();
+        phone
+            .read_tls(&mut Cursor::new(hu.pending().unwrap()))
+            .unwrap();
+        phone.process_new_packets().unwrap();
+        let mut reply = Vec::new();
+        while phone.wants_write() {
+            phone.write_tls(&mut reply).unwrap();
+        }
+        let mut changed = false;
+        let mut offset = 0;
+        while offset + 5 <= reply.len() {
+            let size = u16::from_be_bytes([reply[offset + 3], reply[offset + 4]]) as usize;
+            let end = offset + 5 + size;
+            let mut h = offset + 5;
+            while h + 4 <= end && reply[offset] == 22 {
+                let len = (usize::from(reply[h + 1]) << 16)
+                    | (usize::from(reply[h + 2]) << 8)
+                    | usize::from(reply[h + 3]);
+                let next = h + 4 + len;
+                if next > end {
+                    break;
+                }
+                if reply[h] == 12 && corrupt {
+                    reply[next - 1] ^= 1;
+                    changed = true;
+                }
+                h = next;
+            }
+            offset = end;
+        }
+        if corrupt {
+            assert!(changed);
+            assert!(hu.receive(&reply).is_err());
+        } else {
+            assert!(hu.receive(&reply).is_ok());
+        }
+    }
+}

@@ -66,6 +66,7 @@ pub async fn run(
     // Failed enumerations stay parked even if another phone is subsequently
     // tried. Removal clears the entry; no retry timer can issue AOAP requests.
     let mut attempted = HashSet::new();
+    let mut owner = None;
 
     crate::daemon_log!(
         Info,
@@ -79,6 +80,12 @@ pub async fn run(
     match initial {
         Ok(devices) => {
             for info in devices {
+                if owner.is_none() && (is_candidate(&info) || is_accessory(&info)) {
+                    owner = control.session_lease.clone().try_acquire_owned().ok();
+                }
+                if owner.is_none() {
+                    continue;
+                }
                 connected(
                     info,
                     &mut lifecycle,
@@ -99,6 +106,7 @@ pub async fn run(
         ),
     }
 
+    let mut cleanup_tick = tokio::time::interval(Duration::from_millis(250));
     let result = loop {
         let deadline = match lifecycle.state() {
             UsbConnectionState::WaitingForAccessory { deadline, .. } => Some(*deadline),
@@ -107,12 +115,27 @@ pub async fn run(
         tokio::select! {
             biased;
             _ = shutdown.changed() => break Ok(()),
+            _ = cleanup_tick.tick() => {
+                if active_session.as_ref().is_some_and(|s: &ActiveSession| s.task.is_finished()) {
+                    if let Some(session) = active_session.take() { let _ = session.task.await; }
+                    // A fast failure may finish cleanup before the loop reads
+                    // its queued report. Publish it while USB still owns state.
+                    while let Ok(result) = work_rx.try_recv() { handle_work_result(result, &mut lifecycle, &state_tx); }
+                    owner.take();
+                }
+                if owner.is_some() && active_session.is_none() && probes.is_empty() && work_rx.is_empty()
+                    && !matches!(lifecycle.state(), UsbConnectionState::WaitingForAccessory { .. }) { owner.take(); }
+            },
             event = watcher.next() => match event {
-                Some(HotplugEvent::Connected(info)) => connected(
+                Some(HotplugEvent::Connected(info)) => {
+                    if owner.is_none() && (is_candidate(&info) || is_accessory(&info)) { owner = control.session_lease.clone().try_acquire_owned().ok(); }
+                    if owner.is_some() { connected(
                     info, &mut lifecycle, &state_tx, &work_tx, &mut active_session,
-                    &mut probes, &mut probe, &mut attempted, &control),
+                    &mut probes, &mut probe, &mut attempted, &control); }
+                },
                 Some(HotplugEvent::Disconnected(id)) => {
                     attempted.remove(&id);
+                    if owner.is_none() { lifecycle.removed(&format!("{id:?}")); continue; }
                     let waiting = matches!(lifecycle.state(), UsbConnectionState::WaitingForAccessory { .. });
                     if lifecycle.removed(&format!("{id:?}")) {
                         if waiting {
@@ -123,13 +146,14 @@ pub async fn run(
                             if active_session.as_ref().is_some_and(|session| session.id == id)
                                 && let Some(session) = active_session.take() { session.stop().await; }
                             state_tx.send_replace(ProjectionRuntimeSnapshot::default());
+                            owner.take();
                             crate::daemon_log!(Info, "usb-runtime", "Android Auto USB device removed; session cleared");
                         }
                     }
                 }
                 None => break Err("USB hotplug stream ended".to_owned()),
             },
-            Some(result) = work_rx.recv() => handle_work_result(result, &mut lifecycle, &state_tx),
+            Some(result) = work_rx.recv() => { if owner.is_some() { handle_work_result(result, &mut lifecycle, &state_tx); } },
             _ = probes.join_next(), if !probes.is_empty() => {},
             _ = wait_for_deadline(deadline) => {
                 if lifecycle.expire_accessory_wait(Instant::now()) {
@@ -150,7 +174,9 @@ pub async fn run(
     if let Some(session) = active_session {
         session.stop().await;
     }
-    state_tx.send_replace(ProjectionRuntimeSnapshot::default());
+    if owner.is_some() {
+        state_tx.send_replace(ProjectionRuntimeSnapshot::default());
+    }
     result
 }
 
@@ -404,6 +430,7 @@ fn start_session(
             crate::daemon_log!(Warn, "usb-runtime", "AA transport cleanup: {error}");
         }
         state.send_modify(|snapshot| {
+            snapshot.metadata = Default::default();
             snapshot.video = None;
             snapshot.audio = [false; 3];
             if ended_normally {
@@ -515,8 +542,12 @@ mod tests {
                     let _ = reading.send(());
                 }
                 if let Some(response) = self.response.take() {
-                    bytes[..response.len()].copy_from_slice(&response);
-                    Ok(response.len())
+                    let count = bytes.len().min(response.len());
+                    bytes[..count].copy_from_slice(&response[..count]);
+                    if count < response.len() {
+                        self.response = Some(response[count..].to_vec());
+                    }
+                    Ok(count)
                 } else {
                     std::future::pending().await
                 }

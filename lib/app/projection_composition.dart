@@ -1,3 +1,5 @@
+import '../core/connectivity/connectivity_preferences.dart';
+import '../core/connectivity/connectivity_service.dart';
 import '../core/media/media_session_service.dart';
 import '../integrations/projection/projection_media_source.dart';
 import '../core/audio/audio_service.dart';
@@ -37,6 +39,18 @@ Future<ProjectionService> registerProjectionServices({
     isLinux: isLinux,
     transportFactory: transportFactory,
   );
+  if (backend is ConnectivityService) {
+    final connectivity = ConnectivityPreferences(
+      backend as ConnectivityService,
+      services.get<SettingsService>(),
+    );
+    services.register<ConnectivityService>(connectivity);
+    lifecycle.registerShutdown(
+      name: 'connectivity.preferences',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: connectivity.close,
+    );
+  }
   final projectionSettings = ProjectionSettingsService(
     settings: services.get<SettingsService>(),
     requested: preferences,

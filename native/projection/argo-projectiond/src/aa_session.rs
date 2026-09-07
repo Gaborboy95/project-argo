@@ -105,7 +105,11 @@ pub async fn run(
     let config = &selection.config;
     config.display.validate()?;
     let identity=config.identity.as_ref().ok_or("AA TLS identity missing: set ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond")?;
-    let mut tls = AaTls::new(identity)?;
+    let mut tls = if transport.wireless() {
+        AaTls::wireless(identity)?
+    } else {
+        AaTls::new(identity)?
+    };
     let mut decoder = PacketDecoder::default();
     let mut messages = Messages::default();
     let mut input = [0; 16384];

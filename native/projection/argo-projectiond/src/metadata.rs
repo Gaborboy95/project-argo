@@ -409,7 +409,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v4_metadata.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v5_metadata.hex").trim()
         );
         let initial =
             crate::daemon_state::snapshot_messages(&Default::default(), &current).unwrap();

@@ -1,0 +1,150 @@
+//! Shared, protocol-neutral connectivity state. BlueZ and NM retain secrets.
+pub mod bluetooth;
+pub mod network;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, watch};
+
+#[derive(Clone, Default, Serialize)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub paired: bool,
+    pub connected: bool,
+}
+#[derive(Clone, Default, Serialize)]
+pub struct Radio {
+    pub id: String,
+    pub name: String,
+}
+#[derive(Clone, Serialize)]
+pub struct Prompt {
+    pub id: u64,
+    pub device: String,
+    pub name: String,
+    pub text: String,
+}
+#[derive(Clone, Default, Serialize)]
+pub struct Snapshot {
+    pub adapters: Vec<Radio>,
+    pub networks: Vec<Radio>,
+    pub devices: Vec<Device>,
+    pub adapter: String,
+    pub interface: String,
+    pub selected: String,
+    pub enabled: bool,
+    pub discovering: bool,
+    pub prompt: Option<Prompt>,
+    pub phase: String,
+    pub detail: String,
+    pub wifi_connected: bool,
+    pub cleanup_error: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub action: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub accept: bool,
+    #[serde(default)]
+    pub prompt: u64,
+}
+#[derive(Clone)]
+pub struct Control {
+    pub client_closed: watch::Sender<u64>,
+    pub state: watch::Sender<Snapshot>,
+    pub requests: mpsc::Sender<Request>,
+}
+impl Control {
+    pub fn new() -> (Self, mpsc::Receiver<Request>) {
+        let (state, _) = watch::channel(Snapshot {
+            phase: "disabled".into(),
+            detail: "Wireless is disabled".into(),
+            ..Default::default()
+        });
+        let (requests, rx) = mpsc::channel(16);
+        (
+            Self {
+                state,
+                requests,
+                client_closed: watch::channel(0).0,
+            },
+            rx,
+        )
+    }
+    pub fn message(&self) -> crate::ipc::Message {
+        crate::ipc::Message {
+            kind: 30,
+            payload: serde_json::to_vec(&*self.state.borrow()).expect("connectivity snapshot"),
+        }
+    }
+    pub fn request(&self, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() > 2048 {
+            return Err("Connectivity request too large".into());
+        }
+        let r: Request =
+            serde_json::from_slice(bytes).map_err(|_| "Malformed connectivity request")?;
+        if r.action == "clientClosed" {
+            return Err("Reserved connectivity action".into());
+        }
+        if r.target.len() > 256 {
+            return Err("Connectivity reference too long".into());
+        }
+        self.requests
+            .try_send(r)
+            .map_err(|_| "Connectivity is busy or unavailable".into())
+    }
+    pub fn progress(&self, phase: &str, detail: impl Into<String>) {
+        self.state.send_modify(|s| {
+            if phase == "unavailable" {
+                s.adapters.clear();
+                s.networks.clear();
+                s.devices.clear();
+                s.enabled = false;
+                s.prompt = None;
+                s.discovering = false;
+            }
+            s.phase = phase.into();
+            s.detail = detail.into();
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_secret_free_ipc_and_device_scoped_confirmation() {
+        let (control, mut requests) = Control::new();
+        control.state.send_modify(|s| {
+            s.prompt = Some(Prompt {
+                id: 42,
+                device: "hci0/02:00:00:00:00:01".into(),
+                name: "Test phone".into(),
+                text: "Confirm matching passkey 123456".into(),
+            })
+        });
+        let encoded = crate::ipc::encode(&control.message())
+            .unwrap()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            encoded,
+            include_str!("../../../../../test/fixtures/projection/ipc_v5_connectivity.hex").trim()
+        );
+        assert!(
+            control
+                .request(br#"{"action":"confirm","prompt":42,"accept":false}"#)
+                .is_ok()
+        );
+        assert!(!requests.try_recv().unwrap().accept);
+        assert!(
+            control
+                .request(br#"{"action":"connect","password":"forbidden"}"#)
+                .is_err()
+        );
+        assert!(control.request(&vec![b' '; 2049]).is_err());
+    }
+}

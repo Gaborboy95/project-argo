@@ -13,7 +13,15 @@ async fn main() -> std::io::Result<()> {
     let listener = argo_projectiond::ipc_server::bind(&socket_path)?;
     let (state_tx, state_rx) = watch::channel(ProjectionRuntimeSnapshot::default());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let control = argo_projectiond::host_control::HostControl::from_environment();
+    let mut control = argo_projectiond::host_control::HostControl::from_environment();
+    let (connectivity, requests) = argo_projectiond::connectivity::Control::new();
+    control.connectivity = connectivity;
+    let wireless_task = tokio::spawn(argo_projectiond::wireless::run(
+        control.clone(),
+        state_tx.clone(),
+        requests,
+        shutdown_tx.subscribe(),
+    ));
     if let Some(path) = &control.configuration.borrow().media_socket {
         argo_projectiond::daemon_log!(Info, "daemon", "configured video socket {}", path.display());
     }
@@ -67,6 +75,7 @@ async fn main() -> std::io::Result<()> {
     argo_projectiond::daemon_log!(Info, "main", "argo-projectiond: shutting down");
     let _ = shutdown_tx.send(true);
     let _ = ipc_task.await;
+    let _ = wireless_task.await;
     #[cfg(all(feature = "linux-usb", target_os = "linux"))]
     let _ = usb_task.await;
     signal_result

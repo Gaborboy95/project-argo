@@ -14,6 +14,7 @@ const TRANSPORT_USB: u8 = 0;
 pub struct ProjectionDeviceStatus {
     pub id: String,
     pub display_name: String,
+    pub transport: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +63,7 @@ impl ProjectionRuntimeSnapshot {
             device: Some(ProjectionDeviceStatus {
                 id: device_id.clone(),
                 display_name,
+                transport: TRANSPORT_USB,
             }),
             session: Some(ProjectionSessionStatusSnapshot {
                 id: format!("aa-wired:{device_id}"),
@@ -195,7 +197,7 @@ fn device_message(device: &ProjectionDeviceStatus) -> Result<Message, DecodeErro
     writer.string(&device.id)?;
     writer.string(&device.display_name)?;
     writer.u8(PROTOCOL_ANDROID_AUTO);
-    writer.u8(TRANSPORT_USB);
+    writer.u8(device.transport);
     Ok(Message {
         kind: IPC_DEVICE,
         payload: writer.finish(),
@@ -264,7 +266,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v4_host_return.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v5_host_return.hex").trim()
         );
 
         let ready = connecting.clone().ready();

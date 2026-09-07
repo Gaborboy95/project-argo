@@ -1,3 +1,6 @@
+import '../../core/connectivity/connectivity_service.dart';
+import 'connectivity_settings_card.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -15,10 +18,12 @@ class SettingsPage extends StatelessWidget {
     required this.audio,
     this.projectionSettings,
     this.settings,
+    this.connectivity,
     super.key,
   });
 
   final SettingsService? settings;
+  final ConnectivityService? connectivity;
 
   final ProjectionSettingsService? projectionSettings;
 
@@ -34,6 +39,8 @@ class SettingsPage extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            if (connectivity != null)
+              ConnectivitySettingsCard(service: connectivity!),
             if (settings != null) AppearanceSettingsCard(settings: settings!),
             if (projectionSettings != null)
               ProjectionSettingsCard(service: projectionSettings!),

@@ -90,11 +90,21 @@ async fn handle_client(
     mut state: watch::Receiver<ProjectionRuntimeSnapshot>,
     control: HostControl,
 ) {
+    struct ClientCleanup(crate::connectivity::Control);
+    impl Drop for ClientCleanup {
+        fn drop(&mut self) {
+            self.0
+                .client_closed
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
+    let mut _cleanup = None;
     let mut decoder = Decoder::default();
     let mut buffer = [0_u8; 16 * 1024];
     let mut hello_complete = false;
     let mut lease = None;
     let mut configuration = control.configuration.subscribe();
+    let mut connectivity = control.connectivity.state.subscribe();
     let mut revision = 0;
     let mut accepted = true;
     let mut reason = String::new();
@@ -116,7 +126,7 @@ async fn handle_client(
                 let messages = match decoder.push(&buffer[..count]) {
                     Ok(messages) => messages,
                     Err(error) => {
-                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v4 builds.");
+                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v5 builds.");
                         let _=send_error(&mut client,&detail).await;
                         crate::daemon_log!(Warn, "ipc-server", "{detail}");
                         return;
@@ -124,7 +134,9 @@ async fn handle_client(
                 };
                 for message in messages {
                     if hello_complete {
-                        if message.kind==28 {
+                        if message.kind == 31 {
+                            if let Err(error) = control.connectivity.request(&message.payload) { control.connectivity.state.send_modify(|s| s.detail = error); }
+                        } else if message.kind==28 {
                             let mut r=PayloadReader::new(&message.payload);
                             let Some(request)=r.u32() else {let _=send_error(&mut client,"Malformed configuration revision").await;return;};
                             if request<=revision {let _=send_error(&mut client,"Configuration revisions must increase").await;return;}
@@ -145,11 +157,11 @@ async fn handle_client(
                         return;
                     }
                     if !message.payload.is_empty() {
-                        let _=send_error(&mut client,"Malformed projection hello; IPC v4 hello has no payload or identity paths").await;return;
+                        let _=send_error(&mut client,"Malformed projection hello; IPC v5 hello has no payload or identity paths").await;return;
                     }
                     if lease.is_none() {
                         match control.client_lease.clone().try_acquire_owned(){
-                            Ok(permit)=>lease=Some(permit),
+                            Ok(permit)=> { lease=Some(permit); _cleanup=Some(ClientCleanup(control.connectivity.clone())); },
                             Err(_)=>{let _=send_error(&mut client,"Another Argo control client owns projection configuration; close it first").await;return;}
                         }
                     }
@@ -157,6 +169,7 @@ async fn handle_client(
                         return;
                     }
                     hello_complete = true;
+                    if send(&mut client, &control.connectivity.message()).await.is_err() { return; }
                     if send(&mut client,&crate::configuration::capabilities(control.readiness,&control.readiness_detail)).await.is_err(){return;}
                     if send(&mut client,&control.configuration_message(revision,accepted,&reason)).await.is_err(){return;}
                     configuration.borrow_and_update();
@@ -166,6 +179,11 @@ async fn handle_client(
                     }
                     sent_state = current;
                 }
+            }
+            changed = connectivity.changed(), if hello_complete => {
+                if changed.is_err() { return; }
+                connectivity.borrow_and_update();
+                if send(&mut client, &control.connectivity.message()).await.is_err() { return; }
             }
             changed = configuration.changed(), if hello_complete => {
                 if changed.is_err(){return;}
@@ -425,7 +443,7 @@ mod tests {
         assert_eq!(
             PayloadReader::new(&messages[0].payload).string(),
             Some(
-                "Malformed projection hello; IPC v4 hello has no payload or identity paths"
+                "Malformed projection hello; IPC v5 hello has no payload or identity paths"
                     .to_owned()
             )
         );

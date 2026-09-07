@@ -1,0 +1,34 @@
+#!/usr/bin/python3
+"""Privileged, fixed-purpose NFT input guard. No network/profile control."""
+import os
+import re
+import subprocess
+import sys
+if os.geteuid() != 0 or len(sys.argv) != 3:
+    sys.exit('Usage (via pkexec): argo-projection-firewall start|stop WIFI_INTERFACE')
+action, iface = sys.argv[1:]
+if action not in ('start', 'stop') or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', iface):
+    sys.exit('Invalid operation or interface')
+if not os.path.exists('/sys/class/net/' + iface + '/phy80211'):
+    sys.exit('Only an existing wireless interface is permitted')
+index = int(open('/sys/class/net/' + iface + '/ifindex').read())
+table = 'argo_projection_' + str(index)
+# Only this reserved table may be changed. Input drops unsolicited services;
+# NM exclusively owns DHCP/DNS and its shared-mode forwarding/masquerading.
+nft = '/usr/sbin/nft'
+exists = subprocess.run([nft, 'list', 'table', 'inet', table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+if action == 'stop':
+    if exists:
+        subprocess.run([nft, 'delete', 'table', 'inet', table], check=True)
+else:
+    rules = (f'delete table inet {table}\n' if exists else '') + f'''table inet {table} {{
+ chain input {{
+  type filter hook input priority -10; policy accept;
+  iifname "{iface}" ct state established,related accept
+  iifname "{iface}" udp dport {{ 53, 67 }} accept
+  iifname "{iface}" tcp dport {{ 53, 5288 }} accept
+  iifname "{iface}" drop
+ }}
+}}
+'''
+    subprocess.run([nft, '-f', '-'], input=rules.encode(), check=True)

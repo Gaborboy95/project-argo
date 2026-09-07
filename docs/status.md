@@ -1,5 +1,14 @@
 # Audit, acceptance and troubleshooting
 
+## Mu wireless development path (2026-09-07)
+
+The user confirms wired AA works after the native audio GstSystemClock fix at
+`7173f2e`. The original LIVE bundle and a separate rollback copy are preserved.
+Wireless software, shared connectivity/UI and IPC v5 are now implemented for
+operator testing; **wireless phone acceptance is not complete**.
+Read the [current Mu evidence, permission boundary, release paths and acceptance
+gaps](wireless.md). Earlier VM and IPC v4 sections below are historical evidence.
+
 ## Audited revisions and evidence
 
 Documentation audit: 2026-09-06, Argo

@@ -53,11 +53,61 @@ impl ServerCertVerifier for AttachedUsbPeer {
     }
 }
 
+/// Development admission deliberately does not claim a phone certificate PKI.
+/// It DOES verify possession of the handshake certificate's private key.
+#[derive(Debug)]
+struct AdmittedWirelessPeer;
+impl ServerCertVerifier for AdmittedWirelessPeer {
+    fn verify_server_cert(
+        &self,
+        cert: &CertificateDer<'_>,
+        chain: &[CertificateDer<'_>],
+        name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        AttachedUsbPeer.verify_server_cert(cert, chain, name, ocsp, now)
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            signature,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General("AA TLS 1.3 disabled".into()))
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        AttachedUsbPeer.supported_verify_schemes()
+    }
+}
+
 pub struct AaTls {
     connection: ClientConnection,
 }
 impl AaTls {
     pub fn new(identity: &AndroidAutoIdentity) -> Result<Self, String> {
+        Self::with_policy(identity, false)
+    }
+    pub(crate) fn wireless(identity: &AndroidAutoIdentity) -> Result<Self, String> {
+        if std::env::var("ARGO_WIRELESS_DEVELOPMENT").as_deref() != Ok("1") {
+            return Err("Wireless development admission is not enabled".into());
+        }
+        Self::with_policy(identity, true)
+    }
+    fn with_policy(identity: &AndroidAutoIdentity, wireless: bool) -> Result<Self, String> {
         identity
             .validate_files()
             .map_err(|error| format!("AA identity: {error:?}"))?;
@@ -74,7 +124,11 @@ impl AaTls {
                 .with_protocol_versions(&[&rustls::version::TLS12])
                 .map_err(|e| e.to_string())?
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AttachedUsbPeer))
+                .with_custom_certificate_verifier(if wireless {
+                    Arc::new(AdmittedWirelessPeer)
+                } else {
+                    Arc::new(AttachedUsbPeer)
+                })
                 .with_client_auth_cert(certs, key)
                 .map_err(|e| e.to_string())?;
         config.enable_sni = false;
@@ -129,5 +183,12 @@ impl AaTls {
             .write_all(bytes)
             .map_err(|e| e.to_string())?;
         self.pending()
+    }
+}
+
+#[cfg(test)]
+impl AaTls {
+    pub(crate) fn test_wireless(identity: &AndroidAutoIdentity) -> Result<Self, String> {
+        Self::with_policy(identity, true)
     }
 }

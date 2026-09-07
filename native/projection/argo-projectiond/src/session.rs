@@ -131,6 +131,9 @@ impl FrameDecoder {
 }
 
 pub trait AndroidAutoTransport: Send {
+    fn wireless(&self) -> bool {
+        false
+    }
     fn read<'a>(
         &'a mut self,
         bytes: &'a mut [u8],
@@ -245,26 +248,43 @@ pub async fn negotiate_version(
     transport.write_all(&request).await?;
     crate::daemon_log!(Debug, "session", "AA VersionRequest sent");
 
-    let mut decoder = FrameDecoder::default();
-    let mut input = [0_u8; 16 * 1024];
-    loop {
-        let count = match transport.read(&mut input).await {
+    let mut wire = vec![0u8; 4];
+    let mut offset = 0;
+    while offset < wire.len() {
+        let count = match transport.read(&mut wire[offset..]).await {
             Ok(count) => count,
-            Err(error) => {
-                decoder.disconnect()?;
-                return Err(error.into());
-            }
+            Err(_) if offset > 0 => return Err(FrameError::DisconnectMidFrame(offset).into()),
+            Err(e) => return Err(e.into()),
         };
         if count == 0 {
-            decoder.disconnect()?;
-            return Err(VersionNegotiationError::Disconnected);
+            return Err(if offset == 0 {
+                VersionNegotiationError::Disconnected
+            } else {
+                FrameError::DisconnectMidFrame(offset).into()
+            });
         }
-        if let Some(frame) = decoder.push(&input[..count])?.into_iter().next() {
-            let response = parse_version_response(&frame)?;
-            crate::daemon_log!(Debug, "session", "AA VersionResponse received");
-            return Ok(response);
-        }
+        offset += count;
     }
+    let length = u16::from_be_bytes([wire[2], wire[3]]) as usize;
+    if !(2..=MAX_FRAME_PAYLOAD_BYTES).contains(&length) {
+        return Err(FrameError::InvalidLength(length).into());
+    }
+    wire.resize(4 + length, 0);
+    while offset < wire.len() {
+        let count = match transport.read(&mut wire[offset..]).await {
+            Ok(count) => count,
+            Err(_) if offset > 0 => return Err(FrameError::DisconnectMidFrame(offset).into()),
+            Err(e) => return Err(e.into()),
+        };
+        if count == 0 {
+            return Err(FrameError::DisconnectMidFrame(offset).into());
+        }
+        offset += count;
+    }
+    let frame = FrameDecoder::default().push(&wire)?.remove(0);
+    let response = parse_version_response(&frame)?;
+    crate::daemon_log!(Debug, "session", "AA VersionResponse received");
+    Ok(response)
 }
 
 pub struct AndroidAutoSessionEngine {
@@ -351,8 +371,12 @@ mod tests {
             Box::pin(async move {
                 match self.reads.pop_front() {
                     Some(Ok(value)) => {
-                        bytes[..value.len()].copy_from_slice(&value);
-                        Ok(value.len())
+                        let count = bytes.len().min(value.len());
+                        bytes[..count].copy_from_slice(&value[..count]);
+                        if count < value.len() {
+                            self.reads.push_front(Ok(value[count..].to_vec()));
+                        }
+                        Ok(count)
                     }
                     Some(Err(error)) => Err(error),
                     None => Ok(0),
@@ -550,5 +574,42 @@ mod tests {
         assert_eq!(session.channel(2), Some(ChannelRole::MainVideo));
         session.disconnect();
         assert_eq!(session.phase(), SessionPhase::Closed);
+    }
+}
+
+#[cfg(test)]
+mod tcp_boundary_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    struct Stream(tokio::io::DuplexStream);
+    impl AndroidAutoTransport for Stream {
+        fn read<'a>(
+            &'a mut self,
+            b: &'a mut [u8],
+        ) -> Pin<Box<dyn Future<Output = io::Result<usize>> + Send + 'a>> {
+            Box::pin(self.0.read(b))
+        }
+        fn write_all<'a>(
+            &'a mut self,
+            b: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'a>> {
+            Box::pin(self.0.write_all(b))
+        }
+        fn close(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(self.0.shutdown())
+        }
+    }
+    #[tokio::test]
+    async fn version_negotiation_preserves_coalesced_following_tls_frame() {
+        let (hu, mut phone) = tokio::io::duplex(128);
+        let mut hu = Stream(hu);
+        phone
+            .write_all(&[0, 3, 0, 8, 0, 2, 0, 1, 0, 7, 0, 0, 0, 3, 0, 3, 0, 3, 42])
+            .await
+            .unwrap();
+        assert_eq!(negotiate_version(&mut hu).await.unwrap().minor, 7);
+        let mut tls = [0; 7];
+        assert_eq!(hu.read(&mut tls).await.unwrap(), 7);
+        assert_eq!(tls, [0, 3, 0, 3, 0, 3, 42]);
     }
 }

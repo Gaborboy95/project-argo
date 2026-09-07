@@ -123,7 +123,7 @@ Safe-inset keys remain compatible storage but have no applied AA mapping and no
 enabled controls. Runtime stream content/safe insets remain independent metadata;
 Home uses a shared aspect fit for rendering/touch. Fullscreen presentation does
 not renegotiate source resolution, DPI or FPS. Renderer-test source stays fixed
-at 1280×720/30. Model enum values `wifi`/`carPlay` are not implemented backends.
+at 1280×720/30. The development wireless path uses `android-auto` with transport `wifi`; CarPlay remains unimplemented. See [wireless setup](wireless.md).
 
 Native playback reports fixed PCM formats: media 48 kHz/16-bit/stereo;
 speech/navigation and system 16 kHz/16-bit/mono. They share the daemon's discovery,
@@ -138,7 +138,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v4 is incompatible with v1, v2 and v3: rebuild/restart both client and daemon together.
+IPC v5 is incompatible with v1, v2, v3 and v4: rebuild/restart both client and daemon together.
 Session/video messages now include session-scoped presentation revisions; AV stops
 are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
@@ -185,3 +185,14 @@ independently. This setting does not control physical display brightness,
 headlights, vehicle night mode or Android Auto's day/night mode.
 Fullscreen projection remains opaque black, including letterboxing. Wallpaper,
 shaders and vehicle-driven day/night selection remain future work.
+
+## Connectivity requests
+
+Settings → Devices & connectivity saves `connectivity.bluetoothAdapter`,
+`connectivity.projectionInterface`, and `connectivity.projectionPhone` as bounded
+string references (default empty). BlueZ owns bonds and NM owns AP profiles; no
+secrets are saved in these preferences. Selection changes during a session apply
+on the next connection. Enable/Connect are explicit and never restored at launch.
+The daemon gate `ARGO_WIRELESS_DEVELOPMENT=1` permits the development admission
+policy but does not enable wireless, start discovery, register AA or create an AP.
+See [security, permissions, launch and rollback](wireless.md).

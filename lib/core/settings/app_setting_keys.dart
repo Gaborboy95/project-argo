@@ -2,6 +2,21 @@ import 'setting_key.dart';
 import 'settings_schema.dart';
 
 abstract final class AppSettingKeys {
+  static SettingKey<String> _connectivityReference(String name) =>
+      SettingKey<String>(
+        id: 'connectivity.$name',
+        defaultValue: '',
+        serialize: (v) => v,
+        deserialize: (v) {
+          if (v is String && v.length <= 256) return v;
+          throw const FormatException('Invalid connectivity reference');
+        },
+      );
+  static final connectivityAdapter = _connectivityReference('bluetoothAdapter');
+  static final connectivityInterface = _connectivityReference(
+    'projectionInterface',
+  );
+  static final connectivityPhone = _connectivityReference('projectionPhone');
   static final appearanceThemeMode = SettingKey<String>(
     id: 'appearance.themeMode',
     defaultValue: 'dark',
@@ -122,6 +137,9 @@ abstract final class AppSettingKeys {
   static final projectionSafeInsetBottom = _projectionInsetKey('bottom');
 
   static SettingsSchema createSchema() => SettingsSchema()
+    ..register(connectivityAdapter)
+    ..register(connectivityInterface)
+    ..register(connectivityPhone)
     ..register(appearanceThemeMode)
     ..register(appearanceSeedColor)
     ..register(lastModule)

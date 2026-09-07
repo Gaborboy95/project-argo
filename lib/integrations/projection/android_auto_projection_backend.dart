@@ -1,3 +1,5 @@
+import '../../core/connectivity/connectivity_service.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -12,7 +14,10 @@ import '../../core/projection/projection_configuration.dart';
 import 'projection_ipc.dart';
 
 final class AndroidAutoProjectionBackend
-    implements ProjectionBackend, ProjectionConfigurationBackend {
+    implements
+        ProjectionBackend,
+        ProjectionConfigurationBackend,
+        ConnectivityService {
   AndroidAutoProjectionBackend({
     required this.socketPath,
     required this.preferences,
@@ -20,6 +25,40 @@ final class AndroidAutoProjectionBackend
     ProjectionControlTransportFactory? transportFactory,
   }) : _transportFactory =
            transportFactory ?? UnixProjectionControlTransport.connect;
+
+  ConnectivitySnapshot _connectivity = const ConnectivitySnapshot();
+  final _connectivityChanges = StreamController<ConnectivitySnapshot>.broadcast(
+    sync: true,
+  );
+  @override
+  ConnectivitySnapshot get connectivity => _connectivity;
+  @override
+  Stream<ConnectivitySnapshot> get connectivityChanges =>
+      _connectivityChanges.stream;
+  @override
+  Future<void> connectivityCommand(
+    String action, {
+    String target = '',
+    bool accept = false,
+    int prompt = 0,
+  }) async {
+    if (_closed || !_hello || _transport == null) {
+      throw StateError('Connectivity daemon unavailable');
+    }
+    await _transport!.send(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.connectivityCommand,
+        utf8.encode(
+          jsonEncode({
+            'action': action,
+            'target': target,
+            'accept': accept,
+            'prompt': prompt,
+          }),
+        ),
+      ),
+    );
+  }
 
   final String socketPath;
   ProjectionPreferences preferences;
@@ -93,6 +132,14 @@ final class AndroidAutoProjectionBackend
     try {
       final reader = ProjectionIpcReader(message.payload);
       switch (message.kind) {
+        case ProjectionIpcKind.connectivity:
+          _connectivity = ConnectivitySnapshot.fromJson(
+            jsonDecode(utf8.decode(message.payload)) as Map<String, dynamic>,
+          );
+          _connectivityChanges.add(_connectivity);
+          return;
+        case ProjectionIpcKind.connectivityCommand:
+          throw const FormatException('Daemon sent connectivity request');
         case ProjectionIpcKind.hello:
           if (!reader.isDone) throw const FormatException('Malformed hello.');
           _hello = true;
@@ -526,6 +573,8 @@ final class AndroidAutoProjectionBackend
   void _fail(String message, [Object? error, StackTrace? stackTrace]) {
     if (_closed) return;
     _hello = false;
+    _connectivity = const ConnectivitySnapshot();
+    _connectivityChanges.add(_connectivity);
     _configuration = ProjectionConfigurationState(message: message);
     _configurationChanges.add(_configuration);
     _devices.clear();
@@ -630,6 +679,7 @@ final class AndroidAutoProjectionBackend
     _closed = true;
     await _subscription?.cancel();
     await _transport?.close();
+    await _connectivityChanges.close();
     await _configurationChanges.close();
     await _changes.close();
   }

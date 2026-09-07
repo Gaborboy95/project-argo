@@ -7,12 +7,13 @@ no vehicle bundle. Synthetic examples in `tool/` are not real vehicle protocols.
 
 Flutter owns UI and application services. Veloce runs Lua plugins and mediates
 normalized vehicle signals, CAN, events and plugin storage. On Linux, the
-separate Rust `argo-projectiond` handles wired Android Auto USB/TLS/protocol and
+separate Rust `argo-projectiond` handles Android Auto USB/Wi-Fi/TLS/protocol and
 native audio delivery. The IHS projection-view library decodes video with
 GStreamer and submits native frames to the existing ivi-homescreen compositor.
 Video and PCM do not pass through Dart. AA credentials are loaded only by the
 daemon; the Flutter client reports readiness and selected/pending configuration
-through IPC v4.
+through IPC v5. The user confirms the Mu wired baseline works after the native
+audio-clock fix at `7173f2e`; this work preserves that baseline and local IHS fix.
 
 ## Current scope
 
@@ -33,7 +34,9 @@ IHS release-eventfd leak was identified in the original host. A separately
 authorized local Wayland-EGL IHS patch is now staged; see the bounded validation
 and remaining acceptance limits in [status](docs/status.md#local-ihs-wayland-egl-descriptor-fix).
 
-Wireless Android Auto, Bluetooth integration, working microphone capture,
+A development wireless AA path and shared BlueZ/NM connectivity are implemented
+for operator testing; [wireless setup and acceptance](docs/wireless.md) distinguish
+code verification from unperformed phone acceptance. Working microphone capture,
 CarPlay, playback controls, customization and plugin-rendered application tabs
 or settings are not completed features. Some protocol enums and microphone
 channel scaffolding exist; they do not establish end-to-end support.

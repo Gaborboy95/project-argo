@@ -1,3 +1,4 @@
+import '../../core/connectivity/connectivity_service.dart';
 import '../../core/settings/settings_service.dart';
 import '../../core/media/media_session_service.dart';
 
@@ -83,6 +84,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          connectivity: services.contains<ConnectivityService>()
+              ? services.get<ConnectivityService>()
+              : null,
           audio: services.get<AudioService>(),
           settings: services.get<SettingsService>(),
           projectionSettings: services.contains<ProjectionSettingsService>()
