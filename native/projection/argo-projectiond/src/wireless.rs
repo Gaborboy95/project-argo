@@ -327,6 +327,12 @@ async fn reconnect(
             }
             Err(e) => {
                 let retry = retry_allowed(&e, *cancel.borrow(), attempt);
+                crate::daemon_log!(
+                    Warn,
+                    "wireless",
+                    "Connection attempt {} failed: {e}",
+                    attempt + 1
+                );
                 host.connectivity.progress("failed", e);
                 if *cancel.borrow() || !retry {
                     break;
@@ -355,6 +361,12 @@ async fn attempt_connection(
     let mut media = crate::native_playback::SessionMedia::default();
     let operation = async {
         network.activate(&mut ap).await?;
+        crate::daemon_log!(
+            Info,
+            "wireless",
+            "Projection AP and DHCP ready on {} MHz",
+            ap.band.frequency(ap.channel)
+        );
         c.state
             .send_modify(|s| s.ap_frequency_mhz = Some(ap.band.frequency(ap.channel)));
         c.progress("bootstrap", "AP and DHCP ready; waiting for selected phone's Bluetooth bootstrap. Check phone prompts / desktop HFP connection.");
@@ -399,7 +411,9 @@ async fn attempt_connection(
         // selected paired device; do not implement/advertise competing profiles.
         // Ask the desktop-owned HFP implementation only; do not connect all
         // media profiles or redirect the system sink through A2DP.
-        let hfp = "0000111e-0000-1000-8000-00805f9b34fb".parse().unwrap();
+        // Device1.ConnectProfile takes the REMOTE service UUID: the phone is
+        // Audio Gateway (111f), while desktop PipeWire supplies Hands-Free (111e).
+        let hfp = "0000111f-0000-1000-8000-00805f9b34fb".parse().unwrap();
         let connect = device.connect_profile(&hfp);
         tokio::pin!(connect);
         let mut connect_done = false;
@@ -407,9 +421,18 @@ async fn attempt_connection(
         let mut rejected = 0;
         let (mut rfcomm, profile_closed) = loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => return Err("Bluetooth bootstrap timed out. Phone may require a working desktop HFP AG connection.".into()),
+                _ = tokio::time::sleep_until(deadline) => return Err("Bluetooth bootstrap timed out. Phone may require a working desktop Hands-Free connection to its Audio Gateway.".into()),
                 _ = listener.accept() => return Err("Unsolicited TCP peer before authenticated bootstrap; attempt revoked".into()),
-                _ = &mut connect, if !connect_done => { connect_done = true; },
+                result = &mut connect, if !connect_done => {
+                    connect_done = true;
+                    match result {
+                        Ok(()) => crate::daemon_log!(Info, "wireless", "Desktop HFP connection to phone Audio Gateway established; awaiting AA RFCOMM"),
+                        Err(e) => {
+                            crate::daemon_log!(Warn, "wireless", "Desktop HFP bootstrap trigger failed: {e}; still awaiting selected phone RFCOMM");
+                            c.progress("bootstrap", format!("Bluetooth startup trigger failed: {e}. Waiting for phone-initiated AA bootstrap until the connection deadline."));
+                        }
+                    }
+                },
                 request = connections.next() => {
                     let request = request.ok_or("BlueZ profile disappeared")?;
                     if request.device() != device.address() || !device.is_paired().await.map_err(|e| e.to_string())? {
@@ -427,6 +450,10 @@ async fn attempt_connection(
                 }
             }
         };
+        c.progress(
+            "bootstrap",
+            "Bluetooth bootstrap connected; negotiating wireless startup",
+        );
         let (joined, mut joined_rx) = watch::channel(false);
         let bootstrap = async {
             let result = tokio::select! {
@@ -460,6 +487,11 @@ async fn attempt_connection(
                 }
             }
         };
+        crate::daemon_log!(
+            Info,
+            "wireless",
+            "Bootstrap-authorized TCP peer admitted; starting AA version handshake"
+        );
         drop(listener); // No second projection peer can enter this attempt.
         let mut transport =
             crate::tcp_transport::TcpAaTransport::admitted(stream).map_err(|e| e.to_string())?;

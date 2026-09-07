@@ -309,3 +309,41 @@ Flutter analysis passed. The full Flutter suite passed (225 tests), followed by
 the three connectivity widget/persistence tests after adding the saved-band
 regression. Rust and Flutter release builds passed. Real AP/phone acceptance
 remains pending; original wired and previous wireless bundles are preserved.
+
+
+## Bluetooth startup correction (2026-09-08)
+
+After the operator confirmed AP band selection works, the phone displayed a
+transient “connecting to Android Auto” notification while Argo waited for
+bootstrap. Read-only BlueZ inspection found the paired phone advertising HFP
+Audio Gateway (`0000111f-0000-1000-8000-00805f9b34fb`) but not Hands-Free (`111e`).
+The daemon incorrectly called ConnectProfile with `111e`, and discarded the
+result. [BlueZ Device1](https://bluez.readthedocs.io/en/latest/device-api/) specifies
+that ConnectProfile takes the **remote service UUID**. Argo now requests the
+phone's `111f`; the existing desktop Hands-Free implementation owns the local
+side. No competing profile, trusted-device change, service restart or broad
+Connect-all-profiles call is introduced.
+
+Trigger errors now appear in Settings during the bounded RFCOMM wait, and
+terminal logs record AP/DHCP readiness, HFP trigger outcome, authenticated RFCOMM,
+WPP version scalars, credential-delivery milestone, phone join status, TCP
+admission and attempt failures. Credentials, identity fields and raw WPP bodies
+are never logged. Phone status errors distinguish start response from association
+failure. Admission and TLS policy remain unchanged. The old generic “waiting”
+message alone did not distinguish RFCOMM waiting from an in-progress WPP exchange.
+
+Release: `$HOME/dev/infotainment/bundle/argo-wireless-connect-ipc5-20260908`.
+Use its `run-release.sh` for both daemon and app after stopping the previous pair.
+The app, Engine, native view and other libraries are copied unchanged from the
+band-selection release; only the daemon changes. IPC remains 5. Both earlier
+bundles remain rollback options. Do not restart Bluetooth/NetworkManager or
+re-pair merely to test this correction. Use the explicit Enable/Connect UI and
+approve phone prompts, then inspect the new stage logs if startup still fails.
+This fixes the observed remote-profile mismatch; successful phone bootstrap and
+end-to-end wireless projection still require an operator retry.
+
+Verification for this correction: 52 Rust tests pass and Clippy passes with
+warnings denied. The daemon release build passes. Dart/UI code is unchanged;
+its previously verified release artifacts are reused, with hash comparison of
+all app/Engine/native library assets during staging. No live phone connection,
+network mutation or process restart was performed by the agent.

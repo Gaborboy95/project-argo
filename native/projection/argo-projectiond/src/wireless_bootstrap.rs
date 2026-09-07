@@ -41,8 +41,30 @@ fn success(body: &[u8], field: u32) -> Result<(), String> {
     let values = numbers(body)?;
     match values.get(&field) {
         Some(0) => Ok(()),
-        Some(code) => Err(format!("Phone wireless status {}", *code as i64)),
+        Some(code) => Err(format!(
+            "Phone wireless status {} ({})",
+            *code as i64,
+            status_label(*code as i64)
+        )),
         None => Err("Missing WPP status".into()),
+    }
+}
+fn status_label(code: i64) -> &'static str {
+    match code {
+        0 => "success",
+        1 => "unsolicited message",
+        -1 => "no compatible version",
+        -2 => "Wi-Fi channel inaccessible",
+        -3 => "incorrect Wi-Fi credentials",
+        -4 => "projection already started",
+        -5 => "Wi-Fi disabled",
+        -6 => "Wi-Fi not yet started",
+        -7 => "invalid host endpoint",
+        -8 => "no supported Wi-Fi channels",
+        -9 => "check the phone for a prompt",
+        -10 => "phone Wi-Fi disabled",
+        -11 => "Wi-Fi network unavailable",
+        _ => "unknown status",
     }
 }
 /// Only called on an authenticated, selected BlueZ profile connection, with a
@@ -52,6 +74,11 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     ap: &AccessPoint,
     joined: watch::Sender<bool>,
 ) -> Result<(), String> {
+    crate::daemon_log!(
+        Info,
+        "wireless-bootstrap",
+        "Authenticated RFCOMM accepted; sending WPP version offer"
+    );
     let frequency = u64::from(ap.band.frequency(ap.channel));
     let mut packed = Vec::new();
     let mut n = frequency;
@@ -75,9 +102,28 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         .await
         .map_err(|_| "WPP version timed out")??;
     let version = numbers(&body)?;
+    // Log only protocol scalars, never identity fields or raw payloads.
+    crate::daemon_log!(
+        Info,
+        "wireless-bootstrap",
+        "Version response message={id} major={:?} minor={:?} status={:?}",
+        version.get(&1),
+        version.get(&2),
+        version.get(&4).map(|v| *v as i64)
+    );
     if id != 5 || version.get(&1) != Some(&6) || version.get(&4) != Some(&0) {
-        return Err("Phone rejected/omitted WPP 6 version response".into());
+        return Err(format!(
+            "WPP version rejected: message={id}, major={:?}, minor={:?}, status={:?}",
+            version.get(&1),
+            version.get(&2),
+            version.get(&4).map(|v| *v as i64)
+        ));
     }
+    crate::daemon_log!(
+        Info,
+        "wireless-bootstrap",
+        "WPP version accepted; offering ready projection endpoint"
+    );
     send(
         socket,
         1,
@@ -109,7 +155,12 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         }
         match id {
             7 => {
-                success(&body, 3)?;
+                success(&body, 3).map_err(|e| format!("WPP StartResponse: {e}"))?;
+                crate::daemon_log!(
+                    Info,
+                    "wireless-bootstrap",
+                    "Phone accepted projection start"
+                );
                 started = true;
             }
             2 if !offered => {
@@ -128,9 +179,19 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
                 )
                 .await?;
                 offered = true;
+                crate::daemon_log!(
+                    Info,
+                    "wireless-bootstrap",
+                    "Wi-Fi information delivered to authorized bootstrap peer"
+                );
             }
             6 if offered && started => {
-                success(&body, 1)?;
+                success(&body, 1).map_err(|e| format!("WPP ConnectionStatus: {e}"))?;
+                crate::daemon_log!(
+                    Info,
+                    "wireless-bootstrap",
+                    "Phone reports successful AP association"
+                );
                 joined.send_replace(true);
             }
             8 => send(socket, 9, &body).await?,
