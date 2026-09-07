@@ -375,6 +375,11 @@ fn start_session(
                 "version negotiation"
             };
             let failure = format!("{stage}: {error}");
+            crate::daemon_log!(
+                Error,
+                "usb-runtime",
+                "AA session failed before media cleanup: {failure}"
+            );
             if work_tx
                 .try_send(WorkResult::Version {
                     key,

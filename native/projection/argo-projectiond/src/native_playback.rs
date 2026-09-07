@@ -140,10 +140,14 @@ pub struct SessionMedia {
 }
 impl SessionMedia {
     pub async fn close(&mut self) {
-        if !self.audio.is_empty() {
-            crate::daemon_log!(Info, "media", "session audio streams stopped");
+        let had_audio = !self.audio.is_empty();
+        if had_audio {
+            crate::daemon_log!(Info, "media", "stopping session audio streams");
         }
         self.audio.clear();
+        if had_audio {
+            crate::daemon_log!(Info, "media", "session audio streams stopped");
+        }
         if let Some(mut video) = self.video.take() {
             video.close().await;
             crate::daemon_log!(Info, "media", "session video stream stopped");
@@ -211,6 +215,13 @@ mod audio {
             let gain = pipeline
                 .by_name("source_gain")
                 .ok_or("audio source gain missing")?;
+            let clock = gst::SystemClock::obtain();
+            pipeline.use_clock(Some(&clock));
+            crate::daemon_log!(
+                Info,
+                "native-playback",
+                "AA audio channel={channel}: selected GstSystemClock"
+            );
             pipeline
                 .set_state(gst::State::Playing)
                 .map_err(|e| e.to_string())?;
