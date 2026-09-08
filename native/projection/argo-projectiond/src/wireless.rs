@@ -1,6 +1,7 @@
 //! One connectivity worker; wireless bootstrap and projection consume shared
 //! BlueZ state. A single semaphore arbitrates USB/Wi-Fi before resource setup.
 use crate::connectivity::network::ApBand;
+use crate::failure::{Failure, Kind};
 use crate::{
     connectivity::{Request, bluetooth::Bluetooth, network::Network},
     daemon_state::ProjectionRuntimeSnapshot,
@@ -283,6 +284,35 @@ async fn process_request(
     Ok(())
 }
 
+async fn run_until_end(
+    readiness: &crate::readiness::Readiness,
+    cancel: &mut watch::Receiver<bool>,
+    operation: impl std::future::Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
+    if *cancel.borrow() {
+        return Err(Failure::cancelled());
+    }
+    tokio::select! { biased;
+        _ = cancel.changed() => Err(Failure::cancelled()),
+        _ = readiness.setup_deadline() => Err(Failure::timeout("Wireless overall setup deadline expired")),
+        result = operation => result,
+    }
+}
+
+async fn retry_backoff(cancel: &mut watch::Receiver<bool>, attempt: u32) -> bool {
+    if *cancel.borrow() {
+        return false;
+    }
+    tokio::select! { biased; _ = cancel.changed() => false, _ = tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))) => !*cancel.borrow() }
+}
+fn cleanup_failure(result: Result<(), Failure>, message: String) -> Failure {
+    let mut failure = result
+        .err()
+        .unwrap_or_else(|| Failure::new(Kind::Cleanup, "Session ended; resource cleanup failed"));
+    failure.cleanup = Some(message);
+    failure
+}
+
 async fn reconnect(
     bt: Arc<Bluetooth>,
     host: HostControl,
@@ -305,7 +335,9 @@ async fn reconnect(
                     2u64.pow(attempt)
                 ),
             );
-            tokio::select! { biased; _ = cancel.changed() => break, _ = tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))) => {} }
+            if !retry_backoff(&mut cancel, attempt).await {
+                break;
+            }
         }
         let result = attempt_connection(
             &bt,
@@ -333,7 +365,14 @@ async fn reconnect(
                     "Connection attempt {} failed: {e}",
                     attempt + 1
                 );
-                host.connectivity.progress("failed", e);
+                host.connectivity.progress(
+                    if e.kind == Kind::Cancelled && e.cleanup.is_none() {
+                        "disconnected"
+                    } else {
+                        "failed"
+                    },
+                    e.to_string(),
+                );
                 if *cancel.borrow() || !retry {
                     break;
                 }
@@ -349,15 +388,31 @@ async fn attempt_connection(
     interface: &str,
     band: ApBand,
     mut cancel: watch::Receiver<bool>,
-) -> Result<(), String> {
-    let network = Network::open().await?;
+) -> Result<(), Failure> {
+    if *cancel.borrow() {
+        return Err(Failure::cancelled());
+    }
+    if !bt
+        .device(selected)
+        .map_err(Failure::configuration)?
+        .is_paired()
+        .await
+        .map_err(Failure::configuration)?
+    {
+        return Err(Failure::new(
+            Kind::Authorization,
+            "Selected phone pairing revoked before setup",
+        ));
+    }
+    let network = Network::open().await.map_err(Failure::configuration)?;
     let c = &host.connectivity;
     c.progress("preparing", "Checking projection network and permissions");
     let mut ap = tokio::select! {
         biased;
-        _ = cancel.changed() => return Ok(()),
-        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface, band)) => result.map_err(|_| "Wireless network preflight timed out")??,
+        _ = cancel.changed() => return Err(Failure::cancelled()),
+        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface, band)) => result.map_err(|_| Failure::timeout("Wireless network preflight timed out"))?.map_err(Failure::configuration)?,
     };
+    let readiness = crate::readiness::Readiness::default();
     let mut media = crate::native_playback::SessionMedia::default();
     let operation = async {
         network.activate(&mut ap).await?;
@@ -375,20 +430,26 @@ async fn attempt_connection(
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(Failure::configuration)?;
         socket
             .bind_device(Some(interface.as_bytes()))
-            .map_err(|e| format!("Restrict TCP to projection interface: {e}"))?;
-        socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Restrict TCP to projection interface: {e}"))
+            .map_err(Failure::configuration)?;
+        socket
+            .set_nonblocking(true)
+            .map_err(Failure::configuration)?;
         socket
             .bind(&std::net::SocketAddr::from((ap.address, 5288)).into())
-            .map_err(|e| e.to_string())?;
-        socket.listen(1).map_err(|e| e.to_string())?;
+            .map_err(Failure::configuration)?;
+        socket.listen(1).map_err(Failure::configuration)?;
         let listener =
-            tokio::net::TcpListener::from_std(socket.into()).map_err(|e| e.to_string())?;
+            tokio::net::TcpListener::from_std(socket.into()).map_err(Failure::configuration)?;
         let device = bt.device(selected)?;
-        if !device.is_paired().await.map_err(|e| e.to_string())? {
-            return Err("Selected phone authorization revoked".into());
+        if !device.is_paired().await.map_err(Failure::configuration)? {
+            return Err(Failure::new(
+                Kind::Authorization,
+                "Selected phone authorization revoked",
+            ));
         }
         let uuid = UUID.parse().unwrap();
         let profile = bluer::rfcomm::Profile {
@@ -404,9 +465,14 @@ async fn attempt_connection(
             )),
             ..Default::default()
         };
-        let mut connections = bt.session.register_profile(profile).await.map_err(|e| {
-            format!("AA Bluetooth profile/channel conflict or permission failure: {e}")
-        })?;
+        let mut connections = bt
+            .session
+            .register_profile(profile)
+            .await
+            .map_err(|e| {
+                format!("AA Bluetooth profile/channel conflict or permission failure: {e}")
+            })
+            .map_err(Failure::configuration)?;
         // Existing desktop HFP implementation owns signaling. Connect only the
         // selected paired device; do not implement/advertise competing profiles.
         // Ask the desktop-owned HFP implementation only; do not connect all
@@ -417,17 +483,22 @@ async fn attempt_connection(
         let connect = device.connect_profile(&hfp);
         tokio::pin!(connect);
         let mut connect_done = false;
+        let mut trigger_failure: Option<Failure> = None;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut rejected = 0;
         let (mut rfcomm, profile_closed) = loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => return Err("Bluetooth bootstrap timed out. Phone may require a working desktop Hands-Free connection to its Audio Gateway.".into()),
-                _ = listener.accept() => return Err("Unsolicited TCP peer before authenticated bootstrap; attempt revoked".into()),
+                _ = tokio::time::sleep_until(deadline) => return Err(trigger_failure.take().unwrap_or_else(|| Failure::timeout("Bluetooth bootstrap timed out. Phone may require a working desktop Hands-Free connection to its Audio Gateway."))),
+                _ = listener.accept() => return Err(Failure::new(Kind::Authorization, "Unsolicited TCP peer before authenticated bootstrap; attempt revoked")),
                 result = &mut connect, if !connect_done => {
                     connect_done = true;
                     match result {
                         Ok(()) => crate::daemon_log!(Info, "wireless", "Desktop HFP connection to phone Audio Gateway established; awaiting AA RFCOMM"),
                         Err(e) => {
+                            if e.kind == bluer::ErrorKind::AlreadyConnected { continue; }
+                            let failure = Failure::from(e.clone());
+                            if failure.kind == Kind::Authorization { return Err(failure); }
+                            trigger_failure = Some(failure);
                             crate::daemon_log!(Warn, "wireless", "Desktop HFP bootstrap trigger failed: {e}; still awaiting selected phone RFCOMM");
                             c.progress("bootstrap", format!("Bluetooth startup trigger failed: {e}. Waiting for phone-initiated AA bootstrap until the connection deadline."));
                         }
@@ -435,17 +506,17 @@ async fn attempt_connection(
                 },
                 request = connections.next() => {
                     let request = request.ok_or("BlueZ profile disappeared")?;
-                    if request.device() != device.address() || !device.is_paired().await.map_err(|e| e.to_string())? {
+                    if request.device() != device.address() || !device.is_paired().await.map_err(Failure::configuration)? {
                         request.reject(bluer::rfcomm::ReqError::Rejected); rejected += 1;
-                        if rejected >= 3 { return Err("Unsolicited Bluetooth attempt limit".into()); } continue;
+                        if rejected >= 3 { return Err(Failure::new(Kind::Authorization, "Unsolicited Bluetooth attempt limit")); } continue;
                     }
                     let closed = request.closed();
-                    let stream = request.accept().map_err(|e| e.to_string())?;
+                    let stream = request.accept().map_err(Failure::configuration)?;
                     let adapter = selected.split_once('/').unwrap().0;
-                    let address = bt.session.adapter(adapter).map_err(|e| e.to_string())?.address().await.map_err(|e| e.to_string())?;
-                    if stream.as_ref().local_addr().map_err(|e| e.to_string())?.addr != address { return Err("Bootstrap arrived on a different adapter".into()); }
-                    let security = stream.as_ref().security().map_err(|e| e.to_string())?;
-                    if security.level < bluer::rfcomm::SecurityLevel::Medium { return Err("Bootstrap link is not authenticated/encrypted".into()); }
+                    let address = bt.session.adapter(adapter).map_err(Failure::configuration)?.address().await.map_err(Failure::configuration)?;
+                    if stream.as_ref().local_addr().map_err(Failure::configuration)?.addr != address { return Err(Failure::new(Kind::Authorization, "Bootstrap arrived on a different adapter")); }
+                    let security = stream.as_ref().security().map_err(Failure::configuration)?;
+                    if security.level < bluer::rfcomm::SecurityLevel::Medium { return Err(Failure::new(Kind::Authorization, "Bootstrap link is not authenticated/encrypted")); }
                     break (stream, closed);
                 }
             }
@@ -458,7 +529,7 @@ async fn attempt_connection(
         let bootstrap = async {
             let result = tokio::select! {
                 result = crate::wireless_bootstrap::run(&mut rfcomm, &ap, authorized) => result,
-                _ = profile_closed => Err("BlueZ requested bootstrap disconnection".into()),
+                _ = profile_closed => Err(Failure::new(Kind::BootstrapClosed, "BlueZ requested bootstrap disconnection")),
             };
             use tokio::io::AsyncWriteExt;
             let _ = rfcomm.shutdown().await;
@@ -475,8 +546,8 @@ async fn attempt_connection(
                     biased;
                     result = &mut bootstrap, if !bootstrap_done => {
                         bootstrap_done = true;
-                        if !*authorized_rx.borrow() || result.as_ref().is_err_and(|e| bootstrap_failure_is_fatal(e)) {
-                            return Err(result.err().unwrap_or_else(|| "Bootstrap ended before startup acceptance".into()));
+                        if !*authorized_rx.borrow() || result.as_ref().is_err_and(bootstrap_failure_is_fatal) {
+                            return Err(result.err().unwrap_or_else(|| Failure::new(Kind::TransportLoss, "Bootstrap ended before startup acceptance")));
                         }
                     }
                     Some(request) = connections.next() => request.reject(bluer::rfcomm::ReqError::Rejected),
@@ -484,8 +555,11 @@ async fn attempt_connection(
                 }
             }
         };
-        if !device.is_paired().await.map_err(|e| e.to_string())? {
-            return Err("Selected phone authorization revoked before TCP admission".into());
+        if !device.is_paired().await.map_err(Failure::configuration)? {
+            return Err(Failure::new(
+                Kind::Authorization,
+                "Selected phone authorization revoked before TCP admission",
+            ));
         }
         crate::daemon_log!(
             Info,
@@ -493,8 +567,8 @@ async fn attempt_connection(
             "Bootstrap-authorized TCP peer admitted; starting AA version handshake"
         );
         drop(listener); // No second projection peer can enter this attempt.
-        let mut transport =
-            crate::tcp_transport::TcpAaTransport::admitted(stream).map_err(|e| e.to_string())?;
+        let mut transport = crate::tcp_transport::TcpAaTransport::admitted(stream)
+            .map_err(Failure::configuration)?;
         let epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -517,14 +591,20 @@ async fn attempt_connection(
             crate::session::negotiate_version(&mut transport),
         )
         .await
-        .map_err(|_| "Wi-Fi AA version timeout")?
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| Failure::timeout("Wi-Fi AA version timeout"))?
+        .map_err(Failure::from)?;
         c.progress(
             "projecting",
             "Android Auto over Wi-Fi; streaming state comes from the projection engine",
         );
-        let session =
-            crate::aa_session::run(&mut transport, host.clone(), state.clone(), id, &mut media);
+        let session = crate::aa_session::run(
+            &mut transport,
+            host.clone(),
+            state.clone(),
+            id,
+            &mut media,
+            Some(&readiness),
+        );
         tokio::pin!(session);
         let mut health = tokio::time::interval(Duration::from_secs(2));
         loop {
@@ -534,7 +614,8 @@ async fn attempt_connection(
                     let streaming = state.borrow().session.as_ref().is_some_and(|s| s.state == crate::daemon_state::ProjectionSessionStatus::Streaming);
                     if streaming { c.progress("streaming", "Android Auto streaming over Wi-Fi"); }
 
-                    if !network.ready(&ap).await? || !device.is_paired().await.map_err(|e| e.to_string())? { break Err("Projection network lost or device authorization revoked".into()); }
+                    if !device.is_paired().await.map_err(Failure::configuration)? { break Err(Failure::new(Kind::Authorization, "Selected phone pairing revoked")); }
+                    if !network.ready(&ap).await? { break Err(Failure::network("Projection AP address/DHCP readiness lost")); }
                 }
                 result = &mut bootstrap, if !bootstrap_done => {
                     bootstrap_done = true;
@@ -544,18 +625,22 @@ async fn attempt_connection(
             }
         }
     };
-    let setup_bound = async {
-        tokio::time::sleep(Duration::from_secs(180)).await;
-        let established = state.borrow().session.as_ref().is_some_and(|s| {
-            s.id.starts_with("aa-wifi:")
-                && s.state == crate::daemon_state::ProjectionSessionStatus::Streaming
-        });
-        if established {
-            std::future::pending::<()>().await;
+    let result = run_until_end(&readiness, &mut cancel, operation).await;
+    if let Err(error) = &result {
+        crate::daemon_log!(
+            Warn,
+            "wireless",
+            "Initiating failure before media cleanup: {error}"
+        );
+        c.state
+            .send_modify(|s| s.detail = format!("{error}; stopping owned resources"));
+    }
+    c.state.send_modify(|s| {
+        s.phase = "cleanup".into();
+        if result.is_ok() {
+            s.detail = "Stopping owned projection resources".into();
         }
-    };
-    let result = tokio::select! { biased; _ = cancel.changed() => Ok(()), _ = setup_bound => Err("Wireless overall setup deadline expired".into()), result = operation => result };
-    c.progress("cleanup", "Stopping owned projection resources");
+    });
     media.close().await;
     state.send_replace(ProjectionRuntimeSnapshot::default());
     c.state.send_modify(|s| s.wifi_connected = false);
@@ -563,7 +648,7 @@ async fn attempt_connection(
         let message = format!("{e}. Retained input guard; inspect the owned AP before retry.");
         c.state.send_modify(|s| s.cleanup_error = message.clone());
         crate::daemon_log!(Warn, "wireless", "{message}");
-        return Err(message);
+        return Err(cleanup_failure(result, message));
     }
     c.state.send_modify(|s| {
         s.cleanup_error.clear();
@@ -574,10 +659,8 @@ async fn attempt_connection(
 
 // RFCOMM lifetime is independent after accepted bootstrap. Explicit protocol
 // errors still fail the attempt/session; only link closure/idle expiry is benign.
-fn bootstrap_failure_is_fatal(error: &str) -> bool {
-    !(error.starts_with("WPP read:")
-        || error == "BlueZ requested bootstrap disconnection"
-        || error == "WPP idle timeout")
+fn bootstrap_failure_is_fatal(error: &Failure) -> bool {
+    !matches!(error.kind, Kind::TransportLoss | Kind::BootstrapClosed)
 }
 
 /// TCP and Bluetooth startup acceptance travel independently. Retain at most one candidate,
@@ -589,16 +672,16 @@ async fn admit_tcp(
     mut authorized: watch::Receiver<bool>,
     deadline: tokio::time::Instant,
     control: &crate::connectivity::Control,
-) -> Result<tokio::net::TcpStream, String> {
+) -> Result<tokio::net::TcpStream, Failure> {
     let mut pending = None;
     let mut reported_authorization = false;
     loop {
         if tokio::time::Instant::now() >= deadline {
-            return Err(if pending.is_some() {
+            return Err(Failure::timeout(if pending.is_some() {
                 "Projection TCP arrived, but authenticated Bluetooth startup acceptance did not arrive before the admission deadline".into()
             } else {
-                "Phone did not establish projection TCP within admission window".into()
-            });
+                "Phone did not establish projection TCP within admission window".to_owned()
+            }));
         }
         if *authorized.borrow() {
             if !reported_authorization {
@@ -618,15 +701,15 @@ async fn admit_tcp(
             biased;
             _ = tokio::time::sleep_until(deadline) => {},
             changed = authorized.changed(), if !reported_authorization => {
-                if changed.is_err() && !*authorized.borrow() { return Err("Bootstrap ended before startup acceptance".into()); }
+                if changed.is_err() && !*authorized.borrow() { return Err(Failure::new(Kind::TransportLoss, "Bootstrap ended before startup acceptance")); }
             }
             accepted = listener.accept() => {
-                let (stream, peer) = accepted.map_err(|e| e.to_string())?;
+                let (stream, peer) = accepted.map_err(Failure::from)?;
                 let ip = match peer.ip() { std::net::IpAddr::V4(ip) => ip, _ => return Err("Unexpected projection address family".into()) };
                 if ip.octets()[..3] != ap_address.octets()[..3] || ip == ap_address {
-                    return Err("TCP peer outside projection subnet; attempt revoked".into());
+                    return Err(Failure::new(Kind::Authorization, "TCP peer outside projection subnet; attempt revoked"));
                 }
-                if pending.is_some() { return Err("Second TCP candidate before bootstrap admission; attempt revoked".into()); }
+                if pending.is_some() { return Err(Failure::new(Kind::Authorization, "Second TCP candidate before bootstrap admission; attempt revoked")); }
                 pending = Some(stream);
                 if !*authorized.borrow() {
                     crate::daemon_log!(Info, "wireless", "Projection TCP candidate waiting for authenticated Bluetooth startup acceptance");
@@ -637,22 +720,82 @@ async fn admit_tcp(
     }
 }
 
-fn retry_allowed(error: &str, explicitly_stopped: bool, attempt: u32) -> bool {
-    !explicitly_stopped
-        && attempt < 2
-        && (error.contains("network lost")
-            || error.contains("phone disconnected")
-            || error.contains("Phone did not establish")
-            || error.contains("bootstrap timed out"))
+pub(crate) fn retry_allowed(error: &Failure, explicitly_stopped: bool, attempt: u32) -> bool {
+    !explicitly_stopped && attempt < 2 && error.retryable()
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn deadline_cancellation_cleanup_and_fresh_attempt_are_independent() {
+        let (cancel, _) = watch::channel(false);
+        let mut stale = crate::readiness::Readiness::default();
+        for stop in [false, true] {
+            let ready = crate::readiness::Readiness::default();
+            stale = ready.clone();
+            let mut cancelled = cancel.subscribe();
+            let path = std::env::temp_dir()
+                .join(format!("argo-deadline-{}-{stop}.sock", std::process::id()));
+            let mut media = crate::native_playback::SessionMedia {
+                video: Some(crate::native_playback::VideoFeed::open(path.clone()).unwrap()),
+                ..Default::default()
+            };
+            let task = tokio::spawn(async move {
+                let result = run_until_end(&ready, &mut cancelled, std::future::pending()).await;
+                media.close().await;
+                result.unwrap_err()
+            });
+            tokio::task::yield_now().await;
+            assert!(path.exists());
+            if stop {
+                cancel.send_replace(true);
+            } else {
+                tokio::time::advance(Duration::from_secs(180)).await;
+            }
+            assert_eq!(
+                task.await.unwrap().kind,
+                if stop {
+                    Kind::Cancelled
+                } else {
+                    Kind::SetupTimeout
+                }
+            );
+            assert!(
+                !path.exists(),
+                "deadline/cancellation must complete real feed cleanup"
+            );
+        }
+        cancel.send_replace(false);
+        let fresh = crate::readiness::Readiness::default();
+        stale.establish(); // An earlier session cannot establish its replacement.
+        let deadline = tokio::spawn(async move { fresh.setup_deadline().await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(179)).await;
+        assert!(!deadline.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        deadline.await.unwrap();
+        let mut cancelled = cancel.subscribe();
+        let backoff = tokio::spawn(async move { retry_backoff(&mut cancelled, 2).await });
+        tokio::task::yield_now().await;
+        cancel.send_replace(true);
+        assert!(!backoff.await.unwrap());
+        assert!(!retry_allowed(
+            &Failure::network("wording independent"),
+            true,
+            0
+        ));
+        let initiating = Failure::network("original AP loss");
+        let blocked = cleanup_failure(Err(initiating), "activation result unknown".into());
+        assert_eq!(blocked.detail, "original AP loss");
+        assert!(blocked.cleanup.is_some());
+        assert!(!retry_allowed(&blocked, false, 0));
+    }
     async fn candidate(
         authorize_first: bool,
         limit: Duration,
     ) -> (
-        tokio::task::JoinHandle<Result<tokio::net::TcpStream, String>>,
+        tokio::task::JoinHandle<Result<tokio::net::TcpStream, Failure>>,
         tokio::net::TcpStream,
         watch::Sender<bool>,
         crate::connectivity::Control,
@@ -730,17 +873,25 @@ mod tests {
                         task.await
                             .unwrap()
                             .unwrap_err()
+                            .detail
                             .contains("Second TCP candidate")
                     );
                 }
                 "bootstrap-ended" => {
                     drop(authorized);
-                    assert!(task.await.unwrap().unwrap_err().contains("Bootstrap ended"));
+                    assert!(
+                        task.await
+                            .unwrap()
+                            .unwrap_err()
+                            .detail
+                            .contains("Bootstrap ended")
+                    );
                 }
                 _ => assert!(
                     task.await
                         .unwrap()
                         .unwrap_err()
+                        .detail
                         .contains("startup acceptance did not arrive")
                 ),
             }
@@ -756,12 +907,22 @@ mod tests {
     }
     #[test]
     fn session_admission_precedes_resources_and_reconnect_requires_intent() {
-        assert!(bootstrap_failure_is_fatal(
+        assert!(bootstrap_failure_is_fatal(&Failure::new(
+            Kind::Protocol,
             "WPP ConnectionStatus: Phone wireless status -3"
-        ));
-        assert!(bootstrap_failure_is_fatal("Unexpected WPP message 99"));
-        assert!(!bootstrap_failure_is_fatal("WPP read: connection reset"));
-        assert!(!bootstrap_failure_is_fatal("WPP idle timeout"));
+        )));
+        assert!(bootstrap_failure_is_fatal(&Failure::new(
+            Kind::Protocol,
+            "Unexpected WPP message 99"
+        )));
+        assert!(!bootstrap_failure_is_fatal(&Failure::new(
+            Kind::TransportLoss,
+            "WPP read: connection reset"
+        )));
+        assert!(!bootstrap_failure_is_fatal(&Failure::new(
+            Kind::BootstrapClosed,
+            "WPP idle timeout"
+        )));
         let host = HostControl::default();
         let wired = host.session_lease.clone().try_acquire_owned().unwrap();
         assert!(host.session_lease.clone().try_acquire_owned().is_err());
@@ -776,10 +937,30 @@ mod tests {
         let wireless = host.session_lease.clone().try_acquire_owned().unwrap();
         assert!(host.session_lease.clone().try_acquire_owned().is_err());
         drop(wireless);
-        assert!(retry_allowed("network lost", false, 0));
-        assert!(!retry_allowed("network lost", true, 0));
-        assert!(!retry_allowed("network lost", false, 2));
-        assert!(!retry_allowed("AA Exit", false, 0));
-        assert!(!retry_allowed("AP cleanup failed", false, 0));
+        assert!(retry_allowed(
+            &Failure::new(Kind::NetworkLoss, "network lost"),
+            false,
+            0
+        ));
+        assert!(!retry_allowed(
+            &Failure::new(Kind::NetworkLoss, "network lost"),
+            true,
+            0
+        ));
+        assert!(!retry_allowed(
+            &Failure::new(Kind::NetworkLoss, "network lost"),
+            false,
+            2
+        ));
+        assert!(!retry_allowed(
+            &Failure::new(Kind::Cancelled, "AA Exit"),
+            false,
+            0
+        ));
+        assert!(!retry_allowed(
+            &Failure::new(Kind::Cleanup, "AP cleanup failed"),
+            false,
+            0
+        ));
     }
 }

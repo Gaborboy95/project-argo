@@ -1,4 +1,5 @@
 //! One post-version session owns TLS, channels, native audio and video feed.
+use crate::failure::{Failure, Kind};
 use crate::{
     aa_channels::{Channels, Effect, Proto, Reply},
     aa_tls::AaTls,
@@ -11,17 +12,22 @@ use crate::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, watch};
 
-async fn write(transport: &mut impl AndroidAutoTransport, bytes: &[u8]) -> Result<(), String> {
+async fn write(transport: &mut impl AndroidAutoTransport, bytes: &[u8]) -> Result<(), Failure> {
     tokio::time::timeout(Duration::from_secs(5), transport.write_all(bytes))
         .await
-        .map_err(|_| "AA write timeout")?
-        .map_err(|e| e.to_string())
+        .map_err(|_| {
+            Failure::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "AA write timeout",
+            ))
+        })?
+        .map_err(Failure::from)
 }
 async fn send(
     transport: &mut impl AndroidAutoTransport,
     tls: &mut AaTls,
     reply: Reply,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let channel = reply.channel;
     let id = reply.id;
     let control = reply.control;
@@ -67,7 +73,7 @@ async fn send_plain(
     channel: u8,
     id: u16,
     body: &[u8],
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let mut payload = id.to_be_bytes().to_vec();
     payload.extend_from_slice(body);
 
@@ -100,15 +106,16 @@ pub async fn run(
     state: watch::Sender<ProjectionRuntimeSnapshot>,
     id: String,
     media: &mut SessionMedia,
-) -> Result<(), String> {
+    readiness: Option<&crate::readiness::Readiness>,
+) -> Result<(), Failure> {
     let selection = control.begin_session(&id);
     let config = &selection.config;
-    config.display.validate()?;
-    let identity=config.identity.as_ref().ok_or("AA TLS identity missing: set ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond")?;
+    config.display.validate().map_err(Failure::configuration)?;
+    let identity=config.identity.as_ref().ok_or_else(|| Failure::configuration("AA TLS identity missing: set ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond"))?;
     let mut tls = if transport.wireless() {
-        AaTls::wireless(identity)?
+        AaTls::wireless(identity).map_err(Failure::configuration)?
     } else {
-        AaTls::new(identity)?
+        AaTls::new(identity).map_err(Failure::configuration)?
     };
     let mut decoder = PacketDecoder::default();
     let mut messages = Messages::default();
@@ -144,10 +151,13 @@ pub async fn run(
         } else {
             let count = tokio::time::timeout_at(deadline, transport.read(&mut input))
                 .await
-                .map_err(|_| "AA TLS handshake timeout")?
-                .map_err(|e| e.to_string())?;
+                .map_err(|_| Failure::timeout("AA TLS handshake timeout"))?
+                .map_err(Failure::from)?;
             if count == 0 {
-                return Err("phone disconnected during AA TLS".into());
+                return Err(Failure::new(
+                    Kind::TransportLoss,
+                    "phone disconnected during AA TLS",
+                ));
             }
             decoder.push(&input[..count])?;
         }
@@ -161,11 +171,12 @@ pub async fn run(
         "aa-session",
         "AA authentication complete; awaiting service discovery"
     );
-    let socket = config
-        .media_socket
-        .clone()
-        .ok_or("ARGO_PROJECTION_MEDIA_SOCKET must name the native video feed socket")?;
-    media.video = Some(VideoFeed::open(socket)?);
+    let socket = config.media_socket.clone().ok_or_else(|| {
+        Failure::configuration(
+            "ARGO_PROJECTION_MEDIA_SOCKET must name the native video feed socket",
+        )
+    })?;
+    media.video = Some(VideoFeed::open(socket).map_err(Failure::configuration)?);
     let mut channels = Channels::new(config.display.clone());
     let mut commands = control.commands.subscribe();
     let clock = Instant::now();
@@ -236,7 +247,8 @@ pub async fn run(
                         "unexpected plaintext AA message after authentication: \
                         ch={} id=0x{:04x}",
                         packet.channel, message_id
-                    ));
+                    )
+                    .into());
                 }
 
                 if message_id == 0x000b {
@@ -280,7 +292,10 @@ pub async fn run(
                         .push(bytes)?,
                     Effect::Audio(channel, active) => {
                         if active {
-                            media.audio.insert(channel, AudioPlayback::open(channel)?);
+                            media.audio.insert(
+                                channel,
+                                AudioPlayback::open(channel).map_err(Failure::configuration)?,
+                            );
                         } else {
                             media.audio.remove(&channel);
                         }
@@ -290,9 +305,15 @@ pub async fn run(
                             }
                         });
                     }
+                    Effect::Established => {
+                        if let Some(readiness) = readiness {
+                            readiness.establish();
+                        }
+                    }
                     Effect::Video(visible) => {
-                        let visible = visible && !awaiting_video;
                         streaming = true;
+                        let visible = visible && !awaiting_video;
+
                         state.send_modify(|snapshot| {
                             if let Some(session) = snapshot.session.as_mut()
                                 && session.id == id
@@ -324,8 +345,8 @@ pub async fn run(
         }
         tokio::select! {
             read=transport.read(&mut input)=>{
-                let count=read.map_err(|e|e.to_string())?;
-                if count==0 {decoder.disconnect()?;return Err("Android phone transport disconnected".into());}
+                let count=read.map_err(Failure::from)?;
+                if count==0 {let context = decoder.disconnect().err().unwrap_or_else(|| "Android phone transport disconnected".into());return Err(Failure::new(Kind::TransportLoss, context));}
                 decoder.push(&input[..count])?;
             },
             command=commands.recv()=>{
@@ -353,7 +374,7 @@ pub async fn run(
 
                 crate::daemon_log!(Trace, "aa-session", "AA PingRequest sent");
             },
-            _=tokio::time::sleep_until(setup_deadline),if !streaming=>return Err("AA video setup timeout after TLS".into()),
+            _=tokio::time::sleep_until(setup_deadline),if !streaming=>return Err(Failure::timeout("AA video setup timeout after TLS")),
         }
     }
 }

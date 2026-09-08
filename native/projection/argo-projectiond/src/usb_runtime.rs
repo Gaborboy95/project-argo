@@ -382,8 +382,10 @@ fn start_session(
                     state.clone(),
                     session_id.clone(),
                     &mut media,
+                    None,
                 )
                 .await
+                .map_err(|e| e.to_string())
             }
             #[cfg(not(unix))]
             {

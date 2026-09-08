@@ -42,7 +42,7 @@ impl AndroidAutoTransport for TcpAaTransport {
             }
             tokio::time::timeout(Duration::from_secs(5), self.stream.write_all(bytes))
                 .await
-                .map_err(|_| io::Error::other("TCP AA write timed out"))?
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP AA write timed out"))?
         })
     }
     fn close(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

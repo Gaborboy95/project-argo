@@ -1,5 +1,6 @@
 //! Independently implemented WPP framing, separate from AA/USB framing.
 //! Reference revisions and admission limitations: docs/wireless.md.
+use crate::failure::{Failure, Kind};
 use crate::{
     aa_channels::{Proto, numbers},
     connectivity::network::AccessPoint,
@@ -10,7 +11,7 @@ use tokio::{
     sync::watch,
 };
 const LIMIT: usize = 4096;
-async fn send<S: AsyncWrite + Unpin>(s: &mut S, id: u16, body: &[u8]) -> Result<(), String> {
+async fn send<S: AsyncWrite + Unpin>(s: &mut S, id: u16, body: &[u8]) -> Result<(), Failure> {
     if body.len() > LIMIT {
         return Err("WPP message exceeds bound".into());
     }
@@ -20,10 +21,15 @@ async fn send<S: AsyncWrite + Unpin>(s: &mut S, id: u16, body: &[u8]) -> Result<
     wire.extend_from_slice(body);
     tokio::time::timeout(Duration::from_secs(5), s.write_all(&wire))
         .await
-        .map_err(|_| "WPP write timed out")?
-        .map_err(|_| "WPP peer disconnected".into())
+        .map_err(|_| {
+            Failure::from(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "WPP write timed out",
+            ))
+        })?
+        .map_err(Failure::from)
 }
-async fn receive<S: AsyncRead + Unpin>(s: &mut S) -> Result<(u16, Vec<u8>), String> {
+async fn receive<S: AsyncRead + Unpin>(s: &mut S) -> Result<(u16, Vec<u8>), Failure> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await.map_err(read_error)?;
     let length = u16::from_be_bytes([h[0], h[1]]) as usize;
@@ -34,10 +40,10 @@ async fn receive<S: AsyncRead + Unpin>(s: &mut S) -> Result<(u16, Vec<u8>), Stri
     s.read_exact(&mut body).await.map_err(read_error)?;
     Ok((u16::from_be_bytes([h[2], h[3]]), body))
 }
-fn read_error(e: io::Error) -> String {
-    format!("WPP read: {}", e.kind())
+fn read_error(e: io::Error) -> Failure {
+    Failure::from(e)
 }
-fn success(body: &[u8], field: u32) -> Result<(), String> {
+fn success(body: &[u8], field: u32) -> Result<(), Failure> {
     let values = numbers(body)?;
     match values.get(&field) {
         Some(0) => Ok(()),
@@ -45,7 +51,8 @@ fn success(body: &[u8], field: u32) -> Result<(), String> {
             "Phone wireless status {} ({})",
             *code as i64,
             status_label(*code as i64)
-        )),
+        )
+        .into()),
         None => Err("Missing WPP status".into()),
     }
 }
@@ -73,7 +80,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut S,
     ap: &AccessPoint,
     authorized: watch::Sender<bool>,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     crate::daemon_log!(
         Info,
         "wireless-bootstrap",
@@ -100,7 +107,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let (id, body) = tokio::time::timeout(Duration::from_secs(10), receive(socket))
         .await
-        .map_err(|_| "WPP version timed out")??;
+        .map_err(|_| Failure::timeout("WPP version timed out"))??;
     let version = numbers(&body)?;
     // Log only protocol scalars, never identity fields or raw payloads.
     crate::daemon_log!(
@@ -117,7 +124,8 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
             version.get(&1),
             version.get(&2),
             version.get(&4).map(|v| *v as i64)
-        ));
+        )
+        .into());
     }
     crate::daemon_log!(
         Info,
@@ -141,11 +149,11 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         let frame = if *authorized.borrow() {
             tokio::time::timeout(Duration::from_secs(30), receive(socket))
                 .await
-                .map_err(|_| "WPP idle timeout")?
+                .map_err(|_| Failure::new(Kind::BootstrapClosed, "WPP idle timeout"))?
         } else {
             tokio::time::timeout_at(deadline, receive(socket))
                 .await
-                .map_err(|_| "WPP join deadline expired")?
+                .map_err(|_| Failure::timeout("WPP join deadline expired"))?
         };
         let (id, body) = frame?;
         messages += 1;
@@ -194,7 +202,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
             }
             8 => send(socket, 9, &body).await?,
             9 => {}
-            _ => return Err(format!("Unexpected WPP message {id}")),
+            _ => return Err(format!("Unexpected WPP message {id}").into()),
         }
         // Start acceptance plus credential delivery authorizes this bounded
         // development admission attempt. ConnectionStatus may be delayed until
@@ -219,7 +227,7 @@ mod tests {
         });
         assert_eq!(receive(&mut b).await.unwrap(), (7, vec![24, 0]));
         assert_eq!(receive(&mut b).await.unwrap(), (2, vec![]));
-        assert!(receive(&mut b).await.unwrap_err().contains("bound"));
+        assert!(receive(&mut b).await.unwrap_err().detail.contains("bound"));
         task.await.unwrap();
         assert!(success(&[], 3).is_err());
         assert!(success(&[24, 1], 3).is_err());
@@ -295,6 +303,7 @@ mod exchange_tests {
             run(&mut hu, &ap, authorized)
                 .await
                 .unwrap_err()
+                .detail
                 .contains("version timed out")
         );
     }

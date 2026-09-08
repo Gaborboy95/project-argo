@@ -1,5 +1,6 @@
 //! NetworkManager D-Bus controls; no nmcli/hostapd control subprocesses.
 use super::Radio;
+use crate::failure::Failure;
 use std::{collections::HashMap, io::Read, net::Ipv4Addr, time::Duration};
 use zbus::{
     Connection, Proxy,
@@ -181,10 +182,15 @@ impl Network {
             activation_pending: false,
         })
     }
-    pub async fn activate(&self, ap: &mut AccessPoint) -> Result<(), String> {
-        firewall("start", &ap.interface).await?;
+    pub async fn activate(&self, ap: &mut AccessPoint) -> Result<(), Failure> {
+        firewall("start", &ap.interface)
+            .await
+            .map_err(Failure::configuration)?;
         ap.firewall = true;
-        let path = self.device_path(&ap.interface).await?;
+        let path = self
+            .device_path(&ap.interface)
+            .await
+            .map_err(Failure::configuration)?;
         // No profile mutations before an explicit Connect. NM removes this
         // volatile profile after deactivation and on daemon/service death.
         let mut settings = Settings::new();
@@ -233,21 +239,21 @@ impl Network {
             ("bind-activation", value("dbus-client")),
         ]);
         ap.activation_pending = true;
-        let result: (OwnedObjectPath, OwnedObjectPath, HashMap<String, OwnedValue>) = self.proxy(ROOT, NM).await?
+        let result: (OwnedObjectPath, OwnedObjectPath, HashMap<String, OwnedValue>) = self.proxy(ROOT, NM).await.map_err(Failure::configuration)?
             .call("AddAndActivateConnection2", &(settings, path.clone(), OwnedObjectPath::try_from("/").unwrap(), options)).await
-            .map_err(|_| "NetworkManager AP activation failed (check NM journal; credentials are redacted)")?;
+            .map_err(|_| Failure::configuration("NetworkManager AP activation failed (check NM journal; credentials are redacted)"))?;
         ap.active = Some(result.1);
         ap.activation_pending = false;
         tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 if self.ready(ap).await? {
-                    break Ok::<_, String>(());
+                    break Ok::<_, Failure>(());
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         })
         .await
-        .map_err(|_| "AP address / DHCP readiness timed out")??;
+        .map_err(|_| Failure::timeout("AP address / DHCP readiness timed out"))??;
         let wifi = self
             .proxy(
                 path.as_str(),
@@ -257,42 +263,44 @@ impl Network {
         ap.bssid = wifi
             .get_property::<String>("HwAddress")
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(Failure::configuration)?
             .to_uppercase();
         if ap.bssid.len() != 17 {
             return Err("AP BSSID unavailable".into());
         }
         Ok(())
     }
-    pub async fn ready(&self, ap: &AccessPoint) -> Result<bool, String> {
-        let active = ap.active.as_ref().ok_or("AP not activated")?;
+    pub async fn ready(&self, ap: &AccessPoint) -> Result<bool, Failure> {
+        let active = ap
+            .active
+            .as_ref()
+            .ok_or_else(|| Failure::configuration("AP not activated"))?;
         let a = self
             .proxy(
                 active.as_str(),
                 "org.freedesktop.NetworkManager.Connection.Active",
             )
-            .await?;
-        let state: u32 = a.get_property("State").await.map_err(|e| e.to_string())?;
-        if state == 3 || state == 4 {
-            return Err("Projection AP disconnected".into());
-        }
-        if state != 2 {
+            .await
+            .map_err(Failure::network)?;
+        let state: u32 = a.get_property("State").await.map_err(Failure::network)?;
+        if !active_state_ready(state)? {
             return Ok(false);
         }
         let ip: OwnedObjectPath = a
             .get_property("Ip4Config")
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(Failure::network)?;
         if ip.as_str() == "/" {
             return Ok(false);
         }
         let p = self
             .proxy(ip.as_str(), "org.freedesktop.NetworkManager.IP4Config")
-            .await?;
+            .await
+            .map_err(Failure::network)?;
         let addresses: Vec<HashMap<String, OwnedValue>> = p
             .get_property("AddressData")
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(Failure::network)?;
         let address_ready = addresses.iter().any(|a| {
             a.get("address").and_then(|v| <&str>::try_from(v).ok())
                 == Some(ap.address.to_string().as_str())
@@ -311,6 +319,13 @@ impl Network {
     }
     pub async fn stop(&self, ap: &mut AccessPoint) -> Result<(), String> {
         cleanup(self, ap).await
+    }
+}
+pub(crate) fn active_state_ready(state: u32) -> Result<bool, Failure> {
+    match state {
+        3 | 4 => Err(Failure::network("Projection AP disconnected")),
+        2 => Ok(true),
+        _ => Ok(false),
     }
 }
 /// NM 1.52 shared-mode dnsmasq must have the owned address and a DHCP range.

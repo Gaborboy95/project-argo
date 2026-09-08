@@ -33,3 +33,6 @@ pub mod connectivity;
 pub mod tcp_transport;
 pub mod wireless;
 pub mod wireless_bootstrap;
+
+pub mod failure;
+pub mod readiness;

@@ -213,7 +213,11 @@ fn discovery_video_setup_and_native_stream_lifecycle() {
             &Proto::default().number(1, 42).number(2, 0).finish(),
         )
         .unwrap();
-    assert!(matches!(start[0], Effect::Video(true)));
+    assert!(
+        start
+            .iter()
+            .any(|effect| matches!(effect, Effect::Video(true)))
+    );
     let media = channels.handle(3, 1, &[0, 0, 0, 1, 0x67, 1]).unwrap();
     assert!(matches!(media[0], Effect::Media(3, _)));
     let Effect::Reply(ack) = &media[1] else {
@@ -258,7 +262,11 @@ fn repeated_phone_exit_requires_explicit_host_resume() {
                 &Proto::default().number(1, cycle + 1).number(2, 0).finish(),
             )
             .unwrap();
-        assert!(matches!(start[0], Effect::Video(false)));
+        assert!(
+            start
+                .iter()
+                .any(|effect| matches!(effect, Effect::Video(false)))
+        );
         let regain = channels
             .handle(3, 0x8007, &Proto::default().number(2, 1).finish())
             .unwrap();
@@ -438,10 +446,10 @@ async fn phone_receive(
         }
     }
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() {
     crate::logging::init().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(std::time::Duration::from_secs(500), async {
         let fixture = IdentityFixture::new();
         let mut phone = fixture.server();
         let control = crate::host_control::HostControl::default();
@@ -467,14 +475,16 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         let task = tokio::spawn(async move {
             let mut transport = MemoryUsb { input, output };
             let mut media = crate::native_playback::SessionMedia::default();
-            let result = crate::aa_session::run(
+            let ready = crate::readiness::Readiness::default();
+            let session = crate::aa_session::run(
                 &mut transport,
                 engine_control,
                 state,
                 engine_id,
                 &mut media,
-            )
-            .await;
+                Some(&ready),
+            );
+            let result = tokio::select! { biased; _ = ready.setup_deadline() => Err(crate::failure::Failure::timeout("outer setup expired")), result = session => result };
             media.close().await;
             result
         });
@@ -569,6 +579,15 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
             .await
             .unwrap();
         assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
+        tokio::time::advance(std::time::Duration::from_secs(240)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "suspended established session must survive setup deadline");
+        control.commands.send(crate::host_control::Command::Activate(id.clone())).unwrap();
+        assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
+        phone_send(&mut phone, &phone_tx, 3, 1, vec![0, 0, 0, 1, 0x67, 2]).await;
+        assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8004);
+        observed.wait_for(|s| s.session.as_ref().is_some_and(|session| session.state == crate::daemon_state::ProjectionSessionStatus::Streaming)).await.unwrap();
+        assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
         control
             .commands
             .send(crate::host_control::Command::Touch(id, 1, 0, 0.5, 0.5))
@@ -634,4 +653,94 @@ fn wireless_verifies_handshake_signature_separately_from_legacy_chain_policy() {
             assert!(hu.receive(&reply).is_ok());
         }
     }
+}
+
+#[tokio::test]
+async fn actual_engine_io_failures_reach_retry_policy_without_text_matching() {
+    use crate::{
+        failure::{Failure, Kind},
+        session::AndroidAutoTransport,
+    };
+    struct Broken(Option<std::io::ErrorKind>);
+    impl AndroidAutoTransport for Broken {
+        fn read<'a>(
+            &'a mut self,
+            _: &'a mut [u8],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<usize>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                match self.0 {
+                    Some(kind) => Err(std::io::Error::new(kind, "arbitrary wording")),
+                    None => Ok(0),
+                }
+            })
+        }
+        fn write_all<'a>(
+            &'a mut self,
+            _: &'a [u8],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + '_>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    let fixture = IdentityFixture::new();
+    for io in [
+        None,
+        Some(std::io::ErrorKind::ConnectionReset),
+        Some(std::io::ErrorKind::PermissionDenied),
+    ] {
+        let control = crate::host_control::HostControl::default();
+        control
+            .configuration
+            .send_modify(|c| c.identity = Some(fixture.identity.clone()));
+        let (state, _) =
+            tokio::sync::watch::channel(crate::daemon_state::ProjectionRuntimeSnapshot::default());
+        let mut media = crate::native_playback::SessionMedia::default();
+        let error = crate::aa_session::run(
+            &mut Broken(io),
+            control,
+            state,
+            "loss".into(),
+            &mut media,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.kind,
+            if io == Some(std::io::ErrorKind::PermissionDenied) {
+                Kind::Configuration
+            } else {
+                Kind::TransportLoss
+            }
+        );
+        assert_eq!(
+            crate::wireless::retry_allowed(&error, false, 0),
+            io != Some(std::io::ErrorKind::PermissionDenied)
+        );
+        media.close().await;
+    }
+    let denied = Failure::from(bluer::Error {
+        kind: bluer::ErrorKind::AuthenticationRejected,
+        message: "different phone text".into(),
+    });
+    assert_eq!(denied.kind, Kind::Authorization);
+    assert!(!crate::wireless::retry_allowed(&denied, false, 0));
+    let network = crate::connectivity::network::active_state_ready(4).unwrap_err();
+    assert!(crate::wireless::retry_allowed(&network, false, 0));
+    let rejected_frame = crate::session::Frame {
+        channel: 0,
+        flags: 3,
+        payload: vec![0, 2, 0, 1, 0, 1, 0, 1],
+    };
+    let rejected =
+        Failure::from(crate::session::parse_version_response(&rejected_frame).unwrap_err());
+    assert_eq!(rejected.kind, Kind::Protocol);
+    assert!(!crate::wireless::retry_allowed(&rejected, false, 0));
 }

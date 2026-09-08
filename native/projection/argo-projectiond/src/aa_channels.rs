@@ -254,6 +254,7 @@ impl Reply {
 pub enum Effect {
     Reply(Reply),
     Video(bool),
+    Established,
     HostReturn,
     Audio(u8, bool),
     Media(u8, Vec<u8>),
@@ -548,6 +549,7 @@ impl Channels {
                     }
                     if channel == 3 {
                         vec![
+                            Effect::Established,
                             Effect::Video(self.video_requested),
                             reply(
                                 3,
