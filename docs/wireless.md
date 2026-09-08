@@ -1,423 +1,215 @@
-# Wireless Android Auto on the Mu — development path
+# Wireless Android Auto
 
-The operator confirmed wireless Android Auto works on 2026-09-08 with the
-`argo-wireless-start-ipc5-20260908` release. This confirms working startup; the
-full feature-by-feature acceptance checklist below is not yet individually signed off.
-It reuses `aa_session`, daemon identity, fixed session settings, native PCM/video,
-input, metadata, Home/Media presentation and Veloce. No HFP call or A2DP feature
-is added. Wired trust and GstSystemClock remain unchanged.
+Wireless projection uses the same Android Auto session, video, PCM audio, input,
+metadata and Home/Media services as USB. Bluetooth bootstraps a phone onto an
+Argo-owned NetworkManager AP; projection then runs over TCP. Read
+[setup](setup.md) for the matched application/daemon launch and
+[status](status.md) for tested configurations.
 
-## Observed Mu preflight (2026-09-07)
+## Pairing and connection
 
-Baseline `7173f2e`, initially clean. Linux 6.12.107+deb13-amd64, BlueZ 5.82,
-NetworkManager 1.52.1, both services active. One powered Bluetooth controller
-(`hci0`, alias PhaetonLink), not discoverable. Desktop WirePlumber owns existing
-HFP AG/HS and media profiles. No AA UUID was advertised at inspection.
+1. Open Settings → Devices & connectivity. Select the Bluetooth adapter and an
+   idle projection Wi-Fi interface when discovery is ambiguous.
+2. Start the bounded discovery window, open the phone's Bluetooth settings and
+   pair the intended device. Confirm matching device-scoped passkeys; reject
+   unexpected requests. Prompts expire. Existing BlueZ bonds can be reused.
+3. Select the paired phone and AP band. Disconnect USB data for wireless testing.
+4. Enable wireless, then Connect. Approve any required phone or desktop permission
+   prompts. AP readiness, Bluetooth bootstrap, TCP and streaming are distinct stages.
+5. Use Disconnect or Disable to stop the connection request and its retries.
+   Forget revokes the device selection and removes its BlueZ bond.
 
-Discovered `wlp2s0`, MT7922 [14c3:7922], mt7921e; idle. `iw` is installed at
-`/usr/sbin/iw` (outside this shell's PATH). AP mode and 2.4/5/6 GHz are reported;
-interface combinations allow up to two interfaces, at most one AP/P2P-GO and
-at most two channels. This feature uses one AP and requires idle Wi-Fi.
-Current regulatory domain is **DE**, unchanged. 36–48 permit indoor operation;
-52–144 require DFS. 149–165 are reported enabled at 13 dBm without NO-IR/DFS;
-169–177 disabled. The implementation rechecks the selected phy and chooses
-149–165 for the default 5 GHz band. The saved 2.4 GHz selection tries channels
-1/6/11 first, then other permitted channels in 1–13. Neither selection falls
-back to the other band. Disabled, NO-IR, DFS and indoor-only channels are excluded;
-frequency is checked as well as channel number to distinguish reused 6 GHz numbers.
-It fails closed if no permitted channel in the selected band is proven. This is
-read-only `iw` inspection, not a regulatory change. NM controls the AP via D-Bus.
-No claim is made that radio capabilities prove successful AP operation.
+Wireless is disabled at each launch. The development gate permits enablement but
+neither starts an AP nor connects a phone. Saved adapter/interface/phone/band choices
+are restored without connecting. Changed choices remain pending for the next explicit
+connection; each current attempt and its retries keep the frozen selection.
 
-Discovered `enp3s0` connected as “Wired connection 1”; address 10.20.252.21/24,
-default route via 10.20.252.254. Neither is an application constant. NM reports
-network-control, Wi-Fi scan, protected sharing and profile modification allowed
-for this local user. Bluetooth/netdev groups are present. Pairing/profile
-registration and AP activation still need operator verification.
+Argo registers one non-default BlueZ pairing agent for Argo-initiated pairing.
+Incoming desktop pairing continues through the desktop agent. Argo does not replace
+the default agent, auto-accept passkeys, set blanket trust or authorize unrelated
+profiles. Generic pairing/readiness works without an AA certificate or live session.
 
-## Ownership and security
+## Projection network
 
-The existing daemon owns one shared BlueZ session/agent and one connectivity
-worker, independent of certificate readiness. Its non-default DisplayYesNo agent
-handles **Argo-initiated Pair** operations. Incoming requests continue to use the
-desktop default agent. No RequestDefaultAgent, Trusted=true, blanket authorization,
-PIN auto-answer, bluetoothd restart, plugin change, or competing HFP registration.
-The UI shows the callback's actual adapter/device reference and alias; confirmation
-expires in 30 seconds. Discovery lasts 60 seconds and does not make the host
-discoverable or change its power state. BlueZ owns bonds; Forget removes the
-selected BlueZ device. Argo stores only requested adapter/interface/phone refs in
-its existing settings file. Each launch starts wireless disabled.
+NetworkManager owns the dedicated `Argo Projection (<interface>)` profile. It is
+volatile, bound to the selected interface, non-autoconnecting and tied to the
+attempt's D-Bus client lifetime. No hostapd process competes for the interface.
+An existing station connection must be released explicitly before Connect; Argo
+will not take it over. A separate management connection is required if that station
+was the only management path. Concurrent AP+station operation is not required.
 
-Explicit Enable and Connect authorize one selected paired phone. Pairing without a comparison passkey also requires an explicit device-scoped authorization prompt. The AA profile
-UUID is `4de17a00-52cb-11e6-bdf4-0800200c9a66`, RFCOMM channel 8, server role,
-RequireAuthentication=true. A UUID-only SDP service class is supplied. Argo checks
-the selected address, local adapter, current Paired state and link security >=
-Medium before offering anything. Profile registration failures are surfaced;
-no system profiles are removed. Profile authorization is performed by Argo's
-selected-device admission, not by granting the device access to unrelated profiles.
+Band selection is explicit; there is no automatic cross-band fallback. Argo checks
+AP/band capabilities and the selected phy's current `iw` channel flags. For 2.4 GHz,
+it prefers channels 1/6/11 then other permitted channels in 1–13. For 5 GHz, it uses
+149/153/157/161/165. Disabled, NO-IR, radar/DFS, indoor-only and prohibited 20 MHz
+channels are excluded. This deliberately conservative policy does not cover all
+legally possible deployments. Regulatory country, power, drivers and firmware are
+not changed. The active AP configuration frequency is shown separately from the
+saved band choice; `iw dev` can independently inspect actual radio configuration.
 
-The TCP listener exists only inside that owned attempt, bound to the AP's actual
-IPv4 address **and SO_BINDTODEVICE**, port 5288. It rejects pre-bootstrap traffic,
-out-of-network peers and second peers. Three unwanted Bluetooth requests revoke
-the attempt. TCP admission requires successful version negotiation, delivered credentials and
-accepted StartResponse on the selected authenticated Bluetooth link. ConnectionStatus
-is processed if sent, but is not required before the TCP AA handshake.
-Fresh, per-attempt WPA2/RSN/CCMP credentials are sent only on the selected
-Bluetooth link. The credential holder entering within the bounded window is
-associated with that bootstrap. **This is not a cryptographic binding of TCP to
-the Bluetooth identity.** A compromised peer/host, leaked key or an attacker able
-to join the fresh AP can race the phone. An IP address, display name or successful
-TLS handshake is not proof of phone identity. Bluetooth and Wi-Fi MAC equality
-is never assumed. Radio refs stay out of projection metadata/Veloce; projection
-uses session-local opaque identifiers, separate from persistent BlueZ references.
+Each attempt generates fresh WPA2/RSN/CCMP credentials and a non-overlapping private
+IPv4 /24. Credentials are sent only over selected authenticated bootstrap, never
+through ordinary IPC, logs, settings or Veloce. Readiness requires NM activation,
+the assigned AP address and its DHCP service, not merely an activation request.
 
-Accordingly the daemon requires `ARGO_WIRELESS_DEVELOPMENT=1` and the UI explicitly
-labels development admission. Wi-Fi uses a separate TLS verifier: legacy certificate
-chain compatibility remains, but TLS 1.2 handshake signatures are verified using
-the existing pinned rustls 0.23.22 provider. Wired AttachedUsbPeer behavior is
-preserved. No certificate/identity files are changed. Phone compatibility with
-this stricter signature check is an acceptance gap, not grounds to bypass it.
+NM IPv4 shared mode runs DHCP/DNS and adds forwarding/masquerading through the host
+uplink. This is NAT, not an Ethernet bridge. IPv6 is disabled and `never-default`
+protects management route selection. Joining the AP does not guarantee phone app
+internet access; test that separately.
 
-## Network and narrowly scoped provisioning
+Before activation, a fixed-purpose helper installs an input guard on only the
+projection interface, permitting established traffic, DHCP, DNS and projection TCP.
+Other incoming host services are dropped. NM owns forwarding/NAT; the helper does
+not override unrelated firewall drops. Argo runs as the desktop account, not root.
 
-NetworkManager AddAndActivateConnection2 creates a dedicated **volatile** profile,
-`Argo Projection (<interface>)`, bound to the chosen idle interface, with
-autoconnect=false and bind-activation=dbus-client. A separate D-Bus connection owns
-each attempt, so its disappearance deactivates the profile. A non-overlapping
-10.77.x.0/24 is selected; address, activated state, a DHCP socket and the NM dnsmasq process bound to that address
-with a matching DHCP range are required
-before bootstrap. Phone DHCP receipt is still hardware acceptance.
+### Permissions and helper installation
 
-IPv4 shared mode runs NM's DHCP/DNS service and adds forwarding/masquerading to
-the host's uplink. This introduces NAT internet sharing; it is **not a bridge** to
-Ethernet. IPv6 is disabled on the AP and never-default=true protects route choice.
-This does not guarantee phone apps retain internet; test them on the phone.
+Use read-only preflight before changing a deployment:
 
-Shared mode alone does not protect other host listeners. Before activation Argo
-invokes one fixed-purpose helper through pkexec to install an nftables input
-chain on **only the selected Wi-Fi interface**. It allows established traffic,
-DHCP, DNS and projection TCP, dropping other incoming services. NM alone owns
-forward/NAT rules. Existing firewall policy can further restrict traffic; this
-helper does not override a later drop. Neither Argo nor its daemon runs as root.
-No passwordless policy is installed. pkexec may request administrator confirmation
-for start/cleanup; denied/timed-out requests are visible failures.
+```bash
+bluetoothctl list
+nmcli --version
+nmcli general permissions
+nmcli device status
+ip route
+/usr/sbin/iw dev
+/usr/sbin/iw reg get
+```
 
-Review [the helper](../tool/connectivity/argo-projection-firewall), then explicitly
-install it (the implementation does not silently install it):
+Inspect the discovered phy with `iw phy <phy-name> info`. These CLIs are inspection
+tools; BlueZ and NM D-Bus interfaces are the production control APIs.
 
-```sh
+The [firewall helper](../tool/connectivity/argo-projection-firewall) must be reviewed
+and installed by an administrator. Installation is explicit and privileged:
+
+```bash
 sudo install -d -m 755 /usr/local/libexec
-sudo install -o root -g root -m 755 \
-  "$HOME/dev/argo/tool/connectivity/argo-projection-firewall" \
+sudo install -o root -g root -m 755 "$HOME/dev/argo/tool/connectivity/argo-projection-firewall" \
   /usr/local/libexec/argo-projection-firewall
 ```
 
-Dependencies: BlueZ, NetworkManager, nftables, polkit/pkexec, iw, NM's shared-mode
-DHCP support (dnsmasq-base), and the existing native-media runtime. No drivers,
-firmware, services, country settings or default pairing agents need changing.
-If pkexec has no desktop authentication agent, Connect fails explicitly.
+Connect/cleanup invoke the fixed helper via pkexec. No blanket passwordless rule
+is required. BlueZ/NM operations also need the desktop account's D-Bus/polkit
+permissions. Denial is reported rather than bypassed.
 
-Cleanup targets only the exact active-connection object returned by NM, then
-removes the feature's input guard. If activation completion is unknown or cleanup
-fails, close the attempt-owned D-Bus connection and retain the input guard rather
-than exposing services; the UI reports that uncertainty. Inspect NM before a new
-attempt. Do not delete arbitrary profiles or flush the firewall.
+Cleanup stops only the owned activation and input guard. A partial activation
+failure closes its attempt-local D-Bus owner. If activation/deactivation is uncertain,
+the firewall guard remains and automatic replacement is blocked. Inspect the owned
+profile and interface before recovery. After verifying that the owned AP is stopped,
+the narrowly scoped manual guard removal is:
 
-Rollback, with wireless stopped and the owned AP confirmed inactive:
-
-```sh
-# Substitute the interface discovered/selected on this deployment.
-pkexec /usr/local/libexec/argo-projection-firewall stop wlp2s0
-sudo rm /usr/local/libexec/argo-projection-firewall
+```bash
+: "${PROJECTION_INTERFACE:?Set the verified projection interface}"
+sudo /usr/local/libexec/argo-projection-firewall stop "$PROJECTION_INTERFACE"
 ```
 
-The helper can affect only its reserved `inet argo_projection_<ifindex>` table,
-with validated existing Wi-Fi interfaces. After a crash/radio removal a retained
-guard may need explicit administrator removal of that named table; never flush
-unrelated rules. Normal cleanup preserves all unrelated connections/profiles.
+Removing the installed helper after disabling wireless and completing cleanup is
+an administrator rollback action. Keep unrelated profiles, bonds and firewall rules.
 
-## Protocol references inspected
+## Startup and session lifetime
 
-Read-only reference checkouts were kept under /tmp, never vendored. No credentials
-or deployment scripts were imported.
+Disabled → enabled → connecting → established describes connection ownership;
+video visibility is a separate state. One session lease arbitrates USB and Wi-Fi
+before AP/listener/media resources are created. An incoming wireless request cannot
+replace wired projection. Explicit switching waits for old cleanup.
 
-- [LIVI c4ed3f1f7982cf10f899a92867ffd34b4269fee5](https://github.com/f-io/LIVI/tree/c4ed3f1f7982cf10f899a92867ffd34b4269fee5): actual helper `bin/livi-helperd/src/aa.rs`, `crates/livi-aa/src/wpp.rs`, runtime `bt.rs`, and aaw proto files.
-- [open-android-auto 61eab61c5f9968154ff1a80faa8c0a427b208479](https://github.com/mrmees/open-android-auto/tree/61eab61c5f9968154ff1a80faa8c0a427b208479): Wi-Fi protos and wireless Bluetooth setup/channel docs. Its suggestions to auto-accept, disable plugins or stop WirePlumber are not followed.
-- [aa-proxy-rs 841722019650412c8c3f1cefc7924f0b3d01c5e4](https://github.com/aa-proxy/aa-proxy-rs/blob/841722019650412c8c3f1cefc7924f0b3d01c5e4/src/bluetooth.rs): independent status/framing and version-response parser cross-check.
-- [NetworkManager 1.52.1 shared DHCP source](https://github.com/NetworkManager/NetworkManager/blob/1.52.1/src/core/dnsmasq/nm-dnsmasq-manager.c) cross-checks address-specific DHCP readiness.
-- BlueZ ProfileManager1/Agent1 and NetworkManager D-Bus API; locally compiled
-  bluer 0.17.4 and zbus 5.19.0 expose those supported APIs.
+The AP and interface-bound TCP listener must be ready before Bluetooth advertises
+connection details. The selected phone's Audio Gateway profile (`111f`) is requested
+through the existing desktop Hands-Free implementation (`111e`). HFP is a bootstrap
+trigger dependency, not a complete Argo calling feature. No competing HFP stack is
+registered. UUID/channel conflicts are errors; bluetoothd is not restarted.
 
-WPP is u16 BE **body length**, u16 BE message ID, then protobuf, bounded to 4096
-bytes. Version request 4 advertises 6.0 and packed channel frequencies (MHz);
-response 5 is checked before Start 1 offers the actual endpoint. Start response 7
-has status in **field 3**; info request 2 gets response 3 (SSID/password/BSSID,
-security=8 WPA2, AP type=1 dynamic). Connection status 6 has status in field 1.
-Ping 8 gets Pong 9 with the same body. No USB frame headers or AOAP occur here.
-The reference version-status enum documentation is inconsistent/unverified;
-this implementation currently accepts the legacy success value 0 with major 6,
-and fails closed on other responses pending an actual phone trace. This specific
-interoperability assumption is not claimed phone-verified.
+Authenticated RFCOMM negotiates WPP version, delivers Wi-Fi credentials and receives
+a successful StartResponse. One in-subnet TCP candidate may wait for that acceptance.
+ConnectionStatus is processed when supplied but is not a prerequisite for TCP AA:
+some phones do not report it before the AA handshake begins. TCP uses the existing
+version/TLS/channel engine; Wi-Fi never performs AOAP.
 
-Version response deadline 10s; bootstrap join 60s; profile rendezvous 60s; TCP
-window 65s; overall setup 180s. Pre-join messages are capped at 64. RFCOMM idle
-30s closes only bootstrap after a successful join; a healthy Wi-Fi session lives
-on. Bounded reconnect is at most three attempts, 2s/4s backoff for transient loss.
-Disconnect, Forget, Disable and application shutdown cancel the owned attempt;
-AA Exit is presentation-only and never starts reconnect or reopens Home.
-Session cleanup completes before releasing the shared USB/Wi-Fi ownership permit.
-Selection changes during projection are pending for the next explicit connection.
+A usable session is established at the engine's validated video AV START on channel
+3 (`0x8001`, after AV setup and configuration validation). This latches attempt-local
+readiness. AP activation, TCP acceptance, version negotiation and TLS alone do not
+establish projection. The 180-second overall setup deadline is permanently disarmed
+at that event, even if presentation immediately becomes Suspended. Each replacement
+gets a fresh latch. Stage-specific timeouts remain bounded independently.
 
-## IPC and launch
+AA Exit returns to Media and hides video; session/audio/metadata remain available.
+Home resumes the same session through the existing focus path. Hiding video never
+rearms setup or triggers reconnect. Later RFCOMM closure/idle expiry does not end a
+healthy Wi-Fi session; explicit protocol failure still terminates it.
 
-**IPC v5 requires matching application and daemon.** Kind 30 is a bounded UTF-8
-JSON connectivity snapshot; kind 31 is a <=2048-byte strict JSON command
-`{action,target,accept,prompt}`. Commands: adapter/interface/select, discover,
-pair/confirm, enable/connect/disconnect/forget. Projection control/media formats
-are unchanged except the explicit v5 header and device transport=1 for Wi-Fi.
-No secrets/media bytes enter the new messages. Shared v5 hex fixtures validate
-both implementations. Connectivity commands work when AA identity is absent.
+## Retry and shutdown
 
-Wired rollback was copied before staging:
-`$HOME/dev/infotainment/bundle/argo-wired-7173f2e-rollback`, including `bin/argo-projectiond`.
-Original `$HOME/dev/infotainment/bundle/argo-render-test` is untouched and is LIVE,
-not the renderer diagnostic. Do not use run_renderer_test.sh for this workflow.
+Internal failure kinds, not diagnostic wording, drive retry. Unexpected transport
+EOF/reset, recoverable network loss and selected setup timeouts may retry while the
+explicit request remains authorized. There are at most three attempts, with two- and
+four-second backoffs. Pairing is checked before setup and admission. Authorization
+revocation, protocol/TLS rejection and configuration/permission failures do not retry.
+Failed or uncertain cleanup blocks replacement even when the original loss was
+retryable. Graceful session end does not start a reconnect loop.
 
-Band-selection release: `$HOME/dev/infotainment/bundle/argo-wireless-bands-ipc5-20260908`.
-Previous wireless release remains at `argo-wireless-ipc5-20260907`.
-It includes its matching `bin/argo-projectiond`; the native-view library is copied
-unchanged from the wired rollback. Neither Engine, IHS nor the view is rebuilt. Use separate sockets for isolated
-read-only checks. Never run two hardware-enabled projection daemons together.
-Stop old app/daemon before launching the new matched pair; never overwrite a
-loaded executable or library. Reuse existing daemon-owned identity paths. Leave
-ARGO_PROJECTION_RENDER_TEST unset and use ARGO_MODE=production,
-ARGO_PROJECTION_BACKEND=android-auto. Wireless stays disabled unless explicitly
-enabled. Normal wired launch does not need the development gate or helper.
+Disconnect, Disable, Forget, application closure and daemon shutdown cancel setup
+or backoff. Cancellation completes owned cleanup before the lease is released.
+The initiating error is published before potentially blocking native media cleanup;
+cleanup errors are retained separately. No timeout is assumed to interrupt synchronous
+FFI, and workers are not abandoned to make shutdown appear complete.
 
-Launch from two desktop terminals, after stopping the previous app/daemon:
+## Security and admission
 
-```sh
-# Terminal 1: reuse the two external identity paths from your wired launch.
-# These variables are already documented by the wired runbook; do not copy keys.
-export ARGO_ANDROID_AUTO_CERT_FILE="$HOME/.config/argo-cert/argo.crt"
-export ARGO_ANDROID_AUTO_KEY_FILE="$HOME/.config/argo-cert/argo.key"
-export ARGO_WIRELESS_DEVELOPMENT=1
-"$HOME/dev/argo/tool/connectivity/run-release.sh" daemon
+`ARGO_WIRELESS_DEVELOPMENT=1` explicitly enables the development admission policy.
+It requires a selected paired phone, authenticated/encrypted BlueZ RFCOMM, successful
+version/start exchange, fresh credentials delivered only to that peer, a bounded
+interface/subnet-restricted TCP window and rejection of unsolicited/second candidates.
 
-# Terminal 2 (LIVE / production, not the renderer diagnostic):
-"$HOME/dev/argo/tool/connectivity/run-release.sh" app
-```
+TCP association relies on possession of fresh AP credentials; it is **not a
+cryptographic binding to Bluetooth phone identity**. A compromised credential holder
+can race the intended phone. Source IP, display name and completed TLS are not proof
+of phone identity. Wireless TLS verifies handshake signatures while retaining legacy
+certificate-chain compatibility. The wired AttachedUsbPeer policy is unchanged.
+External identity format/ownership is defined in [configuration](configuration.md#projection).
 
-For wired-only operation, omit/unset `ARGO_WIRELESS_DEVELOPMENT`, leave wireless
-disabled and attach USB. For rollback, stop both new processes and use the
-existing wired launcher with `argo-wired-7173f2e-rollback` and its `bin/argo-projectiond`
-(IPC v4); do not point a v5 application at that daemon. New launch uses dedicated
-`$XDG_RUNTIME_DIR/argo-wireless-ipc5/` sockets. A crash-left socket is never
-silently unlinked; verify its process is gone before removing that specific file.
+## Troubleshooting and manual validation
 
-Operator sequence:
+INFO logs distinguish AP/DHCP readiness, HFP trigger outcome, authenticated RFCOMM,
+version scalars, credential delivery, StartResponse and TCP admission. No secrets or
+raw WPP payloads are logged. Check the first failure and any separate cleanup error.
 
-1. Open Settings → Devices & connectivity. Choose radios if ambiguous. Start
-   discovery, open the phone Bluetooth screen, and Pair the actual listed phone.
-   Confirm matching passkeys on both screens; reject unexpected requests.
-   An already bonded phone can be selected without copying or recreating bonds.
-2. Disconnect the USB **data** cable. Select the paired phone for AA; Enable,
-   then Connect explicitly authorizes this attempt's protected projection AP.
-   Approve pkexec if asked. Follow phone Android Auto/HFP prompts. The existing
-   desktop HFP implementation may be required; no Argo hands-free calls are added.
-3. Observe phone Wi-Fi joined, then actual AA streaming (not merely Bluetooth
-   connected). Check picture/audio/input and `argo_host.snapshot()` reporting
-   `androidAuto/wifi`, including track updates without raw media in control IPC.
-4. AA Exit → Media, stay there while audio/metadata continue, then Home. Confirm
-   the same projection session ID and working input. Exit must not start reconnect.
-5. Explicit Disconnect, wait beyond backoff, and verify no attempt resumes.
-   Deliberately Connect again. Repeat with Disable; test wired with wireless off.
-6. Verify Ethernet/default route still present and open an internet-dependent
-   phone app while on projection Wi-Fi. NM NAT availability alone is not proof.
+- AP failure: inspect capabilities, regulatory flags, interface use and polkit/NM
+  permissions. Do not change country settings to bypass a refusal.
+- Waiting for Bluetooth: check the selected bond, phone prompts, HFP trigger result
+  and AA profile/channel conflicts.
+- Accepted start but no TCP: check AP association/DHCP and interface firewall policy.
+- TCP admitted but no projection: inspect AA version/TLS/channel errors. Do not replace
+  working identity files or weaken signature checks as a generic troubleshooting step.
+- Cleanup pending: resolve the owned AP/guard state before another connection.
 
+Mu lifecycle validation:
 
-## Acceptance record
+1. Connect wireless AA and start music.
+2. Before three minutes elapse, use AA Exit to return to Media.
+3. Stay on Media until at least four minutes after Connect.
+4. Confirm session/audio/metadata remain available; press Home and resume the same session.
+5. Deliberately interrupt only the projection connection with an approved controlled
+   method; restore it and check bounded retry. Preserve the management interface.
+6. Press Disconnect during retry/backoff and confirm retries stop.
+7. Start a new explicit connection successfully.
+8. Verify wired AA with wireless disabled.
 
-Pending: real AP activation/DHCP, phone pairing and WPP/TCP/TLS, USB cable removed,
-picture/audio/input, metadata and Lua `androidAuto/wifi`, Exit→Media→Home with
-same session, stop-reconnect behavior and deliberate reconnection, wired fallback,
-management Ethernet continuity during projection, and phone app internet access.
-No open listener or mock establishes these outcomes.
+The [status reference](status.md) distinguishes automated coverage from hardware
+acceptance. Also check phone app internet access and metadata/Lua transport reporting.
 
-Automated verification on this checkout: 50 Rust tests passed; all-target Clippy
-with warnings denied passed; 224 Flutter tests passed with the bundled native Lua
-library and no skips; Dart analyzer reported no issues. Both release builds passed.
-Launcher/helper syntax checks passed. The input guard itself is not radio-tested.
+## Protocol references
 
-Local runtime verification: a separate no-USB debug daemon, with identity variables
-removed, registered its non-default BlueZ agent and sent an IPC v5 snapshot with
-hci0, wlp2s0 and one existing paired device. No discover/pair/connect command was
-sent. It was stopped cleanly. An unprivileged socket accepted SO_BINDTODEVICE;
-no TCP bind/listen/traffic was performed by that permission check.
+Implementation is independent; no reference implementation or deployment credentials
+are vendored. WPP frames are u16 BE body length, u16 BE message ID, then bounded protobuf.
+The AA UUID is `4de17a00-52cb-11e6-bdf4-0800200c9a66`, RFCOMM channel 8. Version request/
+response are 4/5; Start 1/7; Wi-Fi info 2/3; status 6; Ping/Pong 8/9. Start status is
+field 3; ConnectionStatus uses field 1. Version 6.0/status 0 has phone coverage.
 
-The original LIVE bundle matches the saved rollback byte-for-byte. Engine and
-native projection-view hashes match the original; IHS and the audio-clock code
-were untouched. Final read-only checks still show Ethernet/default route intact,
-Wi-Fi idle, Bluetooth powered but not discovering/discoverable.
-
-**Operator gate remains:** installation approval for the root-owned firewall
-helper and availability for phone confirmation were requested but have not been
-received. The helper is not installed, so Connect currently stops at provisioning.
-No radio/AP failure has been observed: AP activation, HFP trigger compatibility,
-WPP version-status compatibility, TLS with this phone and all phone acceptance
-steps remain untested. This is a staged development implementation, not completed
-end-to-end wireless acceptance. See the bundle's `BUILD-MANIFEST.txt` for hashes
-and the final source revision.
-
-
-## Band-selection correction (2026-09-08)
-
-Settings → Devices & connectivity → **Projection AP band** selects 2.4 GHz or
-5 GHz (the existing default). The choice is saved; it does not enable wireless,
-activate an AP or disconnect an existing network. During any connection/retry,
-the band is frozen. To apply a changed choice, explicitly Disconnect, wait for
-cleanup, then Connect. The card displays the active AP configuration frequency
-separately from the saved choice. If cleanup fails this value is retained for
-inspection; it is configured frequency, not an independent RF measurement.
-
-The NetworkManager profile uses `bg` or `a` and the selected channel, and WPP's
-version offer sends the corresponding 2.4/5 GHz frequency. This follows NM's
-[wireless settings](https://www.networkmanager.dev/docs/api/latest/settings-802-11-wireless.html)
-and [capability flags](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/nm-dbus-types.html).
-No channel/country override is provided. IPC 5 gains additive `band` and
-`ap_frequency_mhz` connectivity fields and validated `band` requests. Older
-applications ignore these fields; the new application shows an upgrade notice
-with an older daemon, instead of presenting a nonfunctional selector. Stage
-and launch the matched pair above.
-
-Read-only check on this date: wlp2s0 is a station on P-Home, channel 36;
-DE restrictions are unchanged. Channels 1/6/11 show 20 dBm and 149–165 show
-13 dBm without NO-IR/DFS. `iw` prints decimal frequencies, which the channel
-filter accepts. **enp3s0 is unavailable**; the default route is currently via
-192.168.0.1 on wlp2s0. This differs from the earlier Ethernet-connected preflight.
-No connections were changed. Restore management Ethernet (or use a separate
-idle Wi-Fi adapter) before freeing the current Wi-Fi connection explicitly in
-the desktop network UI. Argo will refuse to take over an active station.
-
-Operator band test: select 2.4 GHz, disconnect USB data, Enable and Connect;
-verify the card's active configuration and independently run `iw dev` to verify
-AP mode/frequency. Approve phone prompts. Then check phone association and live
-AA, including the phone's internet access. A working 2.4 GHz AP alone does not
-prove this phone supports AA startup in that band. No AP activation or phone
-acceptance was performed for this correction; the reported AA connection issue
-remains unverified until this controlled test. The wired/audio/TLS/session engine
-and native-view library are unchanged.
-
-Correction verification: 52 Rust tests passed; Clippy with warnings denied and
-Flutter analysis passed. The full Flutter suite passed (225 tests), followed by
-the three connectivity widget/persistence tests after adding the saved-band
-regression. Rust and Flutter release builds passed. Real AP/phone acceptance
-remains pending; original wired and previous wireless bundles are preserved.
-
-
-## Bluetooth startup correction (2026-09-08)
-
-After the operator confirmed AP band selection works, the phone displayed a
-transient “connecting to Android Auto” notification while Argo waited for
-bootstrap. Read-only BlueZ inspection found the paired phone advertising HFP
-Audio Gateway (`0000111f-0000-1000-8000-00805f9b34fb`) but not Hands-Free (`111e`).
-The daemon incorrectly called ConnectProfile with `111e`, and discarded the
-result. [BlueZ Device1](https://bluez.readthedocs.io/en/latest/device-api/) specifies
-that ConnectProfile takes the **remote service UUID**. Argo now requests the
-phone's `111f`; the existing desktop Hands-Free implementation owns the local
-side. No competing profile, trusted-device change, service restart or broad
-Connect-all-profiles call is introduced.
-
-Trigger errors now appear in Settings during the bounded RFCOMM wait, and
-terminal logs record AP/DHCP readiness, HFP trigger outcome, authenticated RFCOMM,
-WPP version scalars, credential-delivery milestone, phone join status, TCP
-admission and attempt failures. Credentials, identity fields and raw WPP bodies
-are never logged. Phone status errors distinguish start response from association
-failure. Admission and TLS policy remain unchanged. The old generic “waiting”
-message alone did not distinguish RFCOMM waiting from an in-progress WPP exchange.
-
-Release: `$HOME/dev/infotainment/bundle/argo-wireless-connect-ipc5-20260908`.
-Use its `run-release.sh` for both daemon and app after stopping the previous pair.
-The app, Engine, native view and other libraries are copied unchanged from the
-band-selection release; only the daemon changes. IPC remains 5. Both earlier
-bundles remain rollback options. Do not restart Bluetooth/NetworkManager or
-re-pair merely to test this correction. Use the explicit Enable/Connect UI and
-approve phone prompts, then inspect the new stage logs if startup still fails.
-This fixes the observed remote-profile mismatch; successful phone bootstrap and
-end-to-end wireless projection still require an operator retry.
-
-Verification for this correction: 52 Rust tests pass and Clippy passes with
-warnings denied. The daemon release build passes. Dart/UI code is unchanged;
-its previously verified release artifacts are reused, with hash comparison of
-all app/Engine/native library assets during staging. No live phone connection,
-network mutation or process restart was performed by the agent.
-
-
-## TCP / Bluetooth status ordering correction (2026-09-08)
-
-The next real-phone log confirmed authenticated RFCOMM, WPP 6.0 with status 0,
-Wi-Fi credential delivery and accepted StartResponse. Twice the daemon then
-reported `TCP peer outside bootstrap admission; attempt revoked`, before any
-successful ConnectionStatus was logged. The old predicate conflated an
-out-of-subnet peer with a peer arriving before Bluetooth join confirmation.
-
-The listener now retains one in-subnet candidate while WPP continues. It does
-not read AA bytes, start TLS, or allocate session-owned media until a successful
-Bluetooth ConnectionStatus arrives. The original 65-second admission deadline
-is not extended. A second candidate, out-of-subnet peer, failed/closed bootstrap,
-explicit Disconnect or shutdown closes the candidate; pending TCP is not proof
-of phone identity. The existing AP credential possession/development admission
-limitations remain. Join-before-TCP also updates shared Wi-Fi state reliably.
-Logs distinguish subnet rejection from waiting for join confirmation.
-
-Release: `$HOME/dev/infotainment/bundle/argo-wireless-admission-ipc5-20260908`.
-The source launcher selects this bundle. Stop the previous pair, start daemon
-and app, then explicitly Enable/Connect. Existing bundles remain untouched.
-The app and all native libraries are reused unchanged; daemon IPC remains 5.
-54 Rust tests pass, including real loopback sockets exercising both orderings,
-preserved AA bytes, missing join deadline, second candidate and cancellation.
-Clippy with warnings denied and daemon release build pass. Phone retry is pending;
-if this phone never reports join before AA starts, this conservative admission
-policy will still stop at that layer instead of silently relaxing authentication.
-
-
-## Remove the Bluetooth ConnectionStatus dependency (2026-09-08)
-
-Phone retry on both 2412 and 5745 MHz confirmed accepted StartResponse and an
-in-subnet TCP connection, followed by RFCOMM reset while Argo waited for
-ConnectionStatus. The operator independently saw Wi-Fi connected via Android Auto.
-The previous bounded wait therefore did not resolve the startup stall.
-
-Admission now requires BOTH fresh credentials delivered to the selected paired,
-authenticated RFCOMM peer AND a successful StartResponse after WPP version
-negotiation. One TCP candidate is admitted only on the interface-bound AP listener,
-in the attempt subnet, within the original deadline; pairing is rechecked before
-AA begins. Bare TCP, version negotiation alone, or StartResponse without credential
-delivery cannot authorize admission. ConnectionStatus is not treated as additional
-identity proof: a successful status was only a report by the already authenticated
-bootstrap peer. It may arrive late or be absent. Explicit negative WPP statuses
-still fail setup/session; RFCOMM closure/idle expiry after accepted startup does not
-terminate Wi-Fi. Shared Wi-Fi connected state is set when TCP is admitted, not
-when Bluetooth merely accepts startup. TLS handshake-signature checks are unchanged.
-
-This is an explicit revision to the existing **development-only** admission policy,
-still gated by ARGO_WIRELESS_DEVELOPMENT=1. The TCP peer is associated by fresh AP
-credential possession after authenticated bootstrap, not cryptographic phone
-identity. A compromised AP credential holder can still race the intended phone;
-IP address or TLS completion does not remove this limitation.
-
-[LIVI's pinned wireless path](https://github.com/f-io/LIVI/blob/c4ed3f1f7982cf10f899a92867ffd34b4269fee5/native/livi-helperd/bin/livi-helperd/src/aa.rs)
-also processes ConnectionStatus as a separate bootstrap event. No reference code,
-credentials or identity material were copied.
-
-New release: `$HOME/dev/infotainment/bundle/argo-wireless-start-ipc5-20260908`.
-Restart the matched pair using the source launcher, then explicitly Enable/Connect.
-54 Rust tests pass, including authorization before ConnectionStatus, no authorization
-from StartResponse alone, both TCP/start orderings, preserved bytes, deadlines,
-cancellation and second-peer rejection. Clippy and daemon release build pass.
-App/Engine/native libraries are reused unchanged. After retrying this release,
-the operator reported “It works!” on 2026-09-08, confirming wireless AA startup.
-Picture/audio/input, metadata/Lua, presentation ownership, reconnect/disable,
-internet access and wired regression checks still need individual acceptance
-records; this report does not imply every item was separately exercised. Previous
-bundles are preserved. See [the current handoff](wireless-handoff-2026-09-08.md).
+- [LIVI pinned reference](https://github.com/f-io/LIVI/tree/c4ed3f1f7982cf10f899a92867ffd34b4269fee5), including its
+  [wireless session path](https://github.com/f-io/LIVI/blob/c4ed3f1f7982cf10f899a92867ffd34b4269fee5/native/livi-helperd/bin/livi-helperd/src/aa.rs).
+- [open-android-auto](https://github.com/mrmees/open-android-auto/tree/61eab61c5f9968154ff1a80faa8c0a427b208479).
+- [aa-proxy-rs framing/status reference](https://github.com/aa-proxy/aa-proxy-rs/blob/841722019650412c8c3f1cefc7924f0b3d01c5e4/src/bluetooth.rs).
+- [BlueZ Device1](https://bluez.readthedocs.io/en/latest/device-api/).
+- [NM wireless settings](https://www.networkmanager.dev/docs/api/latest/settings-802-11-wireless.html),
+  [D-Bus capabilities](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/nm-dbus-types.html), and
+  [shared DHCP implementation](https://github.com/NetworkManager/NetworkManager/blob/1.52.1/src/core/dnsmasq/nm-dnsmasq-manager.c).

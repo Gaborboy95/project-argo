@@ -1,6 +1,6 @@
 # Configuration reference
 
-Audited against [this revision](status.md). These are runtime process environment
+These are runtime process environment
 options, including release/AOT builds, not `--dart-define` settings. All are
 optional unless a prerequisite below makes them required. App selections are
 read at bootstrap and require restart; native options are read at library/view
@@ -43,9 +43,28 @@ path exists on an OS.
 | `ARGO_PROJECTION_SOCKET` | Explicit path, otherwise `$XDG_RUNTIME_DIR/argo/projection.sock`, otherwise `/run/argo/projection.sock` | Same resolution in app and daemon at startup. Example `$XDG_RUNTIME_DIR/argo/projection.sock`. Explicit empty, relative, surrounding-whitespace, NUL or ≥108-byte Unix paths are rejected. New daemon-owned parent directories are private; live sockets are never automatically deleted. |
 | `ARGO_PROJECTION_MEDIA_SOCKET` | Explicit path, otherwise `$XDG_RUNTIME_DIR/argo/projection-video.sock`, otherwise `/run/argo/projection-video.sock` | Same resolution in daemon and native view; same explicit-path validation as control. Ignored by renderer-test source. Example `$XDG_RUNTIME_DIR/argo/projection-video.sock`. |
 | `ARGO_ANDROID_AUTO_CERT_FILE` | No default | **Daemon only**, startup validation and session TLS loading; external readable PEM certificate, e.g. `$HOME/.config/project-argo/android-auto/argo.crt`. Missing/invalid identity is reported through control readiness without disabling the rest of Argo. Restart daemon after correcting files. |
-| `ARGO_ANDROID_AUTO_KEY_FILE` | No default | **Daemon only**; private-key PEM, e.g. `$HOME/.config/project-argo/android-auto/argo.key`. Keep permissions restricted and files outside repository/plugin/settings directories. Dart ignores inherited identity variables and never opens/parses/transmits keys or identity paths. |
+| `ARGO_ANDROID_AUTO_KEY_FILE` | No default | **Daemon only**; unencrypted PKCS#8 PEM with `BEGIN PRIVATE KEY` / `END PRIVATE KEY` markers (not a PKCS#1 `RSA PRIVATE KEY` file), e.g. `$HOME/.config/project-argo/android-auto/argo.key`. Keep permissions restricted and files outside repository/plugin/settings directories. Dart ignores inherited identity variables and never opens/parses/transmits keys or identity paths. |
 | `ARGO_HOST_STATE_DIAGNOSTICS` | Off; exactly `1` enables | Argo/Veloce startup; forwards DEBUG logs from explicitly loaded host-read-capable resources, newest line at most every 3 seconds, truncated/quoted. May contain track/device text; development-only opt-in. Example `1` during the synthetic observer check. No CAN dependency. |
 | `ARGO_PROJECTION_LOG_LEVEL` | `info`; `error`, `warn`, `info`, `debug`, `trace` | Daemon startup, release supported; invalid value fails startup. Example `debug`. INFO transitions/socket locations; WARN/ERROR failures; DEBUG setup/focus/consumer detail; TRACE RX/TX/ping metadata without media/credential dumps. Independent of renderer logging. |
+
+Identity must already be available externally. The loader parses certificates and
+PKCS#8 key material; its structural readiness check is not certification or a
+complete identity-provisioning workflow. Use the working daemon identity rather
+than generating replacement keys to troubleshoot transport failures. The current
+compatibility loader does not establish a trusted phone certificate chain. Wireless
+handshake signatures are checked separately; see [wireless security](wireless.md#security-and-admission).
+
+| Connectivity/launcher variable | Default and application timing |
+|---|---|
+| `ARGO_WIRELESS_DEVELOPMENT` | Unset: wireless admission unavailable; exactly `1` permits the development policy. Daemon startup. UI Enable/Connect still required; not persistent enablement. |
+| `ARGO_WIRELESS_BUNDLE` | Optional absolute staged release directory selected by `tool/connectivity/run-release.sh`; its local fallback is defined in the script. Set explicitly in both terminals for deployment. |
+| `IHS_PREFIX` | Launcher/build convention, default `$HOME/dev/ivi-build/out/usr/local`; must contain matched executable/library/header assets. |
+
+The release launcher fixes control/media socket paths beneath
+`$XDG_RUNTIME_DIR/argo-wireless-ipc5/`, selects production/android-auto, and clears
+the renderer-test flag. Direct daemon/app launches instead use the socket resolution
+rules in the table. It sets native-view/Lua library and loader paths from the bundle.
+It does not read identity into the application or perform pairing/provisioning.
 
 The renderer launcher consumes `FLUTTER_WORKSPACE` (default
 `$HOME/dev/infotainment`) and `IHS_PREFIX` (default
@@ -123,7 +142,7 @@ Safe-inset keys remain compatible storage but have no applied AA mapping and no
 enabled controls. Runtime stream content/safe insets remain independent metadata;
 Home uses a shared aspect fit for rendering/touch. Fullscreen presentation does
 not renegotiate source resolution, DPI or FPS. Renderer-test source stays fixed
-at 1280×720/30. The development wireless path uses `android-auto` with transport `wifi`; CarPlay remains unimplemented. See [wireless setup](wireless.md).
+at 1280×720/30. Wireless uses `android-auto` with transport `wifi`. See [wireless setup](wireless.md).
 
 Native playback reports fixed PCM formats: media 48 kHz/16-bit/stereo;
 speech/navigation and system 16 kHz/16-bit/mono. They share the daemon's discovery,
@@ -139,7 +158,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 ## IPC compatibility and ownership
 
 IPC v5 is incompatible with v1, v2, v3 and v4: rebuild/restart both client and daemon together.
-Session/video messages now include session-scoped presentation revisions; AV stops
+Session/video messages include session-scoped presentation revisions; AV stops
 are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
 must reconnect after the first closes. There is no observer takeover or automatic
@@ -151,8 +170,7 @@ connection. The daemon has no user-settings database; restart restores daemon
 defaults until Argo sends its saved request. See the [wire contract](architecture.md).
 
 
-Host media/phone state is live, not a setting. No new track, playback, phone,
-artwork or credential storage exists. Backend DEBUG emits bounded revision-only
+Host media/phone state is live, not a setting. Track, playback, phone, artwork and credential data are not persisted. Backend DEBUG emits bounded revision-only
 metadata diagnostics; packet metadata remains TRACE. The optional host diagnostic
 switch only exposes observer DEBUG lines; it does not grant Lua read permission.
 Read access requires `argo.host.read.v1`; see [the host API](vehicle-integrations.md#read-only-argo-host-state-v1).
@@ -178,9 +196,8 @@ to the corresponding default. Reset appearance removes only these two overrides;
 audio, projection preferences and the selected module remain intact.
 
 “System” follows the brightness preference reported to Flutter, using
-MaterialApp's ThemeMode.system. No `flutter/settings` brightness forwarding was
-found in the local IHS `35a5f852` source; live desktop preference propagation is
-not verified and should not be assumed. Manual light/dark selection works
+MaterialApp's ThemeMode.system. Live desktop brightness-preference propagation through the reference IHS build
+is not verified; system mode depends on host forwarding. Manual light/dark selection works
 independently. This setting does not control physical display brightness,
 headlights, vehicle night mode or Android Auto's day/night mode.
 Fullscreen projection remains opaque black, including letterboxing. Wallpaper,

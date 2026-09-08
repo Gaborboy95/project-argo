@@ -75,9 +75,22 @@ are provided by Argo's runtime; a plain Veloce runtime needs the corresponding
 host registration/catalog before this resource can load. It creates no UI.
 
 To run **only** this observer with Argo's generic profile, follow the
-[projection host-state workflow](../projection/README.md#host-metadata-and-lua-acceptance-ipc-v3).
-It uses a separate mutable plugin root and leaves the other synthetic vehicle
-policies unloaded. The [native Lua exercise](../../test/integrations/veloce/argo_host_state_bridge_test.dart)
+[projection host-state workflow](../projection/README.md#host-metadata-and-lua).
+For an observer-only root, copy just the checked-in host_media resource:
+
+```bash
+set -e
+export ARGO="$HOME/dev/argo"
+export VELOCE_PLUGIN_DIR="$HOME/.local/share/project-argo/host-observer"
+mkdir -p "$VELOCE_PLUGIN_DIR"
+test ! -e "$VELOCE_PLUGIN_DIR/host_media"
+cp -a "$ARGO/tool/vehicle_integrations/example-vehicle/plugins/host_media" "$VELOCE_PLUGIN_DIR/host_media"
+export ARGO_VEHICLE_PROFILE=generic
+```
+
+Run the copy step with `set -e` so an existing resource is not overwritten.
+Set these application-side exports before the shared projection launch.
+ The [native Lua exercise](../../test/integrations/veloce/argo_host_state_bridge_test.dart)
 uses fake state and proves reads/permissions/reload without a phone. API fields,
 unknown/disconnected results and subscribe-before-read ordering are documented in
 [plugin authoring](../../docs/vehicle-integrations.md#read-only-argo-host-state-v1).

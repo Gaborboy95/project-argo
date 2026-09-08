@@ -69,7 +69,7 @@ export ARGO="$HOME/dev/argo"
 export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
 export IHS_PREFIX="${IHS_PREFIX:-$HOME/dev/ivi-build/out/usr/local}"
 source "$FLUTTER_WORKSPACE/setup_env.sh"
-export BUNDLE="$FLUTTER_WORKSPACE/bundle/argo-release-x86_64"
+export BUNDLE="${ARGO_WIRELESS_BUNDLE:?Select the compatible built bundle}"
 export LD_LIBRARY_PATH="$IHS_PREFIX/lib:$BUNDLE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset VELOCE_PLUGIN_DIR
 ARGO_MODE=simulation \
@@ -88,6 +88,6 @@ Repeat the `wpctl get-volume` check above. AA already has native daemon playback
 it is separate from system master control. Argo has no general local-media player
 here, and this workflow does not require adding an audioplayers plugin to IHS.
 
-Balance/fader and EQ are never silently applied by this initial production
+Balance/fader and EQ are never silently applied by the wpctl
 backend. Their controls stay disabled until an installed PipeWire topology/DSP
 backend advertises those capabilities.

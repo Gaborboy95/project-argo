@@ -1,7 +1,7 @@
 # Contributing to Project Argo
 
 Start with [architecture](docs/architecture.md), [configuration](docs/configuration.md)
-and the [audited status](docs/status.md). Implementation is the authority when
+and the [compatibility status](docs/status.md). Implementation is the authority when
 older runbooks disagree; update public behavior documentation with the code.
 
 - Keep public code vehicle-agnostic. Private decoding, DBCs, assets, thresholds
@@ -33,8 +33,8 @@ not hardware tests or privileged example execution.
 
 Report exactly which checks ran, skips and unavailable environments. Mock tests,
 compilation and accepted native submissions cannot establish phone, visible-frame
-or target-hardware acceptance. Record the revision and user-confirmed environment
-for runtime results; do not describe uncommitted changes as released.
+or target-hardware acceptance. Keep deployment revisions and validation results in build manifests; distinguish
+real hardware results from simulated coverage.
 
 New native feature pages should use Material `ColorScheme`, `TextTheme` and
 component themes from `Theme.of(context)`. The shell supplies `ArgoBackground`;
@@ -44,3 +44,9 @@ Never key the shell/native view by theme, and preserve opaque black fullscreen
 projection. See [appearance configuration](docs/configuration.md#appearance-preferences)
 for defaults and host-system-mode limits. Wallpaper/shader and vehicle day/night
 support require separate implementations and acceptance.
+
+Public behavior, configuration and API changes must update their canonical
+repository documentation in the same change. Describe current contracts and
+limitations, not chat reports, personal acknowledgements or per-run test counts.
+Consolidate overlapping pages rather than adding a dated handoff for each pass.
+Daemon-only changes need focused Rust checks, not an unrelated Flutter suite.

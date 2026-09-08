@@ -1,8 +1,6 @@
 # Architecture and extending Argo
 
-The [root overview](../README.md) describes current scope; the source map below
-is the implementation authority, not a promise that every abstraction has a
-hardware backend.
+The [root overview](../README.md) describes current scope; the source map below identifies component responsibilities and extension boundaries.
 
 ## Composition and ownership
 
@@ -37,7 +35,7 @@ builds and metadata never do. Activation writes are coalesced while in flight.
 ProjectionPage alone owns the native view. Offstage removes its layer and input
 while retaining the controller across host navigation; session/stream identity
 keys replace it on a true replacement. Media has no native consumer. ProjectionView
-cancels gestures on ownership loss but no longer sends focus commands from
+cancels gestures on ownership loss but does not send focus commands from
 creation/update/disposal. Navigation owns hides, guarded against later Home actions
 and old session IDs. Active video uses an unobstructed, aspect-fitted viewport
 with black letterboxing. AA Exit returns to Media. Unavailable/waiting video has
@@ -87,7 +85,7 @@ power/audio adapters: select disabled explicitly.
 Flutter features → ProjectionService → backend → bounded Unix control IPC
                                                ↓
                                       Rust argo-projectiond
-                                      USB / AA / TLS / channels
+                                      USB or Wi-Fi / AA / TLS / channels
                                        ├─ PCM → native GStreamer → PipeWire
                                        └─ H.264 → native media socket
                                                     ↓
@@ -101,7 +99,7 @@ Identity paths and material never travel in client IPC; the daemon exclusively
 loads them from its environment. The native video feed is separately framed/bounded. Argo connects to an already
 running daemon and does not provide automatic daemon respawn supervision.
 
-The presentation fields introduced in IPC v4 and retained in v5 append a u32 host-return revision to session messages (kind 3), and a
+IPC v5 includes a u32 host-return revision in session messages (kind 3), and a
 u32 presentation revision to video messages (kind 4). Both are session-scoped,
 start at zero and use network byte order. Explicit phone UNFOCUSED requests advance
 the first; AV stop does not. The application compares revisions only for the same
@@ -109,10 +107,10 @@ session and only navigates from its owned Home presentation. An initial historic
 revision is state, not a navigation command. Video revisions survive coalesced daemon
 watch snapshots: Home waits for a newer visible revision after requesting activation.
 Explicit Home activation keeps the existing focus-indication wire layout. After
-a phone Exit or host hide, the daemon now keeps video permission off until Home
+a phone Exit or host hide, the daemon keeps video permission off until Home
 requests it again: late phone focus requests/video starts are answered without
-granting presentation. Touch events do not change that permission. Local activation alone no longer
-marks video streaming; incoming native video data ends the waiting state. This is
+granting presentation. Touch events do not change that permission. Local activation alone does not
+mark video streaming; incoming native video data ends the waiting state. This is
 not a decoded-frame/display acknowledgement. No native media bytes enter this IPC.
 
 The shared presentation path is:
@@ -134,8 +132,7 @@ channels produce an error surface, including on unsupported GTK hosts.
 IHS registers an `ICompositorSurface` and replies with the native platform-view
 ID. It does not register a Flutter external texture for this path. That ID, a GL
 texture name, DMA-BUF fd and Flutter external-texture ID are not interchangeable.
-The old AndroidView texture path is not the current implementation. The layer
-regression inspects PlatformViewLayer and rejects TextureLayer presentation.
+Projection composition requires PlatformViewLayer rather than TextureLayer.
 Input is sent only by ProjectionView's mapped Listener; platform controller touch
 dispatch is deliberately a no-op. Rendering and input share fitted geometry;
 content insets are removed once, safe insets remain metadata, and logical
@@ -192,7 +189,7 @@ permission checks when adding namespaces; replacing the entire API registry need
 explicit equivalent checks. `PluginApiCall` carries plugin/generation identity and validated
 structured arguments. Handlers are synchronous; asynchronous work must return
 an ID and deliver completion through an owned event/callback. Resource cleanup
-must respect generation replacement. Argo now uses this extension point for `argo_host.snapshot()` as described below. Read the matching sibling
+must respect generation replacement. Argo uses this extension point for `argo_host.snapshot()` as described below. Read the matching sibling
 `packages/veloce_lua_core/lib/src/api/plugin_api_registry.dart` before extending it.
 
 Veloce's UI extension registries and Flutter renderer package do not automatically
@@ -205,8 +202,7 @@ UI would be separate work, not merely a Lua manifest permission.
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
 of video/audio availability. The Settings card remains usable as a status view
-when identity is missing. No Flutter certificate parser or identity validator
-remains, and inherited identity environment variables are ignored by Dart.
+when identity is missing. Flutter does not parse or validate certificates, and inherited identity environment variables are ignored by Dart.
 
 The daemon admits one control client at a time with a connection-owned permit.
 Hello is empty; v1/v2 headers and nonempty legacy hello payloads are rejected rather
@@ -231,16 +227,14 @@ height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
 
 Other message kinds preserve their existing bounded control responsibilities.
 The shared hex fixture in `test/fixtures/projection/ipc_v5_capabilities.hex` is
-checked by both Dart and Rust. Rebuild both sides; do not mix v1/v2/v3 bundles.
+checked by both Dart and Rust. Keep compatible application/daemon builds together; do not mix IPC versions.
 
 HostControl serializes request selection and session freezing through its watch
 state. The USB worker freezes before version negotiation; post-version TLS uses
 that same display snapshot. The session guard clears active selection even when
 its future is cancelled. Standalone sessions use validated defaults and never
 adopt a later client request in place. AA discovery, native audio construction
-and session metadata use the same fixed AudioFormat catalog. Playback pipelines,
-wire channel IDs/order, TLS compatibility, input mapping and native rendering
-are unchanged; only native endpoint resolution was adjusted.
+and session metadata use the same fixed AudioFormat catalog. Native endpoint selection remains separate from display negotiation.
 
 
 ## Shared media and phone state
@@ -279,9 +273,8 @@ default APIs and Veloce's bounded event queues remain intact. Host reads are
 synchronous cached copies; no IPC or native media call is made from Lua. Reads
 update immediately, while a single 250 ms timer coalesces metadata-free invalidation
 events. Bootstrap registers bridge cleanup before projection shutdown; Veloce also
-closes the bridge idempotently before unloading resources. The Argo-side integration
-was checked against sibling Veloce `d169d4cd6d10c1f38c534f425de83a75f1192ca9`;
-that checkout was not modified.
+closes the bridge idempotently before unloading resources. The required dependency revision is recorded in the
+[build reference](../tool/projection/README.md#toolchains-and-dependencies).
 
 The [versioned Lua contract](vehicle-integrations.md#read-only-argo-host-state-v1)
 explains freshness, permission and subscription/read ordering. Its data is not
@@ -326,5 +319,30 @@ through existing media/Veloce mappings; private radio identity stays in connecti
 IPC v5 adds kind 30 status and kind 31 commands; all control remains bounded and
 credential-free. Client closure cancels connectivity through a separate watch
 revision, even when the command queue is full.
+
+### Attempt readiness and termination
+
+Each wireless attempt creates a fresh `Readiness` latch. `Channels::handle` emits
+`Effect::Established` only for the validated video AV START (channel 3, 0x8001)
+after setup/configuration checks; `aa_session::run` sets the latch synchronously.
+Focus/visibility effects do not establish a session. This is independent of the
+session snapshot's Streaming/Suspended value and cannot be lost through watch
+coalescing. The original 180-second setup deadline disarms permanently after
+establishment. Media navigation or a rapid stream-start/suspend does not rearm it.
+
+`Failure` carries a `Kind`, diagnostic context and an optional separate cleanup
+failure. Transport IO and version errors retain their classification through the
+session layer. Unexpected transport/network loss and selected setup timeouts may
+retry; cancellation, revocation, protocol/TLS or configuration/permission rejection
+do not. Uncertain cleanup blocks replacement regardless of the initiating kind.
+The exclusive USB/Wi-Fi lease spans attempts, backoff and completed cleanup.
+
+Before native media teardown, the failure is logged and shown with cleanup pending.
+The original cause survives an AP/guard cleanup failure. Cleanup is awaited; an
+async deadline does not preempt synchronous FFI or authorize abandoning a worker.
+Requested display/connectivity settings remain pending while the active session
+keeps its frozen configuration. AA Exit affects presentation only, whereas an
+explicit Disconnect terminates connection intent, including during backoff.
+
 [Wireless runbook](wireless.md) specifies framing, security assumptions, reference
-revisions, AP ownership, service-loss behavior and incomplete hardware acceptance.
+revisions, AP ownership, retry policy and security limitations.

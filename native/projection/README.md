@@ -1,36 +1,22 @@
-# Argo projection native boundary
+# Native projection boundary
 
-This directory contains two independently deployable pieces:
+`argo-projectiond` owns Android Auto USB/Wi-Fi transport, TLS, channel state,
+Bluetooth bootstrap, AP ownership and native PCM playback. The separate
+`argo-projection-view` library decodes the daemon's native video feed and supplies
+IHS platform-view buffers. Video/PCM never cross Dart control IPC.
 
-- `argo-projectiond`: the projection-protocol sidecar and bounded, versioned
-  control IPC. USB transport and the Android Auto session engine are separate.
-- `argo-projection-view`: an out-of-tree ivi-homescreen platform-view producer.
-  It queries capabilities, never switches on an embedder backend name, and
-  implements the required per-view renegotiation callback.
+IPC v5 carries bounded session/configuration/metadata/connectivity messages.
+The daemon owns external identity; per-session display/audio settings are frozen.
+USB and Wi-Fi share one engine and an exclusive session lease. A validated video
+AV START latches wireless readiness independently of visible/suspended presentation.
+Internal typed failures determine bounded retries; uncertain cleanup prevents replacement.
 
-Media does not cross the Dart control socket. The implemented native video path is:
+The native view checks host capabilities and actual EGL/Vulkan device support,
+converts H.264 to RGB with GStreamer and exports supported linear DMA-BUFs.
+SHM requires a real granted buffer. PCM uses separate bounded GStreamer pipelines
+with GstSystemClock and normal PipeWire synchronization.
 
-```text
-argo-projectiond media socket -> GStreamer -> argo-projection-view -> IHS grant
-```
-
-The view discovers the active EGL/Vulkan render device and exports native
-linear RGB DMA-BUFs after verifying IHS format/modifier support. It prefers
-texture import, then a DRM plane, then SHM only when a real SHM buffer is
-provided. The audited local IHS advertises SHM without allocating its buffer;
-that case fails explicitly. H.264 decode and RGB conversion use GStreamer;
-NV12 is never assumed importable as RGB. Native PCM playback uses separate
-GStreamer/PipeWire pipelines and metadata-only Argo focus gains.
-
-No Android Auto certificate or private key is included. The hardware-proven
-USB/version path now continues into memory TLS 1.2, service discovery and AV
-channels. Identity files are configured and loaded only by the daemon, under the existing
-TLS compatibility checks. IPC v5 carries readiness/capabilities and revisioned
-display requests, never client credential paths. Active phone configuration is
-frozen; later Argo preferences apply on the next phone connection.
-Read the runbook's narrow USB peer-trust policy before deployment.
-
-See [the checkpoint runbook](../../tool/projection/README.md) for build,
-permissions, standalone debugging, the exact homescreen launch, and the
-remaining touch/reconnect/endurance acceptance. Current user-verified VM video/audio
-and outstanding host limitations are tracked in [audit status](../../docs/status.md).
+- [Build and dependency reference](../../tool/projection/README.md)
+- [Session ownership and IPC](../../docs/architecture.md)
+- [Wireless admission and lifecycle](../../docs/wireless.md)
+- [Compatibility limits](../../docs/status.md)

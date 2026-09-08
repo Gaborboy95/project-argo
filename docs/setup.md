@@ -1,132 +1,130 @@
 # Setup and running
 
-Read [configuration](configuration.md) before reusing a terminal with old exports.
-Examples deliberately disable host power. Installing dependencies is a separate
-administrator action; run Argo, homescreen and the daemon as your desktop user.
+Argo runs as a desktop user account. Use the existing toolchains, dependency
+checkouts and installed configuration; normal application builds do not update
+Flutter Engine, IHS, Veloce or system services. See [configuration](configuration.md)
+for inherited environment effects and [compatibility](status.md) for tested scope.
 
-## Environments and dependencies
+## Reference layout and dependencies
 
-The exercised environment is Ubuntu 24.04 in VMware, x86_64, Wayland/EGL IHS,
-GStreamer 1.24.2 and PipeWire. Windows/Codex can edit Dart/Rust/C++ and run suitable
-Dart tests with a matching SDK; it does not validate Linux USB, SocketCAN,
-PipeWire, GBM or the IHS native library. No Windows projection acceptance or
-real target-vehicle hardware acceptance is recorded. The standard Flutter Linux
-GTK runner is useful for shell/simulation work, but does not provide IHS's custom
-platform-view contract.
-
-Established layout:
+The commands use this layout; adjust paths before running them:
 
 ```text
-$HOME/dev/
-  argo/                       this checkout
-  veloce/                     pubspec path dependencies, independently maintained
-  infotainment/               emb workspace, Flutter SDK, engine and bundles
-  ivi-homescreen/              IHS source, not an Argo fork
-  ivi-build/out/usr/local/     matching IHS headers, libihs_shared.so, bin/homescreen
+$HOME/dev/argo/                       Argo checkout
+$HOME/dev/veloce/                     sibling Lua packages from pubspec.yaml
+$HOME/dev/infotainment/               emb workspace, Flutter SDK/Engine, bundles
+$HOME/dev/ivi-homescreen/              IHS source with the required local patch
+$HOME/dev/ivi-build/out/usr/local/     matched IHS executable, headers and library
 ```
 
-`pubspec.yaml` requires Dart `^3.13.2` and sibling Veloce core/native packages.
-Use the workspace Flutter SDK paired with its engine; do not substitute a random
-stable SDK when compiling an AOT bundle. The locally installed SDK reports Flutter 3.47.2 / Dart 3.13.2. The audited Flutter revision is
-`d3b14c876900e553bc736ca19295fc09e3853e8e`; workspace setup selects engine
-`a804b261645ef8c13eb3d5c44a5c2fb0340c5539`. Dependency setup/provisioning is outside
-this repository; do not download/update them as an ordinary Argo build step.
-Veloce's native Lua library and SQLite must be available even with an empty plugin
-root. The sibling package's build instructions are in
-`../veloce/packages/veloce_lua_native/README.md` relative to the Argo checkout.
-
-The ordinary Linux desktop runner also requires the Flutter Linux compiler/tooling
-and GTK3 development package (`libgtk-3-dev`); `linux/CMakeLists.txt` resolves
-`gtk+-3.0` through pkg-config. This is separate from IHS bundle execution.
-
-For the native projection view: CMake 3.20+, Ninja, a C++20 compiler, pkg-config,
-matching IHS headers/library, GBM/EGL/Vulkan development libraries and GStreamer
-core/app/video development packages. For the daemon: Rust 1.88+ (edition 2024),
-Cargo, OpenSSL for identity validation/test tooling, and optional Linux USB/media
-features. The [projection runbook](../tool/projection/README.md) lists Ubuntu
-packages and exact native build commands. Do not rebuild Flutter Engine or IHS
-for ordinary Dart or native-view changes. An existing IHS build must have the
-compositor/platform-view support required by Argo, including `BUILD_COMPOSITOR`.
-
-## Desktop and simulation
-
-Start a fresh Bash shell and define paths. Loading workspace setup can change
-`PATH`, `PUB_CACHE`, `XDG_CONFIG_HOME` and the effective default settings location.
+Set the shared paths in a development terminal:
 
 ```bash
 export ARGO="$HOME/dev/argo"
-export FLUTTER_WORKSPACE="${FLUTTER_WORKSPACE:-$HOME/dev/infotainment}"
+export FLUTTER_WORKSPACE="$HOME/dev/infotainment"
+export IHS_PREFIX="$HOME/dev/ivi-build/out/usr/local"
 source "$FLUTTER_WORKSPACE/setup_env.sh"
 cd "$ARGO"
+```
+
+The setup script supplies the workspace SDK, cache and Engine selection; it also
+changes XDG_CONFIG_HOME, which affects the default settings location. Use a matching
+SDK/Engine for AOT builds. `pubspec.yaml` requires Dart ^3.13.2 and sibling Veloce
+core/native packages. Native Lua and SQLite libraries are required even when no
+plugins are loaded. Their build instructions are in the sibling package README.
+
+Linux projection needs the Rust toolchain, pkg-config, GStreamer core/app/video,
+H.264 decode plugins and PipeWire/WirePlumber. USB uses nusb; wireless requires
+BlueZ, NetworkManager, iw, polkit and nftables. The stock Flutter Linux runner
+additionally needs GTK3 development packages and Flutter desktop tooling.
+It does not supply IHS platform views. The
+[projection build reference](../tool/projection/README.md) specifies the exact local
+IHS patch, dependency revisions, build commands and native rendering requirements.
+
+## Desktop and simulation
+
+After installing the required SDK and sibling packages, resolve Dart dependencies
+when needed, then run the shell with hardware actions disabled:
+
+```bash
 flutter pub get
 export ARGO_HOST_POWER_BACKEND=disabled ARGO_AUDIO_BACKEND=disabled
 export ARGO_PROJECTION_BACKEND=disabled ARGO_PROJECTION_RENDER_TEST=0
-export ARGO_VEHICLE_PROFILE=generic
+export ARGO_VEHICLE_PROFILE=generic ARGO_MODE=production
 unset ARGO_VEHICLE_INTEGRATIONS_DIR ARGO_SIMULATION_SCENARIO VELOCE_CAN_INPUT
-export ARGO_MODE=production
 flutter run -d linux --no-enable-impeller
 ```
 
-Normal mode without CAN fails closed for CAN I/O; it does not generate telemetry.
-To exercise synthetic signals and decoder plugins, use the
-[example integration workflow](../tool/vehicle_integrations/README.md).
-`ARGO_MODE=simulation` selects in-memory CAN with writes disabled even if a
-SocketCAN variable was inherited. A scenario may contain CAN frames and/or
-normalized signals; see the checked-in [scenarios](../tool/simulation).
+Production mode without CAN does not synthesize telemetry. For synthetic signals,
+use [example integrations](../tool/vehicle_integrations/README.md). Simulation replaces
+CAN with read-only in-memory input, not every host backend. Keep power explicitly
+disabled. [Audio](../tool/audio/README.md) and [host-power](../tool/host_power/README.md)
+workflows describe their scoped opt-ins and fake-systemctl tests.
 
-For vcan, use an already provisioned `vcan0` interface and installed `can-utils`.
-Select `ARGO_MODE=production`, `VELOCE_CAN_INPUT=socketcan`,
-`VELOCE_SOCKETCAN_INTERFACE=vcan0`, `VELOCE_CAN_BUS=comfort`, and
-`VELOCE_CAN_WRITE_ENABLED=false`; retain disabled host power. Running
-`cansend vcan0 280#0BB8` with the example decoder represents synthetic 3000 RPM.
-Argo does not create network interfaces. The [power runbook](../tool/host_power/README.md)
-contains an explicit fake-systemctl suspend/resume exercise, not a requirement
-for routine simulation. Never substitute a real vehicle bus into synthetic examples.
+## Projection launch
 
-## Release bundle and IHS
+Use a staged release containing a matching IPC v5 application and daemon; Argo does
+not spawn the daemon. `ARGO_WIRELESS_BUNDLE` selects it through the existing
+[launcher](../tool/connectivity/run-release.sh). Its fallback path is a local
+convenience; deployments should select their release explicitly from its manifest.
 
-Use the [native view and bundle workflow](../tool/projection/README.md#build-the-native-view-and-argo-bundle)
-for explicit emb output, native-library staging and matching IHS paths. It is
-also the packaging workflow for a non-projection IHS run; disable projection at
-launch. The executable is `$HOME/dev/ivi-build/out/usr/local/bin/homescreen`.
-There is no assumed globally installed `ivi-homescreen` command.
+Stop the previous app/daemon before switching. Set ARGO_WIRELESS_BUNDLE to the
+absolute directory produced by the [staging workflow](../tool/projection/README.md#daemon-build-and-safe-staging)
+in **both** desktop terminals. A bundle directory is not the executable path.
 
-Check and stop your previous homescreen before staging: replacing a loaded
-`.so` in place is unsafe. Keep IHS include files, shared library and executable
-from the same build. Do not set global `PKG_CONFIG_SYSROOT_DIR` for system-installed
-GStreamer; pass staged IHS include/library paths directly to CMake.
+Terminal 1 — identity belongs only to the daemon:
 
-## Projection workflows
+```bash
+: "${ARGO_WIRELESS_BUNDLE:?Set the absolute path of the selected release bundle}"
+: "${ARGO_ANDROID_AUTO_CERT_FILE:?Set the existing external PEM certificate path}"
+: "${ARGO_ANDROID_AUTO_KEY_FILE:?Set the existing external PKCS#8 PEM key path}"
+export ARGO_WIRELESS_BUNDLE ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
+export ARGO_WIRELESS_DEVELOPMENT=1
+"$HOME/dev/argo/tool/connectivity/run-release.sh" daemon
+```
 
-- [Standalone daemon and complete wired launch](../tool/projection/README.md#one-real-device-workflow):
-  separate terminals, matching socket resolution and identity paths only in the
-  daemon terminal. Start homescreen with both identity variables explicitly unset.
-  Argo connects to the daemon; it does not spawn or supervise it.
-- [Phone-independent renderer](../tool/projection/README.md#phone-independent-native-renderer-diagnostic):
-  from the Argo root run `tool/projection/run_renderer_test.sh`. It builds a
-  dedicated release bundle, clears inherited integrations/sockets/credentials,
-  disables real backends and captures `/tmp/argo-renderer-test.log`.
-- [Measured fullscreen geometry](../tool/projection/README.md#fullscreen-presentation-geometry):
-  run `ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1 tool/projection/run_renderer_test.sh`,
-  then select Home. Opt-in geometry logs report actual physical dimensions. The
-  launcher requests a 1280×720 window using the installed CLI's supported flags;
-  use the measured destination after any desktop/window resizing.
+Terminal 2 — application and view:
 
-A standalone protocol success does not test presentation; bars do not test TLS,
-USB or audio. Neither substitutes for phone acceptance.
+```bash
+: "${ARGO_WIRELESS_BUNDLE:?Select the same release directory as terminal 1}"
+export ARGO_WIRELESS_BUNDLE
+unset ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
+"$HOME/dev/argo/tool/connectivity/run-release.sh" app
+```
 
-## Logs and shutdown
+The launcher selects LIVE/production Android Auto, dedicated IPC/media sockets,
+IHS paths, native-view and Lua libraries. It refuses a second daemon/homescreen and
+requires a desktop XDG_RUNTIME_DIR. It does not provision identity, install the
+firewall helper or enable wireless. Follow [pairing and connection](wireless.md#pairing-and-connection)
+after launch. Credentials must already exist; Argo does not provide a phone-accepted
+self-signed provisioning recipe.
 
-Use `set -o pipefail` when piping a foreground command through `tee`. Daemon logs
-are normally `/tmp/argo-projectiond.log`, complete-launch IHS output
-`/tmp/argo-homescreen.log`; choose different paths if preserving an earlier run.
-Application diagnostics also feed the in-process diagnostics service; plugin
-signal tracing is separately opt-in. See [log configuration](configuration.md).
+For wired operation, omit/unset ARGO_WIRELESS_DEVELOPMENT in terminal 1, leave
+wireless disabled and connect USB data. USB device permissions must cover both
+normal and accessory modes. The launcher and session engine are otherwise shared.
 
-Close the app normally or use Ctrl+C/SIGTERM on the owned foreground process.
-The daemon handles Ctrl+C/SIGTERM and closes its session/sockets. Application
-cleanup is coordinated on supported shutdown callbacks; forced kills cannot
-promise settings flush. Before deleting a suspected stale socket, inspect
-`pgrep -af argo-projectiond`, `pgrep -a homescreen` and `ss -xlpn`, confirm its
-path, owner and absence of a live listener. Never delete a live process's socket
-or kill every similarly named process. See [known failures](status.md).
+## Shutdown and rollback
+
+Close the app normally and stop the owned foreground daemon with Ctrl+C/SIGTERM.
+Wireless cancellation waits for media/AP cleanup; do not interpret a pending cleanup
+message as completed shutdown. An async timeout cannot interrupt synchronous native
+FFI. Forced termination cannot guarantee settings flush or graceful resource release.
+
+Keep the previous release directory and its manifest. To roll back, stop both current
+processes, set ARGO_WIRELESS_BUNDLE to the previous compatible IPC v5 bundle in both
+terminals, and relaunch. Older IPC v4 wired bundles require their corresponding
+application/daemon workflow; never mix IPC versions. Do not overwrite loaded binaries.
+
+Before removing a stale socket, inspect `pgrep -af argo-projectiond`,
+`pgrep -a homescreen` and `ss -xlpn`; verify the exact path and absence of a live owner.
+For an uncertain wireless AP/guard, use the [owned cleanup procedure](wireless.md#permissions-and-helper-installation).
+Do not delete unrelated profiles or restart Bluetooth/NetworkManager as routine cleanup.
+
+## Diagnostics
+
+The daemon writes to stderr with ARGO_PROJECTION_LOG_LEVEL filtering. The launcher
+does not automatically save a log. To capture one, pipe the foreground command through
+`tee` with Bash `set -o pipefail`, using a new output path for each investigation.
+The application has its own diagnostics service; Lua host-state tracing is opt-in.
+The [renderer diagnostic](../tool/projection/README.md#phone-independent-native-renderer-diagnostic)
+checks native presentation without a phone, independently of USB/TLS/audio acceptance.

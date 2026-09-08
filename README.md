@@ -1,63 +1,47 @@
 # Project Argo
 
-Project Argo is a Flutter infotainment development application. Its public code
-is vehicle-agnostic: external vehicle bundles supply identity, capability
-metadata and Lua decoding/policy plugins. The built-in `generic` profile needs
-no vehicle bundle. Synthetic examples in `tool/` are not real vehicle protocols.
+Argo is a vehicle-agnostic Flutter infotainment application with Android Auto
+projection, native Now Playing, persistent settings and Lua vehicle integrations.
+External vehicle bundles supply identity, capability metadata, decoding and policy;
+the built-in `generic` profile runs without a vehicle bundle.
 
-Flutter owns UI and application services. Veloce runs Lua plugins and mediates
-normalized vehicle signals, CAN, events and plugin storage. On Linux, the
-separate Rust `argo-projectiond` handles Android Auto USB/Wi-Fi/TLS/protocol and
-native audio delivery. The IHS projection-view library decodes video with
-GStreamer and submits native frames to the existing ivi-homescreen compositor.
-Video and PCM do not pass through Dart. AA credentials are loaded only by the
-daemon; the Flutter client reports readiness and selected/pending configuration
-through IPC v5. The user confirms the Mu wired baseline works after the native
-audio-clock fix at `7173f2e`; this work preserves that baseline and local IHS fix.
+Flutter owns the UI and application services. The Rust `argo-projectiond` daemon
+owns Android Auto USB/Wi-Fi transport, Bluetooth bootstrap, TLS and native audio.
+An IHS platform view decodes video with GStreamer and presents it through the
+ivi-homescreen compositor. Media bytes stay outside Dart control IPC. Veloce hosts
+Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 
-## Current scope
+## Capabilities
 
-Implemented: module navigation, typed persistent settings (including next-session projection preferences), normalized vehicle
-telemetry/power state, external bundle discovery, Veloce plugin lifecycle,
-simulation scenarios, opt-in SocketCAN, audio policy with default-sink
-volume/mute through `wpctl`, and opt-in systemd host power control. Home presents fullscreen wired Android Auto (or the phone-independent native
-renderer diagnostic); Media is a native, read-only Now Playing page. Climate
-and Parking are placeholders; their navigation entries are not working controls.
+- Wired and wireless Android Auto using one video/audio/input/metadata engine.
+- Shared Bluetooth pairing and device selection; controlled projection AP with
+  saved 2.4/5 GHz band selection and current regulatory checks.
+- Home projection and Media/Now Playing with session-preserving AA Exit and resume.
+- Material 3 light/dark/system appearance, seed color and persistent settings.
+- Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
+  explicitly enabled host power integration.
+- External vehicle bundles and permission-controlled Lua host-state reads through
+  `argo_host.snapshot()`.
 
-Projection remains experimental. The user has verified visible native bars and
-live wired Android Auto video/audio on Ubuntu VMware through unmodified IHS.
-The latest gesture fixes have automated coverage but have not yet been tested
-with a phone. Expanded presentation reached 1280 × 720 physical pixels at DPR 1;
-the user reported clean bars at that size. Target-vehicle hardware acceptance,
-reconnect endurance and live-AA quality at 1:1 are not established. An outstanding
-IHS release-eventfd leak was identified in the original host. A separately
-authorized local Wayland-EGL IHS patch is now staged; see the bounded validation
-and remaining acceptance limits in [status](docs/status.md#local-ihs-wayland-egl-descriptor-fix).
-
-A development wireless AA path and shared BlueZ/NM connectivity are implemented
-for operator testing; [wireless setup and acceptance](docs/wireless.md) distinguish
-code verification from unperformed phone acceptance. Working microphone capture,
-CarPlay, playback controls, customization and plugin-rendered application tabs
-or settings are not completed features. Some protocol enums and microphone
-channel scaffolding exist; they do not establish end-to-end support.
-
-Read-only AA track/playback and optional phone state now flow through a shared
-media service and permission-checked `argo_host.snapshot()` Lua API. Parser and
-native-Lua fixtures are verified. The user confirmed real-phone title/playback
-reaching Lua (`androidAuto/usb | Android | Without You | playing`). Battery, full
-UI/Lua sequencing and the new Exit → Media → Home cycle still need acceptance.
-Media uses a neutral music-art placeholder; artwork delivery is not implemented.
+Wireless startup has been tested on LattePanda Mu with Debian 13 and KDE Wayland.
+Wired projection and native rendering have also been exercised on Linux. Wireless
+admission is development-only and does not cryptographically bind TCP identity to
+Bluetooth identity. Full compatibility, endurance and lifecycle hardware validation
+remain limited. Pairing/bootstrap is not Bluetooth music or full calling support;
+wallpaper/shaders and microphone capture are not implemented.
 
 ## Documentation
 
-- [Setup and running](docs/setup.md): desktop, VM, bundles and existing runbooks.
-- [Architecture and extension points](docs/architecture.md): ownership and boundaries.
-- [Configuration reference](docs/configuration.md): runtime variables and typed settings.
-- [External integrations and Lua plugins](docs/vehicle-integrations.md).
-- [Acceptance, troubleshooting and limitations](docs/status.md).
-- [Contributor guidance](CONTRIBUTING.md).
+- [Setup and launch](docs/setup.md): dependencies, desktop development, projection
+  launch, shutdown and rollback.
+- [Architecture](docs/architecture.md): ownership, lifecycle and extension boundaries.
+- [Configuration](docs/configuration.md): environment, settings, defaults and timing.
+- [Wireless Android Auto](docs/wireless.md): pairing, AP, admission, retry and diagnosis.
+- [Compatibility and limitations](docs/status.md): tested scope and unsupported work.
+- [Projection build reference](tool/projection/README.md): matching SDK/IHS requirements,
+  safe daemon staging, native-view build and renderer diagnostics.
+- [Vehicle and Lua integrations](docs/vehicle-integrations.md): APIs, permissions and
+  examples. [Contributing](CONTRIBUTING.md) covers repository conventions.
 
-Implementation audited at `ee08a138cdadaa361706c0e46b89974fd5e8aad3` on
-2026-09-06. These documents describe that checkout, not a released product.
-Dependency revisions and the distinction between code, tests and user acceptance
-are recorded in the [audit status](docs/status.md).
+Synthetic workflows: [vehicle bundles](tool/vehicle_integrations/README.md),
+[audio control](tool/audio/README.md), [host power](tool/host_power/README.md).
