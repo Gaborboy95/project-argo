@@ -128,3 +128,7 @@ does not automatically save a log. To capture one, pipe the foreground command t
 The application has its own diagnostics service; Lua host-state tracing is opt-in.
 The [renderer diagnostic](../tool/projection/README.md#phone-independent-native-renderer-diagnostic)
 checks native presentation without a phone, independently of USB/TLS/audio acceptance.
+
+Wireless firewall authorization is provisioned once using the explicit
+[administrator enrollment](wireless.md#permissions-and-helper-installation).
+Application and daemon continue running without root privileges.

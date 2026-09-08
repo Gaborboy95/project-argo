@@ -79,18 +79,33 @@ ip route
 Inspect the discovered phy with `iw phy <phy-name> info`. These CLIs are inspection
 tools; BlueZ and NM D-Bus interfaces are the production control APIs.
 
-The [firewall helper](../tool/connectivity/argo-projection-firewall) must be reviewed
-and installed by an administrator. Installation is explicit and privileged:
+The root-owned [firewall helper](../tool/connectivity/argo-projection-firewall) is
+provisioned explicitly by an administrator. Stop Argo and complete AP cleanup first;
+then select the discovered projection interface and enroll the desktop account:
 
 ```bash
-sudo install -d -m 755 /usr/local/libexec
-sudo install -o root -g root -m 755 "$HOME/dev/argo/tool/connectivity/argo-projection-firewall" \
-  /usr/local/libexec/argo-projection-firewall
+: "${PROJECTION_INTERFACE:?Set the discovered projection Wi-Fi interface}"
+sudo /usr/bin/python3 -I "$HOME/dev/argo/tool/connectivity/install-permissions.py" \
+  --account "$USER" --interface "$PROJECTION_INTERFACE"
 ```
 
-Connect/cleanup invoke the fixed helper via pkexec. No blanket passwordless rule
-is required. BlueZ/NM operations also need the desktop account's D-Bus/polkit
-permissions. Denial is reported rather than bypassed.
+The idempotent installer owns `/etc/argo/projection-firewall.json`, the fixed helper,
+a dedicated polkit action and a rule for the `argo-connectivity` group. Only local,
+active enrolled accounts can execute that exact helper without a password. The
+helper itself accepts only start/stop for administrator-approved interfaces and its
+own deterministic nftables tables; runtime accounts cannot edit these files.
+Log out/in after enrollment. No service restart, password storage, generic pkexec
+permission, sudo cache or broad NetworkManager grant is involved.
+
+BlueZ/NM keep their existing desktop D-Bus permissions. Inspect `nmcli general
+permissions` before adding any separate policy: network control, owned profile
+modification and protected shared Wi-Fi are available to the reference desktop
+account. The installer adds no NM grant.
+
+After enrollment, verify repeated Connect/Disconnect/cleanup after cached desktop
+authorizations expire. `pkexec --disable-internal-agent` with an unapproved interface
+must fail inside the helper; a non-enrolled account must fail polkit authorization.
+These are installation/hardware checks, separate from input-validation tests.
 
 Cleanup stops only the owned activation and input guard. A partial activation
 failure closes its attempt-local D-Bus owner. If activation/deactivation is uncertain,
@@ -103,8 +118,17 @@ the narrowly scoped manual guard removal is:
 sudo /usr/local/libexec/argo-projection-firewall stop "$PROJECTION_INTERFACE"
 ```
 
-Removing the installed helper after disabling wireless and completing cleanup is
-an administrator rollback action. Keep unrelated profiles, bonds and firewall rules.
+After stopping Argo, uninstall the grant/helper and its owned guards explicitly:
+
+```bash
+sudo /usr/bin/python3 -I "$HOME/dev/argo/tool/connectivity/install-permissions.py" --uninstall
+```
+
+Uninstall removes enrolled group memberships but leaves the empty group, unrelated
+profiles, bonds and firewall rules. To resume an older bundle, reinstall the scoped
+helper before wireless use; rollback does not require restoring generic password
+prompts. Complete cleanup with the old helper before first upgrading from an
+ifindex-named guard; the new helper never deletes unrelated or legacy tables.
 
 ## Startup and session lifetime
 
