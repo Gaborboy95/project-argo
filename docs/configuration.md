@@ -215,3 +215,23 @@ on the next connection. Enable/Connect are explicit and never restored at launch
 The daemon gate `ARGO_WIRELESS_DEVELOPMENT=1` permits the development admission
 policy but does not enable wireless, start discovery, register AA or create an AP.
 See [security, permissions, launch and rollback](wireless.md).
+
+## Bluetooth music and media ownership
+
+Bluetooth music uses the same IPC v5 connectivity envelope with an optional `music`
+capability/state object, generation-scoped requests and operation acknowledgements.
+Use a matched release: an older daemon without this object has no music controller.
+There is no new media payload channel or Lua write permission.
+
+`ARGO_PROJECTION_BACKEND=disabled` selects a connectivity-only client on Linux and
+disables native projection admission; shared pairing/music remain available. The
+normal launcher respects this setting. With `android-auto`, absent/invalid daemon
+identity prevents AA startup but does not disable Bluetooth. Neither mode starts
+music until an explicit connection request. Selected entertainment source and its
+bounded connection intent are session-local, not persistent auto-connect settings.
+
+Administrator-approved firewall interfaces/accounts are stored only in root-owned
+`/etc/argo/projection-firewall.json`; the runtime cannot edit the helper or polkit
+grant. The per-account A2DP routing opt-in requires logout/login and does not change
+Bluetooth roles or codecs. See [Media setup](media.md#setup-and-use) and the
+[permission installer](wireless.md#permissions-and-helper-installation).

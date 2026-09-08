@@ -188,15 +188,15 @@ unknown; arrays are Lua sequence tables):
 | `schemaVersion` | Integer `1`. |
 | `epoch`, `revision` | Opaque Argo-runtime epoch and increasing cache revision. Compare as a pair; reset local observations when epoch changes. Never compare revisions across process restarts. |
 | `updatedAtMs` | UTC Unix milliseconds when Argo's cached snapshot changed; not a phone clock or media playhead. |
-| `available` | Projection backend availability; true is not a claim that a phone or track exists. |
+| `available` | Projection backend availability or an available media source; true is not a claim that a projection phone or track exists. |
 | `projection.activeSessionId` | Existing selected projection ID, independent of media selection. |
 | `projection.sessions[]` | Current nonfailed, nondisconnected sessions: `sessionId`, `deviceId`, `protocol`, `transport`, `state`, `deviceName`, nullable `manufacturer`, nullable `model`. Device name falls back to the existing generic device descriptor when the phone has not supplied one. |
 | `media.activeSourceId` | Selected media-source ID, or nil. |
-| `media.sources[]` | `sourceId`, `sourceKind`, `sessionId`, `deviceId`, `revision`, `updatedAtMs`, nullable `title`, `artist`, `album`, `application`, `positionMs`, `durationMs`, plus `playbackState`. |
+| `media.sources[]` | `sourceId`, `sourceKind`, `sessionId`, `deviceId`, `revision`, `updatedAtMs`, nullable `title`, `artist`, `album`, `application`, `positionMs`, `durationMs`, plus `playbackState`, optional `displayName` and implemented `commands`. |
 | `phones[]` | Session/device IDs, nullable `batteryPercent`, `criticalBattery`, `charging`, `revision`, `updatedAtMs`. Revision/time describe the originating session-metadata snapshot, not a separate battery sample clock; time is nil before any metadata has arrived. |
 
-Protocol values are `androidAuto`/`carPlay`, transport `usb`/`wifi`. Only wired AA
-is implemented. Playback values are `unknown`, `stopped`, `playing`, `paused`,
+Protocol values are `androidAuto`/`carPlay`, transport `usb`/`wifi`. Wired and wireless AA are implemented. Bluetooth music appears as a separate
+media source kind, not a projection session. Playback values are `unknown`, `stopped`, `playing`, `paused`,
 `error`. Positions/durations are integer **milliseconds**, only reported values;
 no playhead interpolation or periodic packet-frequency updates occur. The AA
 source currently has no verified duration or device-model mapping, and charging

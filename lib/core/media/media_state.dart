@@ -101,7 +101,11 @@ final class MediaSourceState {
     required this.details,
     required this.revision,
     required this.updatedAtMs,
+    this.commands = const [],
+    this.displayName,
   });
+  final List<String> commands;
+  final String? displayName;
   final String id, deviceId, sessionId;
   final MediaSourceKind kind;
   final MediaDetails details;
@@ -113,9 +117,19 @@ final class MediaSourceState {
       kind == other.kind &&
       deviceId == other.deviceId &&
       sessionId == other.sessionId &&
-      details == other.details;
+      details == other.details &&
+      displayName == other.displayName &&
+      commands.join(',') == other.commands.join(',');
   @override
-  int get hashCode => Object.hash(id, kind, deviceId, sessionId, details);
+  int get hashCode => Object.hash(
+    id,
+    kind,
+    deviceId,
+    sessionId,
+    details,
+    displayName,
+    commands.join(','),
+  );
 }
 
 final class MediaSessionSnapshot {

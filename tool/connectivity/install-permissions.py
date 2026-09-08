@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--account')
     parser.add_argument('--interface', action='append', default=[])
     parser.add_argument('--uninstall', action='store_true')
+    parser.add_argument('--bluetooth-audio', action='store_true', help='Also install per-account Argo A2DP routing opt-in')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run this installer once with administrator approval (sudo)')
@@ -65,6 +66,9 @@ def main():
             parser.error('Every approved interface must be an existing Wi-Fi interface')
     if not shutil.which('nft') or not shutil.which('pkexec'):
         parser.error('Install nftables and polkit before provisioning')
+    tables = json.loads(subprocess.check_output(['/usr/sbin/nft', '-j', 'list', 'tables']))
+    if any(entry.get('table', {}).get('name', '').startswith('argo_projection_') for entry in tables['nftables']):
+        parser.error('Stop projection and complete guard cleanup before installing/upgrading permissions')
     try:
         grp.getgrnam(GROUP)
     except KeyError:
@@ -97,6 +101,9 @@ polkit.addRule(function(action, subject) {{
 }});
 '''.encode(), 0o644)
     subprocess.run(['/usr/sbin/usermod', '-a', '-G', GROUP, args.account], check=True)
+    if args.bluetooth_audio:
+        script = Path(__file__).resolve().parent.parent / 'audio/install-bluetooth-routing.py'
+        subprocess.run(['/usr/sbin/runuser', '-u', args.account, '--', '/usr/bin/python3', '-I', str(script)], check=True)
     print('Installed. Log out/in to refresh group membership. No services restarted.')
 
 

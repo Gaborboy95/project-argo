@@ -132,3 +132,9 @@ checks native presentation without a phone, independently of USB/TLS/audio accep
 Wireless firewall authorization is provisioned once using the explicit
 [administrator enrollment](wireless.md#permissions-and-helper-installation).
 Application and daemon continue running without root privileges.
+
+Bluetooth music uses the same matched release and launcher, including when projection
+is disabled. Apply the explicit [Bluetooth routing opt-in](media.md#setup-and-use)
+before connecting music. No Engine, IHS or native-view rebuild is needed for an
+application/daemon-only release; preserve those compatible native assets from the
+working bundle while replacing the application build and daemon.

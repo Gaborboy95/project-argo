@@ -53,7 +53,11 @@ void main() {
       expect(backend.connectivity.available, isTrue);
       expect(backend.connectivity.enabled, isFalse);
       expect(backend.connectivity.prompt!.device, 'hci0/02:00:00:00:00:01');
-      expect(transport.sent.length, 1); // No automatic pairing confirmation.
+      expect(transport.sent.length, 2);
+      expect(
+        jsonDecode(utf8.decode(transport.sent.last.payload))['action'],
+        'projectionEnabled',
+      ); // No automatic pairing confirmation.
       await backend.connectivityCommand('confirm', prompt: 42, accept: false);
       expect(jsonDecode(utf8.decode(transport.sent.last.payload)), {
         'action': 'confirm',

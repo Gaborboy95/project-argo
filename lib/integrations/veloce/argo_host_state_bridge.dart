@@ -128,18 +128,21 @@ final class ArgoHostStateBridge {
     // even if its separate media notification has not reached this listener yet.
     final sources = m.sources
         .where(
-          (source) => live.any(
-            (session) =>
-                session.id == source.sessionId &&
-                session.device.id == source.deviceId,
-          ),
+          (source) =>
+              source.kind == MediaSourceKind.bluetooth ||
+              source.kind == MediaSourceKind.local ||
+              live.any(
+                (session) =>
+                    session.id == source.sessionId &&
+                    session.device.id == source.deviceId,
+              ),
         )
         .toList();
     final selected = sources.any((source) => source.id == m.activeSourceId)
         ? m.activeSourceId
         : null;
     final value = <String, Object?>{
-      'available': p.backendAvailable,
+      'available': p.backendAvailable || sources.isNotEmpty,
       'projection': {
         'activeSessionId': live.any((s) => s.id == p.activeSessionId)
             ? p.activeSessionId
@@ -166,6 +169,8 @@ final class ArgoHostStateBridge {
             {
               'sourceId': source.id,
               'sourceKind': source.kind.name,
+              'commands': source.commands,
+              'displayName': source.displayName,
               'sessionId': source.sessionId,
               'deviceId': source.deviceId,
               'revision': source.revision,

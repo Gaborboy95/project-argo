@@ -134,9 +134,8 @@ void main() {
       );
       final staleMedia = media.current;
       projection.emitDisconnected();
-      media.replace(
-        staleMedia,
-      ); // delayed provider notification cannot resurrect a removed phone
+      final delayed = media.register('delayed-fixture')
+        ..publish(1, staleMedia.sources);
 
       expect((read(nextGeneration)['media'] as Map)['sources'], isEmpty);
       expect(read(nextGeneration)['phones'], isEmpty);
@@ -146,6 +145,30 @@ void main() {
         manager.logManager.recent.lastWhere((e) => e.pluginId == id).message,
         'Host media disconnected',
       );
+      delayed.close();
+      final bluetooth = media.register('bluetooth');
+      bluetooth.publish(1, [
+        const MediaSourceState(
+          id: 'bluetooth:test',
+          kind: MediaSourceKind.bluetooth,
+          deviceId: 'bluez:device',
+          sessionId: 'bluetooth:test',
+          details: MediaDetails(
+            title: 'Bluetooth track',
+            playback: MediaPlaybackState.playing,
+          ),
+          revision: 1,
+          updatedAtMs: 1,
+          commands: ['play', 'pause'],
+        ),
+      ]);
+      media.reflectSelection('bluetooth:test');
+      final musicSources =
+          (read(nextGeneration)['media'] as Map)['sources'] as List;
+      expect((musicSources.single as Map)['sourceKind'], 'bluetooth');
+      expect((musicSources.single as Map)['title'], 'Bluetooth track');
+      expect((musicSources.single as Map)['commands'], ['play', 'pause']);
+      bluetooth.close();
       await manager.unloadPlugin(id);
       expect(
         () => read(nextGeneration),

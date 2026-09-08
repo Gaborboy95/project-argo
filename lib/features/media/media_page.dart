@@ -1,3 +1,4 @@
+import '../../core/connectivity/connectivity_service.dart';
 import '../../core/media/media_session_service.dart';
 import '../../core/media/media_state.dart';
 
@@ -10,10 +11,16 @@ import '../../core/projection/projection_service.dart';
 import '../../core/projection/projection_types.dart';
 
 class MediaPage extends StatefulWidget {
-  const MediaPage({super.key, required this.projection, this.media});
+  const MediaPage({
+    super.key,
+    required this.projection,
+    this.media,
+    this.connectivity,
+  });
 
   final ProjectionService projection;
   final MediaSessionService? media;
+  final ConnectivityService? connectivity;
 
   @override
   State<MediaPage> createState() => _MediaPageState();
@@ -57,6 +64,8 @@ class _MediaPageState extends State<MediaPage> {
       children: [
         Text('Now Playing', style: Theme.of(context).textTheme.headlineMedium),
         const SizedBox(height: 16),
+        if (widget.connectivity != null)
+          _MusicConnection(service: widget.connectivity!),
         Expanded(
           child: SingleChildScrollView(
             child: Column(
@@ -117,8 +126,44 @@ class _MediaFacts extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (media != null && media!.current.sources.isNotEmpty)
+              DropdownButton<String>(
+                value: media!.current.activeSourceId,
+                hint: const Text('Select entertainment source'),
+                isExpanded: true,
+                items: [
+                  for (final s in media!.current.sources)
+                    DropdownMenuItem(
+                      value: s.id,
+                      child: Text(
+                        '${s.kind.name} · ${s.displayName ?? s.details.application ?? "Phone"}',
+                      ),
+                    ),
+                ],
+                onChanged: (id) {
+                  if (id != null) {
+                    _action(context, () => media!.selectSource(id));
+                  }
+                },
+              ),
+            if (source != null && source.commands.isNotEmpty)
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final command in source.commands)
+                    OutlinedButton(
+                      onPressed: () => _action(
+                        context,
+                        () => media!.command(source.id, command),
+                      ),
+                      child: Text(command),
+                    ),
+                ],
+              ),
             Text(
-              live
+              source?.kind == MediaSourceKind.bluetooth
+                  ? 'Bluetooth · ${source?.displayName ?? "Phone"}'
+                  : live
                   ? '${s.device.protocol.name} / ${s.device.transport.name} · ${phone?.displayName ?? s.device.displayName}'
                   : 'No connected projection phone',
               maxLines: 1,
@@ -156,6 +201,85 @@ class _MediaFacts extends StatelessWidget {
             ),
           ],
         ),
+      );
+    },
+  );
+}
+
+void _action(BuildContext context, Future<void> Function() action) {
+  unawaited(
+    action().catchError((Object error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }),
+  );
+}
+
+class _MusicConnection extends StatefulWidget {
+  const _MusicConnection({required this.service});
+  final ConnectivityService service;
+  @override
+  State<_MusicConnection> createState() => _MusicConnectionState();
+}
+
+class _MusicConnectionState extends State<_MusicConnection> {
+  String? _phone;
+  @override
+  Widget build(BuildContext context) => StreamBuilder<ConnectivitySnapshot>(
+    stream: widget.service.connectivityChanges,
+    builder: (context, _) {
+      final state = widget.service.connectivity;
+      if (state.music == null) return const SizedBox.shrink();
+      final phones = state.devices.where((d) => d.paired).toList();
+      final selected = phones.any((d) => d.id == _phone)
+          ? _phone
+          : phones.where((d) => d.id == state.music?['device']).firstOrNull?.id;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DropdownButton<String>(
+            value: selected,
+            hint: const Text('Select paired music phone'),
+            isExpanded: true,
+            items: [
+              for (final d in phones)
+                DropdownMenuItem(value: d.id, child: Text(d.name)),
+            ],
+            onChanged: (value) => setState(() => _phone = value),
+          ),
+          Wrap(
+            spacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: selected == null
+                    ? null
+                    : () => _action(
+                        context,
+                        () => widget.service.connectivityCommand(
+                          'musicConnect',
+                          target: selected,
+                        ),
+                      ),
+                child: const Text('Connect music'),
+              ),
+              OutlinedButton(
+                onPressed: () => _action(
+                  context,
+                  () => widget.service.connectivityCommand('musicDisconnect'),
+                ),
+                child: const Text('Disconnect music'),
+              ),
+            ],
+          ),
+          Text(
+            '${state.music?['phase'] ?? ""} · ${state.music?['error'] ?? state.music?['detail'] ?? ""}',
+          ),
+          if (state.music?['cleanup_error'] != null)
+            Text('Cleanup: ${state.music?["cleanup_error"]}'),
+          const SizedBox(height: 12),
+        ],
       );
     },
   );

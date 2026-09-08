@@ -39,13 +39,44 @@ pub async fn run(
             return;
         }
     };
-    let network = match Network::open().await {
-        Ok(v) => Arc::new(v),
-        Err(e) => {
-            c.progress("unavailable", format!("NetworkManager: {e}"));
-            return;
+    // NetworkManager availability must not govern BlueZ pairing or music.
+    let network = Network::open().await.ok();
+    let (music_requests, music_rx) = mpsc::channel(16);
+    let music_cancel = c.music_cancel.clone();
+    let music_cancelled = music_cancel.subscribe();
+    let music_task = tokio::spawn(crate::connectivity::music::run(
+        bt.clone(),
+        host.clone(),
+        state.clone(),
+        music_rx,
+        shutdown.clone(),
+        music_cancelled,
+    ));
+    let inventory = async {
+        loop {
+            if let Some(network) = &network {
+                match tokio::time::timeout(Duration::from_secs(4), network.interfaces()).await {
+                    Ok(Ok(radios)) => {
+                        c.state.send_modify(|s| {
+                            if s.interface.is_empty() && radios.len() == 1 {
+                                s.interface = radios[0].id.clone();
+                            }
+                            s.networks = radios;
+                        });
+                    }
+                    _ => {
+                        c.state.send_modify(|s| {
+                            s.networks.clear();
+                            s.detail =
+                                "NetworkManager unavailable; Bluetooth remains available".into();
+                        });
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     };
+    tokio::pin!(inventory);
     let mut activity: Option<Attempt> = None;
     let mut discovery: Option<Attempt> = None;
     let mut pairing: Option<JoinHandle<()>> = None;
@@ -56,7 +87,10 @@ pub async fn run(
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
+            _ = &mut inventory => {},
             _ = client_closed.changed() => {
+                music_cancel.send_modify(|v|*v+=1);
+                let _ = music_requests.try_send(Request { generation:0, action:"musicDisconnect".into(), target:String::new(), accept:false, prompt:0 });
                 while requests.try_recv().is_ok() {}
                 if let Some(a) = activity.take() { a.stop().await; }
                 if let Some(d) = discovery.take() { d.stop().await; }
@@ -76,15 +110,19 @@ pub async fn run(
                     c.progress("unavailable", format!("{e}; restart daemon after Bluetooth recovery"));
                     break;
                 }
-                match tokio::time::timeout(Duration::from_secs(4), network.interfaces()).await {
-                    Ok(Ok(radios)) => { c.state.send_modify(|s| { if s.interface.is_empty() && radios.len() == 1 { s.interface = radios[0].id.clone(); } s.networks = radios; }); },
-                    _ => { if let Some(a) = activity.take() { a.stop().await; } c.progress("unavailable", "NetworkManager unavailable; restart daemon after service recovery"); break; }
-                }
+                tick.reset();
                 if activity.as_ref().is_some_and(|a| a.task.is_finished()) && let Some(a) = activity.take() { let _ = a.task.await; }
                 if pairing.as_ref().is_some_and(|p| p.is_finished()) && let Some(p) = pairing.take() { let _ = p.await; }
                 if discovery.as_ref().is_some_and(|d| d.task.is_finished()) && let Some(d) = discovery.take() { let _ = d.task.await; }
             }
             Some(r) = requests.recv() => {
+                if r.action.starts_with("music") {
+                    if music_requests.try_send(r).is_err() { c.state.send_modify(|s|s.detail="Bluetooth music controller busy".into()); }
+                    continue;
+                }
+                if r.action=="forget" && c.state.borrow().music.as_ref().is_some_and(|m|m.device==r.target) {
+                    let _=music_requests.try_send(Request{generation:0, action:"musicDisconnect".into(),target:r.target.clone(),accept:false,prompt:0});
+                }
                 let result = process_request(r, &bt, &host, &state, &mut activity, &mut discovery, &mut pairing).await;
                 if let Err(e) = result { c.state.send_modify(|s| s.detail = e); }
             }
@@ -100,6 +138,9 @@ pub async fn run(
         p.abort();
         let _ = p.await;
     }
+    drop(music_requests);
+    music_cancel.send_modify(|v| *v += 1);
+    let _ = music_task.await;
     bt.respond(c.state.borrow().prompt.as_ref().map_or(0, |p| p.id), false);
 }
 
@@ -116,6 +157,12 @@ async fn process_request(
     let c = &host.connectivity;
 
     match r.action.as_str() {
+        "projectionEnabled" => {
+            if !r.accept && state.borrow().session.is_some() {
+                return Err("Disconnect projection before disabling it".into());
+            }
+            host.projection_enabled.send_replace(r.accept);
+        }
         "confirm" => bt.respond(r.prompt, r.accept),
         "adapter" | "interface" | "select" | "band" => {
             let band = if r.action == "band" {
@@ -243,6 +290,10 @@ async fn process_request(
             );
         }
         "connect" => {
+            if !*host.projection_enabled.borrow() {
+                return Err("Projection is disabled; Bluetooth music remains available".into());
+            }
+
             if activity.is_some() {
                 return Err("A connection attempt/session already owns wireless".into());
             }

@@ -787,6 +787,13 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             );
             return Vec::new();
         }
+        // Entertainment selection is independent of focus/native-view ownership.
+        let mut gate_ack = control.entertainment_ack.subscribe();
+        control.entertainment.send_replace((1,false));
+        gate_ack.wait_for(|revision|*revision==1).await.unwrap();
+        assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
+        control.entertainment.send_replace((2,true));
+        gate_ack.wait_for(|revision|*revision==2).await.unwrap();
         tokio::time::advance(std::time::Duration::from_secs(240)).await;
         tokio::task::yield_now().await;
         assert!(

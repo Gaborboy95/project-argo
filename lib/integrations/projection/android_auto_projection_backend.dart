@@ -22,6 +22,7 @@ final class AndroidAutoProjectionBackend
     required this.socketPath,
     required this.preferences,
     required this.diagnostics,
+    this.connectivityOnly = false,
     ProjectionControlTransportFactory? transportFactory,
   }) : _transportFactory =
            transportFactory ?? UnixProjectionControlTransport.connect;
@@ -60,6 +61,7 @@ final class AndroidAutoProjectionBackend
     );
   }
 
+  final bool connectivityOnly;
   final String socketPath;
   ProjectionPreferences preferences;
   ProjectionConfigurationState _configuration =
@@ -143,6 +145,17 @@ final class AndroidAutoProjectionBackend
         case ProjectionIpcKind.hello:
           if (!reader.isDone) throw const FormatException('Malformed hello.');
           _hello = true;
+          unawaited(
+            connectivityCommand(
+              'projectionEnabled',
+              accept: !connectivityOnly,
+            ).catchError((Object error) {
+              diagnostics.warning(
+                'connectivity',
+                'Projection enable request failed: $error',
+              );
+            }),
+          );
           return;
         case ProjectionIpcKind.capabilities:
           _handleCapabilities(reader);

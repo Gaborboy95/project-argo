@@ -45,6 +45,7 @@ final class ConnectivitySnapshot {
     this.prompt,
     this.band,
     this.apFrequencyMhz,
+    this.music,
   });
   final bool available, enabled, discovering, wifiConnected;
   final List<ConnectivityRadio> adapters, networks;
@@ -56,12 +57,14 @@ final class ConnectivitySnapshot {
   /// Null means the daemon predates selectable AP bands.
   final String? band;
   final int? apFrequencyMhz;
+  final Map<String, dynamic>? music;
   factory ConnectivitySnapshot.fromJson(Map<String, dynamic> j) {
     List<ConnectivityRadio> radios(String key) => (j[key] as List)
         .map((r) => ConnectivityRadio(r['id'] as String, r['name'] as String))
         .toList(growable: false);
     final p = j['prompt'];
     return ConnectivitySnapshot(
+      music: j['music'] as Map<String, dynamic>?,
       available: j['phase'] != 'unavailable',
       adapters: radios('adapters'),
       networks: radios('networks'),

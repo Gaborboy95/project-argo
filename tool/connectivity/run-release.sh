@@ -7,7 +7,7 @@ argo_ihs=${IHS_PREFIX:-"$HOME/dev/ivi-build/out/usr/local"}
 : "${XDG_RUNTIME_DIR:?Launch from the logged-in desktop environment}"
 export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc5/projection.sock"
 export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc5/video.sock"
-export ARGO_MODE=production ARGO_PROJECTION_BACKEND=android-auto
+export ARGO_MODE=production ARGO_PROJECTION_BACKEND="${ARGO_PROJECTION_BACKEND:-android-auto}"
 unset ARGO_PROJECTION_RENDER_TEST
 case ${1:-} in
   daemon)
@@ -17,8 +17,7 @@ case ${1:-} in
         echo 'Stop the existing projection daemon before starting the matched release.' >&2; exit 1
       fi
     done
-    : "${ARGO_ANDROID_AUTO_CERT_FILE:?Set the same daemon-owned certificate path used for working wired AA}"
-    : "${ARGO_ANDROID_AUTO_KEY_FILE:?Set the same daemon-owned key path used for working wired AA}"
+    # Identity is required by projection only; shared Bluetooth stays available.
     exec "$argo_bundle/bin/argo-projectiond"
     ;;
   app)

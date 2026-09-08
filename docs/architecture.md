@@ -241,13 +241,22 @@ and session metadata use the same fixed AudioFormat catalog. Native endpoint sel
 
 `ProjectionSession.metadata` adds immutable `ProjectionSessionMetadata`,
 `MediaDetails` and `PhoneDetails` to the existing session model. The device/session
-IDs remain the association boundary. `ProjectionMediaSource` observes the existing
-ProjectionService and fills an application-owned `CachedMediaSessionService`;
-features use the `MediaSessionService` contract. Its selected media source is
-independent of `ProjectionSnapshot.activeSessionId`: returning to Argo does not
-stop being able to read now-playing state. The adapter currently owns the single
-projection-derived source set; a future multi-provider selector is separate work,
-not an implemented Bluetooth/local-media service.
+IDs remain the association boundary. `ProjectionMediaSource` and
+`BluetoothMediaSource` hold independent provider leases in
+`CachedMediaSessionService`. Updates/removals affect only the owning provider;
+revision checks reject stale batches and session updates. Media commands target
+only the currently selected source. Source selection waits for the native audibility
+transition and is independent of `ProjectionSnapshot.activeSessionId` or visibility.
+
+The existing daemon's Bluetooth worker consumes shared BlueZ device state and
+MediaPlayer1, while PipeWire/WirePlumber retain profile and codec ownership. A
+native acknowledged gate controls only AA entertainment; Bluetooth link ownership
+and AudioService gain/ducking prevent failed pause requests from producing overlapping
+entertainment. Network inventory is a separately polled future, so NetworkManager
+failure does not remove Bluetooth availability. A connectivity-only client remains
+available with projection disabled or identity unavailable. No additional daemon or
+Bluetooth pairing database is introduced. See [Media sources](media.md) for routing,
+installation, bounded connection intent and extension contracts.
 
 The daemon's bounded metadata parser handles track replacement separately from
 status/battery patches. It never copies artwork into state. Semantic duplicates

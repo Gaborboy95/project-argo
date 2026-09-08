@@ -94,6 +94,9 @@ async fn handle_client(
     impl Drop for ClientCleanup {
         fn drop(&mut self) {
             self.0
+                .music_cancel
+                .send_modify(|generation| *generation += 1);
+            self.0
                 .client_closed
                 .send_modify(|revision| *revision = revision.wrapping_add(1));
         }

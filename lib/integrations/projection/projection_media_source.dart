@@ -9,10 +9,13 @@ import '../../core/projection/projection_types.dart';
 /// Adapts existing projection sessions; does not own or activate a phone session.
 final class ProjectionMediaSource {
   ProjectionMediaSource(ProjectionService projection, this.media) {
+    _provider = media.register('projection');
     _subscription = projection.changes.listen(_replace);
     _replace(projection.current);
   }
   final CachedMediaSessionService media;
+  late final MediaProvider _provider;
+  int _revision = 0;
   late final StreamSubscription<ProjectionSnapshot> _subscription;
   void _replace(ProjectionSnapshot snapshot) {
     final sources = <MediaSourceState>[];
@@ -39,14 +42,11 @@ final class ProjectionMediaSource {
         );
       }
     }
-    // Media selection is independent of which projection surface is visible.
-    final selected = sources.any((s) => s.id == media.current.activeSourceId)
-        ? media.current.activeSourceId
-        : sources.firstOrNull?.id;
-    media.replace(
-      MediaSessionSnapshot(sources: sources, activeSourceId: selected),
-    );
+    _provider.publish(++_revision, sources);
   }
 
-  Future<void> close() => _subscription.cancel();
+  Future<void> close() async {
+    await _subscription.cancel();
+    _provider.close();
+  }
 }

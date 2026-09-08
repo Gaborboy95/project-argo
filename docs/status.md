@@ -7,7 +7,7 @@
 | Application | Retained module navigation, typed persistent settings, diagnostics and lifecycle cleanup. |
 | Appearance | Material 3 light/dark/system modes and seed color; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. |
-| Media | Native video and PCM audio, touch input, bounded phone/track metadata, Now Playing and read-only Lua host state. |
+| Media | Native video/PCM, touch, AA and Bluetooth metadata, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -34,6 +34,15 @@ A short renderer run is not long-term phone/media endurance validation.
 
 ## Experimental and untested behavior
 
+Bluetooth music has automated provider/control/gate coverage and an isolated
+PipeWire link-lifetime check. The inspected reference desktop uses BlueZ 5.82,
+PipeWire 1.4.2 and WirePlumber 0.5.8. Actual phone reception, command support,
+AA/Bluetooth audibility switching and focus require hardware acceptance. The
+installation-time polkit grant also requires deployed verification after cached
+authorizations expire; source validation tests do not establish installed policy.
+See [Media sources](media.md) for the opt-in and limitations.
+
+
 Wireless admission requires a development gate. See the canonical
 [security policy](wireless.md#security-and-admission) for its identity-binding
 limitation and the [network policy](wireless.md#projection-network) for NAT and
@@ -57,7 +66,7 @@ the stock Flutter GTK runner lacks the IHS platform-view contract.
 
 ## Unsupported features
 
-- Bluetooth A2DP/AVRCP playback, full HFP calls, contacts and phonebook.
+- Full HFP calls, contacts and phonebook.
 - CarPlay, artwork delivery, microphone capture and a general local-media player.
 - Wallpaper/shaders and automatic vehicle day/night appearance policy.
 - Argo-rendered Lua UI extension registries; host-state reads do not create UI.

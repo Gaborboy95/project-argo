@@ -15,10 +15,7 @@ final class ConnectivityPreferences implements ConnectivityService {
   StreamSubscription<ConnectivitySnapshot>? _subscription;
   bool _restored = false;
   void _restore(ConnectivitySnapshot state) {
-    if (_restored ||
-        !state.available ||
-        state.adapters.isEmpty ||
-        state.networks.isEmpty) {
+    if (_restored || !state.available || state.adapters.isEmpty) {
       return;
     }
     _restored = true;

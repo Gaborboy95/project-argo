@@ -213,6 +213,11 @@ async fn run_engine(
     media.video = Some(VideoFeed::open(socket).map_err(Failure::configuration)?);
     let mut channels = Channels::new(config.display.clone());
     let mut commands = control.commands.subscribe();
+    let mut entertainment = control.entertainment.subscribe();
+    let mut media_gain = 1.0_f64;
+    control
+        .entertainment_ack
+        .send_replace(entertainment.borrow().0);
     let clock = Instant::now();
     let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
 
@@ -350,10 +355,16 @@ async fn run_engine(
                         .push(bytes)?,
                     Effect::Audio(channel, active) => {
                         if active {
-                            media.audio.insert(
-                                channel,
-                                AudioPlayback::open(channel).map_err(Failure::configuration)?,
-                            );
+                            let playback =
+                                AudioPlayback::open(channel).map_err(Failure::configuration)?;
+                            if channel == 4 {
+                                playback.gain(if entertainment.borrow().1 {
+                                    media_gain
+                                } else {
+                                    0.0
+                                })?;
+                            }
+                            media.audio.insert(channel, playback);
                         } else {
                             media.audio.remove(&channel);
                         }
@@ -403,6 +414,11 @@ async fn run_engine(
             continue;
         }
         tokio::select! {
+            _ = entertainment.changed() => {
+                let (generation, audible) = *entertainment.borrow_and_update();
+                if let Some(playback) = media.audio.get(&4) { playback.gain(if audible {media_gain} else {0.0})?; }
+                control.entertainment_ack.send_replace(generation);
+            },
             read=transport.read(&mut input)=>{
                 let count=read.map_err(Failure::from)?;
                 if count==0 {let context = decoder.disconnect().err().unwrap_or_else(|| "Android phone transport disconnected".into());return Err(Failure::new(Kind::TransportLoss, context));}
@@ -415,7 +431,8 @@ async fn run_engine(
                     Command::Touch(target,pointer,phase,x,y) if target==id=>channels.touch(pointer,phase,x,y,clock.elapsed().as_micros() as u64)?,
                     Command::Activate(target) if target==id=>{crate::daemon_log!(Debug,"aa-focus","host activation requested");channels.set_video_requested(true);awaiting_video=true;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,1).number(2,1).finish()))},
                     Command::Visibility(target,visible) if target==format!("{id}:main")=>{crate::daemon_log!(Debug,"aa-focus","host visibility requested: {visible}");channels.set_video_requested(visible);awaiting_video=visible;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,if visible{1}else{2}).number(2,1).finish()))},
-                    Command::Gain(target,stream,gain) if target==id=>{let channel=match stream.as_str(){"media"=>4,"speech"=>5,"system"=>6,_=>return Err("unknown native audio stream".into())};if let Some(playback)=media.audio.get(&channel){playback.gain(gain as f64)?;}None},
+                    Command::Gain(target,stream,gain) if target==id=>{let channel=match stream.as_str(){"media"=>4,"speech"=>5,"system"=>6,_=>return Err("unknown native audio stream".into())};if channel==4 {media_gain=gain as f64;}
+                    if let Some(playback)=media.audio.get(&channel){playback.gain(if channel==4 && !entertainment.borrow().1 {0.0} else {gain as f64})?;}None},
                     _=>None,
                 };
                 if let Some(reply)=reply {send(transport,&mut tls,reply).await?;}

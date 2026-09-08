@@ -71,6 +71,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Media',
         icon: Icons.music_note_outlined,
         builder: (_, services) => MediaPage(
+          connectivity: services.contains<ConnectivityService>()
+              ? services.get<ConnectivityService>()
+              : null,
           projection: services.get<ProjectionService>(),
           media: services.contains<MediaSessionService>()
               ? services.get<MediaSessionService>()

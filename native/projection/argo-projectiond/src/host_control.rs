@@ -28,6 +28,9 @@ pub struct HostControl {
     pub client_lease: Arc<Semaphore>,
     pub session_lease: Arc<Semaphore>,
     pub connectivity: crate::connectivity::Control,
+    pub entertainment: watch::Sender<(u64, bool)>,
+    pub entertainment_ack: watch::Sender<u64>,
+    pub projection_enabled: watch::Sender<bool>,
     pub readiness: u8,
     pub readiness_detail: String,
 }
@@ -41,6 +44,9 @@ impl Default for HostControl {
             client_lease: Arc::new(Semaphore::new(1)),
             session_lease: Arc::new(Semaphore::new(1)),
             connectivity: crate::connectivity::Control::new().0,
+            entertainment: watch::channel((0,true)).0,
+            entertainment_ack: watch::channel(0).0,
+            projection_enabled: watch::channel(std::env::var("ARGO_PROJECTION_BACKEND").as_deref()!=Ok("disabled")).0,
             readiness: 1,
             readiness_detail: "Configure ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond, then restart it.".into(),
         }

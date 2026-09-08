@@ -80,7 +80,10 @@ pub async fn run(
     match initial {
         Ok(devices) => {
             for info in devices {
-                if owner.is_none() && (is_candidate(&info) || is_accessory(&info)) {
+                if owner.is_none()
+                    && *control.projection_enabled.borrow()
+                    && (is_candidate(&info) || is_accessory(&info))
+                {
                     owner = control.session_lease.clone().try_acquire_owned().ok();
                 }
                 if owner.is_none() {
@@ -128,7 +131,7 @@ pub async fn run(
             },
             event = watcher.next() => match event {
                 Some(HotplugEvent::Connected(info)) => {
-                    if owner.is_none() && (is_candidate(&info) || is_accessory(&info)) { owner = control.session_lease.clone().try_acquire_owned().ok(); }
+                    if owner.is_none() && *control.projection_enabled.borrow() && (is_candidate(&info) || is_accessory(&info)) { owner = control.session_lease.clone().try_acquire_owned().ok(); }
                     if owner.is_some() { connected(
                     info, &mut lifecycle, &state_tx, &work_tx, &mut active_session,
                     &mut probes, &mut probe, &mut attempted, &control); }

@@ -1,3 +1,8 @@
+import 'dart:io';
+
+import '../integrations/projection/android_auto_projection_backend.dart';
+import '../integrations/projection/projection_endpoints.dart';
+import '../integrations/bluetooth/bluetooth_media_source.dart';
 import '../core/connectivity/connectivity_preferences.dart';
 import '../core/connectivity/connectivity_service.dart';
 import '../core/media/media_session_service.dart';
@@ -39,16 +44,39 @@ Future<ProjectionService> registerProjectionServices({
     isLinux: isLinux,
     transportFactory: transportFactory,
   );
+  ConnectivityService? connectivity;
   if (backend is ConnectivityService) {
-    final connectivity = ConnectivityPreferences(
-      backend as ConnectivityService,
+    connectivity = backend as ConnectivityService;
+  } else if (isLinux ?? Platform.isLinux) {
+    final standalone = AndroidAutoProjectionBackend(
+      socketPath: projectionEndpoint(
+        environment,
+        'ARGO_PROJECTION_SOCKET',
+        'projection.sock',
+      ),
+      preferences: preferences,
+      diagnostics: diagnostics,
+      transportFactory: transportFactory,
+      connectivityOnly: true,
+    );
+    await standalone.start();
+    connectivity = standalone;
+    lifecycle.registerShutdown(
+      name: 'connectivity.client',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: standalone.close,
+    );
+  }
+  if (connectivity != null) {
+    final configured = ConnectivityPreferences(
+      connectivity,
       services.get<SettingsService>(),
     );
-    services.register<ConnectivityService>(connectivity);
+    services.register<ConnectivityService>(configured);
     lifecycle.registerShutdown(
       name: 'connectivity.preferences',
       phase: AppShutdownPhase.stopActivity,
-      shutdown: connectivity.close,
+      shutdown: configured.close,
     );
   }
   final projectionSettings = ProjectionSettingsService(
@@ -67,6 +95,19 @@ Future<ProjectionService> registerProjectionServices({
   final media = CachedMediaSessionService();
   services.register<MediaSessionService>(media);
   lifecycle.registerShutdown(name: 'media.sessions', shutdown: media.close);
+  if (connectivity != null) {
+    final bluetoothMedia = BluetoothMediaSource(
+      connectivity,
+      media,
+      audio: services.get<AudioService>(),
+    );
+    lifecycle.registerShutdown(
+      name: 'bluetooth.mediaSource',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: bluetoothMedia.close,
+    );
+  }
+
   final backendType = ProjectionBackendType.fromEnvironment(environment);
   ProjectionViewRegistry? viewRegistry;
   if (renderTest.enabled || backendType == ProjectionBackendType.androidAuto) {

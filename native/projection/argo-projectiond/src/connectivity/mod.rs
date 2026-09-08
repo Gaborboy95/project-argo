@@ -1,5 +1,6 @@
 //! Shared, protocol-neutral connectivity state. BlueZ and NM retain secrets.
 pub mod bluetooth;
+pub mod music;
 pub mod network;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
@@ -25,6 +26,8 @@ pub struct Prompt {
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub music: Option<music::Snapshot>,
     pub adapters: Vec<Radio>,
     pub networks: Vec<Radio>,
     pub devices: Vec<Device>,
@@ -44,6 +47,8 @@ pub struct Snapshot {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(skip)]
+    pub generation: u64,
     pub action: String,
     #[serde(default)]
     pub target: String,
@@ -54,6 +59,7 @@ pub struct Request {
 }
 #[derive(Clone)]
 pub struct Control {
+    pub music_cancel: watch::Sender<u64>,
     pub client_closed: watch::Sender<u64>,
     pub state: watch::Sender<Snapshot>,
     pub requests: mpsc::Sender<Request>,
@@ -68,6 +74,7 @@ impl Control {
         let (requests, rx) = mpsc::channel(16);
         (
             Self {
+                music_cancel: watch::channel(0).0,
                 state,
                 requests,
                 client_closed: watch::channel(0).0,
@@ -85,7 +92,7 @@ impl Control {
         if bytes.len() > 2048 {
             return Err("Connectivity request too large".into());
         }
-        let r: Request =
+        let mut r: Request =
             serde_json::from_slice(bytes).map_err(|_| "Malformed connectivity request")?;
         if r.action == "clientClosed" {
             return Err("Reserved connectivity action".into());
@@ -93,6 +100,18 @@ impl Control {
         if r.target.len() > 256 {
             return Err("Connectivity reference too long".into());
         }
+        if r.action == "musicDisconnect"
+            || (r.action == "forget"
+                && self
+                    .state
+                    .borrow()
+                    .music
+                    .as_ref()
+                    .is_some_and(|m| m.device == r.target))
+        {
+            self.music_cancel.send_modify(|generation| *generation += 1);
+        }
+        r.generation = *self.music_cancel.borrow();
         self.requests
             .try_send(r)
             .map_err(|_| "Connectivity is busy or unavailable".into())
@@ -116,6 +135,35 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn music_stop_revokes_queued_work_before_radio_worker_runs() {
+        let (control, mut requests) = Control::new();
+        control
+            .request(br#"{"action":"musicConnect","target":"hci0/00:11:22:33:44:55"}"#)
+            .unwrap();
+        let queued = requests.try_recv().unwrap();
+        control.request(br#"{"action":"musicDisconnect"}"#).unwrap();
+        assert_ne!(queued.generation, *control.music_cancel.borrow());
+        requests.try_recv().unwrap();
+        control
+            .request(br#"{"action":"musicConnect","target":"hci0/00:11:22:33:44:55"}"#)
+            .unwrap();
+        assert_eq!(
+            requests.try_recv().unwrap().generation,
+            *control.music_cancel.borrow()
+        );
+        control.state.send_modify(|s| {
+            s.music = Some(music::Snapshot {
+                device: "hci0/00:11:22:33:44:55".into(),
+                ..Default::default()
+            })
+        });
+        let generation = *control.music_cancel.borrow();
+        control
+            .request(br#"{"action":"forget","target":"hci0/00:11:22:33:44:55"}"#)
+            .unwrap();
+        assert!(*control.music_cancel.borrow() > generation);
+    }
     #[test]
     fn bounded_secret_free_ipc_and_device_scoped_confirmation() {
         let (control, mut requests) = Control::new();
