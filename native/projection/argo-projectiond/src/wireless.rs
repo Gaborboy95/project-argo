@@ -284,7 +284,7 @@ async fn process_request(
     Ok(())
 }
 
-async fn run_until_end(
+pub(crate) async fn run_until_end(
     readiness: &crate::readiness::Readiness,
     cancel: &mut watch::Receiver<bool>,
     operation: impl std::future::Future<Output = Result<(), Failure>>,
@@ -299,7 +299,7 @@ async fn run_until_end(
     }
 }
 
-async fn retry_backoff(cancel: &mut watch::Receiver<bool>, attempt: u32) -> bool {
+pub(crate) async fn retry_backoff(cancel: &mut watch::Receiver<bool>, attempt: u32) -> bool {
     if *cancel.borrow() {
         return false;
     }
@@ -327,6 +327,13 @@ async fn reconnect(
             break;
         }
         if attempt > 0 {
+            crate::daemon_log!(
+                Info,
+                "wireless",
+                "Owned cleanup finished; retry {} of 3 after {} seconds backoff",
+                attempt + 1,
+                2u64.pow(attempt)
+            );
             host.connectivity.progress(
                 "backoff",
                 format!(
@@ -606,17 +613,34 @@ async fn attempt_connection(
             Some(&readiness),
         );
         tokio::pin!(session);
-        let mut health = tokio::time::interval(Duration::from_secs(2));
+        let health = async {
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                interval.tick().await;
+                let streaming = state.borrow().session.as_ref().is_some_and(|s| {
+                    s.state == crate::daemon_state::ProjectionSessionStatus::Streaming
+                });
+                if streaming {
+                    c.progress("streaming", "Android Auto streaming over Wi-Fi");
+                }
+                if !device.is_paired().await.map_err(Failure::configuration)? {
+                    return Err(Failure::new(
+                        Kind::Authorization,
+                        "Selected phone pairing revoked",
+                    ));
+                }
+                if !network.ready(&ap).await? {
+                    return Err(Failure::network(
+                        "Projection AP address/DHCP readiness lost",
+                    ));
+                }
+            }
+        };
+        tokio::pin!(health);
         loop {
             tokio::select! {
                 result = &mut session => break result,
-                _ = health.tick() => {
-                    let streaming = state.borrow().session.as_ref().is_some_and(|s| s.state == crate::daemon_state::ProjectionSessionStatus::Streaming);
-                    if streaming { c.progress("streaming", "Android Auto streaming over Wi-Fi"); }
-
-                    if !device.is_paired().await.map_err(Failure::configuration)? { break Err(Failure::new(Kind::Authorization, "Selected phone pairing revoked")); }
-                    if !network.ready(&ap).await? { break Err(Failure::network("Projection AP address/DHCP readiness lost")); }
-                }
+                result = &mut health => break result,
                 result = &mut bootstrap, if !bootstrap_done => {
                     bootstrap_done = true;
                     if let Err(e) = result && bootstrap_failure_is_fatal(&e) { break Err(e); }
@@ -632,6 +656,11 @@ async fn attempt_connection(
             "wireless",
             "Initiating failure before media cleanup: {error}"
         );
+        // Publish failure immediately; this is not a claim that owned resources
+        // have stopped. The connectivity phase remains cleanup until teardown ends.
+        state.send_modify(|snapshot| {
+            *snapshot = snapshot.clone().failed(error.to_string());
+        });
         c.state
             .send_modify(|s| s.detail = format!("{error}; stopping owned resources"));
     }
@@ -641,7 +670,14 @@ async fn attempt_connection(
             s.detail = "Stopping owned projection resources".into();
         }
     });
+    let cleanup_started = tokio::time::Instant::now();
     media.close().await;
+    crate::daemon_log!(
+        Debug,
+        "wireless",
+        "Media cleanup complete after {} ms; stopping owned AP/firewall (authorization may wait)",
+        cleanup_started.elapsed().as_millis()
+    );
     state.send_replace(ProjectionRuntimeSnapshot::default());
     c.state.send_modify(|s| s.wifi_connected = false);
     if let Err(e) = network.stop(&mut ap).await {
@@ -650,6 +686,12 @@ async fn attempt_connection(
         crate::daemon_log!(Warn, "wireless", "{message}");
         return Err(cleanup_failure(result, message));
     }
+    crate::daemon_log!(
+        Debug,
+        "wireless",
+        "Owned resource cleanup complete after {} ms; retry policy follows",
+        cleanup_started.elapsed().as_millis()
+    );
     c.state.send_modify(|s| {
         s.cleanup_error.clear();
         s.ap_frequency_mhz = None;

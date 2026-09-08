@@ -330,6 +330,16 @@ session snapshot's Streaming/Suspended value and cannot be lost through watch
 coalescing. The original 180-second setup deadline disarms permanently after
 establishment. Media navigation or a rapid stream-start/suspend does not rearm it.
 
+Established wireless sessions also own a monotonic ten-second receive-liveness
+watchdog, independent of presentation and the sticky startup latch. It observes
+validated inbound channel effects and fresh correlated heartbeat responses, never
+local writes or host network readiness. Its future is polled alongside all engine
+reads/writes; buffered processing yields and D-Bus health checks run as a concurrent
+future. Expiry returns typed transport loss through the existing cleanup/retry
+policy. Request bookkeeping is bounded and discarded with the session. USB retains
+its existing timeout policy. The [wireless guide](wireless.md#active-session-liveness)
+defines message eligibility, diagnostics and secondary per-socket safeguards.
+
 `Failure` carries a `Kind`, diagnostic context and an optional separate cleanup
 failure. Transport IO and version errors retain their classification through the
 session layer. Unexpected transport/network loss and selected setup timeouts may

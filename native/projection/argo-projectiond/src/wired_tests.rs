@@ -361,16 +361,24 @@ async fn native_feed_disconnect_recreation_has_no_stale_session_bytes() {
 
 // Runs the actual post-version engine, not a second test-only implementation.
 struct MemoryUsb {
+    wireless: bool,
+    tcp: Option<crate::tcp_transport::TcpAaTransport>,
     input: tokio::sync::mpsc::Receiver<Vec<u8>>,
     output: tokio::sync::mpsc::Sender<Vec<u8>>,
 }
 impl crate::session::AndroidAutoTransport for MemoryUsb {
+    fn wireless(&self) -> bool {
+        self.wireless
+    }
     fn read<'a>(
         &'a mut self,
         buffer: &'a mut [u8],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<usize>> + Send + 'a>>
     {
         Box::pin(async move {
+            if let Some(tcp) = &mut self.tcp {
+                return tcp.read(buffer).await;
+            }
             let Some(bytes) = self.input.recv().await else {
                 return Ok(0);
             };
@@ -384,6 +392,9 @@ impl crate::session::AndroidAutoTransport for MemoryUsb {
         bytes: &'a [u8],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(tcp) = &mut self.tcp {
+                return tcp.write_all(bytes).await;
+            }
             self.output
                 .send(bytes.to_vec())
                 .await
@@ -448,6 +459,22 @@ async fn phone_receive(
 }
 #[tokio::test(start_paused = true)]
 async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() {
+    exercise_live_session(0, Vec::new()).await;
+}
+#[tokio::test(start_paused = true)]
+async fn wireless_silent_open_transport_reaches_typed_recovery() {
+    exercise_live_session(1, Vec::new()).await;
+}
+#[tokio::test(start_paused = true)]
+async fn wireless_hidden_heartbeat_only_survives_then_rejects_stale_activity() {
+    exercise_live_session(2, Vec::new()).await;
+}
+#[tokio::test(start_paused = true)]
+async fn wireless_cancellation_and_fresh_replacement() {
+    let old_response = exercise_live_session(3, Vec::new()).await;
+    exercise_live_session(2, old_response).await;
+}
+async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
     crate::logging::init().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(500), async {
         let fixture = IdentityFixture::new();
@@ -468,23 +495,87 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         );
         let id = initial.session.as_ref().unwrap().id.clone();
         let (state, mut observed) = tokio::sync::watch::channel(initial);
-        let (phone_tx, input) = tokio::sync::mpsc::channel(32);
+        let (phone_tx, input) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
         let (output, mut phone_rx) = tokio::sync::mpsc::channel(32);
+        // A real admitted loopback TCP socket exercises successful kernel writes
+        // while the phone application drains requests without answering them.
+        let (tcp, input, output, bridge) = if mode == 1 {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            peer.set_nodelay(true).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let probe = socket2::SockRef::from(&stream).try_clone().unwrap();
+            let transport = crate::tcp_transport::TcpAaTransport::admitted(stream).unwrap();
+            assert!(probe.keepalive().unwrap());
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                probe.tcp_user_timeout().unwrap(),
+                Some(std::time::Duration::from_secs(15))
+            );
+            drop(probe);
+            let (mut reader, mut writer) = peer.into_split();
+            let mut to_peer = input;
+            let from_peer = output;
+            let bridge = tokio::spawn(async move {
+                let tx = async {
+                    while let Some(bytes) = to_peer.recv().await {
+                        if writer.write_all(&bytes).await.is_err() {
+                            break;
+                        }
+                    }
+                };
+                let rx = async {
+                    loop {
+                        let mut header = [0; 4];
+                        if reader.read_exact(&mut header).await.is_err() {
+                            break;
+                        }
+                        let extra = if header[1] & 3 == 1 { 4 } else { 0 };
+                        let len = usize::from(u16::from_be_bytes([header[2], header[3]])) + extra;
+                        let mut frame = header.to_vec();
+                        frame.resize(4 + len, 0);
+                        if reader.read_exact(&mut frame[4..]).await.is_err() {
+                            break;
+                        }
+                        if from_peer.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                };
+                tokio::select! { _=tx=>{}, _=rx=>{} }
+            });
+            // Unused memory ends keep one fixture type for wired and TCP tests.
+            let (_, dummy_input) = tokio::sync::mpsc::channel(1);
+            let (dummy_output, _) = tokio::sync::mpsc::channel(1);
+            (Some(transport), dummy_input, dummy_output, Some(bridge))
+        } else {
+            (None, input, output, None)
+        };
         let engine_control = control.clone();
         let engine_id = id.clone();
+        let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {
-            let mut transport = MemoryUsb { input, output };
+            let mut transport = MemoryUsb {
+                input,
+                output,
+                tcp,
+                wireless: mode != 0,
+            };
             let mut media = crate::native_playback::SessionMedia::default();
             let ready = crate::readiness::Readiness::default();
-            let session = crate::aa_session::run(
+            let session = crate::aa_session::run_with_tls_policy(
                 &mut transport,
                 engine_control,
                 state,
                 engine_id,
                 &mut media,
                 Some(&ready),
+                AaTls::test_wireless,
             );
-            let result = tokio::select! { biased; _ = ready.setup_deadline() => Err(crate::failure::Failure::timeout("outer setup expired")), result = session => result };
+            let result = crate::wireless::run_until_end(&ready, &mut cancelled, session).await;
             media.close().await;
             result
         });
@@ -579,14 +670,144 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
             .await
             .unwrap();
         assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
+        if mode != 0 {
+            use std::time::Duration;
+            let mut stale = Vec::new();
+            // Draining output without replying keeps writes successful while the
+            // read future stays pending. No EOF is delivered to the engine.
+            if mode == 2 {
+                let healthy_start = tokio::time::Instant::now();
+                for index in 0..170 {
+                    let frame = phone_rx.recv().await.unwrap();
+                    assert_eq!(&frame[4..6], &[0, 11]);
+                    let mut response = frame[4..].to_vec();
+                    response[1] = 12;
+                    stale = response.clone();
+                    if index % 2 == 0 {
+                        phone_tx
+                            .send(aa_wire::frame(0, 3, &response).unwrap())
+                            .await
+                            .unwrap();
+                    } else {
+                        phone_send(&mut phone, &phone_tx, 0, 12, response[2..].to_vec()).await;
+                    }
+                }
+                assert!(healthy_start.elapsed() > Duration::from_secs(240));
+                assert!(!task.is_finished());
+                assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
+                assert_eq!(
+                    observed.borrow().session.as_ref().unwrap().state,
+                    crate::daemon_state::ProjectionSessionStatus::Suspended
+                );
+            }
+            if mode == 3 {
+                let frame = phone_rx.recv().await.unwrap();
+                let mut late_response = frame[4..].to_vec();
+                late_response[1] = 12;
+                cancel.send_replace(true);
+                let error = task.await.unwrap().unwrap_err();
+                assert_eq!(error.kind, crate::failure::Kind::Cancelled);
+                assert!(!crate::wireless::retry_allowed(&error, true, 0));
+                assert!(!path.exists());
+                if let Some(bridge) = bridge {
+                    bridge.await.unwrap();
+                }
+                return late_response;
+            }
+            // Ensure the last legitimate reply was consumed before starting the
+            // measured silence. Replays, malformed protobuf, and unknown timestamps
+            // subsequently exercise the actual plaintext/encrypted receive paths.
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            let start = tokio::time::Instant::now();
+            let drain = tokio::spawn(async move {
+                let mut writes = 0;
+                while let Some(frame) = phone_rx.recv().await {
+                    assert_eq!(&frame[4..6], &[0, 11]);
+                    writes += 1;
+                    if mode == 2 {
+                        for body in [
+                            stale.clone(),
+                            vec![0, 12, 8, 128],
+                            vec![0, 12, 8, 0],
+                            old_response.clone(),
+                        ] {
+                            if body.is_empty() {
+                                continue;
+                            }
+                            if phone_tx
+                                .send(aa_wire::frame(0, 3, &body).unwrap())
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        phone_send(
+                            &mut phone,
+                            &phone_tx,
+                            0,
+                            12,
+                            Proto::default().number(1, 0).finish(),
+                        )
+                        .await;
+                    }
+                }
+                // phone_tx remains alive until the engine has terminated.
+                drop(phone_tx);
+                writes
+            });
+            let error = task.await.unwrap().unwrap_err();
+            let elapsed = start.elapsed();
+            eprintln!("wireless liveness fixture mode={mode}: detection and fixture media cleanup at {elapsed:?}; typed retry eligible");
+            assert_eq!(error.kind, crate::failure::Kind::TransportLoss);
+            assert!(crate::wireless::retry_allowed(&error, false, 0));
+            assert!(
+                elapsed >= Duration::from_secs(9) && elapsed <= Duration::from_secs(10),
+                "detection elapsed {elapsed:?}: {error}"
+            );
+            assert!(
+                drain.await.unwrap() >= 5,
+                "outgoing pings continued succeeding"
+            );
+            if let Some(bridge) = bridge {
+                bridge.await.unwrap();
+            }
+            assert!(!path.exists(), "owned media socket cleaned");
+            let mut stopped = cancel.subscribe();
+            let stop = cancel.clone();
+            let backoff =
+                tokio::spawn(async move { crate::wireless::retry_backoff(&mut stopped, 1).await });
+            tokio::task::yield_now().await;
+            stop.send_replace(true);
+            assert!(
+                !backoff.await.unwrap(),
+                "Disconnect must stop replacement during backoff"
+            );
+            return Vec::new();
+        }
         tokio::time::advance(std::time::Duration::from_secs(240)).await;
         tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "suspended established session must survive setup deadline");
-        control.commands.send(crate::host_control::Command::Activate(id.clone())).unwrap();
+        assert!(
+            !task.is_finished(),
+            "suspended established session must survive setup deadline"
+        );
+        control
+            .commands
+            .send(crate::host_control::Command::Activate(id.clone()))
+            .unwrap();
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
         phone_send(&mut phone, &phone_tx, 3, 1, vec![0, 0, 0, 1, 0x67, 2]).await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8004);
-        observed.wait_for(|s| s.session.as_ref().is_some_and(|session| session.state == crate::daemon_state::ProjectionSessionStatus::Streaming)).await.unwrap();
+        observed
+            .wait_for(|s| {
+                s.session.as_ref().is_some_and(|session| {
+                    session.state == crate::daemon_state::ProjectionSessionStatus::Streaming
+                })
+            })
+            .await
+            .unwrap();
         assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
         control
             .commands
@@ -605,9 +826,10 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 16);
         assert!(task.await.unwrap().is_ok());
         assert!(!path.exists());
+        Vec::new()
     })
     .await
-    .expect("memory AA session must complete within its bound");
+    .expect("AA session fixture must complete within its bound")
 }
 
 #[test]

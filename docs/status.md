@@ -40,10 +40,13 @@ limitation and the [network policy](wireless.md#projection-network) for NAT and
 firewall behavior. External AA identity is required; format and ownership are in
 [configuration](configuration.md#projection).
 
-The establishment deadline and typed retry policy have controlled-time and
-transport regression coverage. Their complete Mu manual sequence, repeated
-Exit/Home cycles, reconnect endurance, phone app internet access and fresh wired
-regression remain hardware acceptance work. Management Ethernet was unavailable
+Established wireless AA has survived Exit → Media beyond the setup deadline on the
+Mu, and Home has resumed that same session. The wireless receive-liveness watchdog
+has controlled-time regression coverage, including a real loopback TCP peer that
+keeps draining requests without replying or closing, heartbeat-only suspended
+operation, and cancellation/replacement. Hardware silent-loss detection and cleanup
+latency remain unverified. Repeated Exit/Home cycles, reconnect endurance, phone app
+internet access and fresh wired regression remain hardware acceptance work. Management Ethernet was unavailable
 in the latest wireless setup; a separate Wi-Fi adapter carried management traffic.
 Do not infer Ethernet-connected acceptance from projection success.
 

@@ -16,6 +16,8 @@ impl TcpAaTransport {
                 .with_time(Duration::from_secs(5))
                 .with_interval(Duration::from_secs(5)),
         )?;
+        #[cfg(target_os = "linux")]
+        socket2::SockRef::from(&stream).set_tcp_user_timeout(Some(Duration::from_secs(15)))?;
         Ok(Self { stream })
     }
 }

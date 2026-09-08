@@ -9,7 +9,7 @@ use crate::{
     native_playback::{AudioPlayback, SessionMedia, VideoFeed},
     session::AndroidAutoTransport,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 
 async fn write(transport: &mut impl AndroidAutoTransport, bytes: &[u8]) -> Result<(), Failure> {
@@ -60,14 +60,6 @@ async fn send(
 
     Ok(())
 }
-fn ping_payload() -> Vec<u8> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64;
-
-    Proto::default().number(1, timestamp).finish()
-}
 async fn send_plain(
     transport: &mut impl AndroidAutoTransport,
     channel: u8,
@@ -108,12 +100,54 @@ pub async fn run(
     media: &mut SessionMedia,
     readiness: Option<&crate::readiness::Readiness>,
 ) -> Result<(), Failure> {
+    run_with_tls_policy(
+        transport,
+        control,
+        state,
+        id,
+        media,
+        readiness,
+        AaTls::wireless,
+    )
+    .await
+}
+// The test fixture supplies the same wireless verifier without changing process
+// environment. Production always supplies the development-gated constructor.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_with_tls_policy(
+    transport: &mut impl AndroidAutoTransport,
+    control: HostControl,
+    state: watch::Sender<ProjectionRuntimeSnapshot>,
+    id: String,
+    media: &mut SessionMedia,
+    readiness: Option<&crate::readiness::Readiness>,
+    wireless_tls: fn(&crate::identity::AndroidAutoIdentity) -> Result<AaTls, String>,
+) -> Result<(), Failure> {
+    let wireless = transport.wireless();
+    let mut liveness = crate::liveness::Liveness::default();
+    let watchdog = liveness.watchdog();
+    tokio::select! { biased;
+        error = watchdog, if wireless => Err(error),
+        result = run_engine(transport, control, state, id, media, readiness, &mut liveness, wireless_tls) => result,
+    }
+}
+#[allow(clippy::too_many_arguments)]
+async fn run_engine(
+    transport: &mut impl AndroidAutoTransport,
+    control: HostControl,
+    state: watch::Sender<ProjectionRuntimeSnapshot>,
+    id: String,
+    media: &mut SessionMedia,
+    readiness: Option<&crate::readiness::Readiness>,
+    liveness: &mut crate::liveness::Liveness,
+    wireless_tls: fn(&crate::identity::AndroidAutoIdentity) -> Result<AaTls, String>,
+) -> Result<(), Failure> {
     let selection = control.begin_session(&id);
     let config = &selection.config;
     config.display.validate().map_err(Failure::configuration)?;
     let identity=config.identity.as_ref().ok_or_else(|| Failure::configuration("AA TLS identity missing: set ARGO_ANDROID_AUTO_CERT_FILE and ARGO_ANDROID_AUTO_KEY_FILE on argo-projectiond"))?;
     let mut tls = if transport.wireless() {
-        AaTls::wireless(identity).map_err(Failure::configuration)?
+        wireless_tls(identity).map_err(Failure::configuration)?
     } else {
         AaTls::new(identity).map_err(Failure::configuration)?
     };
@@ -186,13 +220,15 @@ pub async fn run(
     let mut streaming = false;
     let mut ping_enabled = false;
 
-    let mut ping_interval = tokio::time::interval(Duration::from_millis(1500));
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    // Consume interval's immediate first tick. We explicitly send the
-    // first AA ping after ServiceDiscoveryResponse instead.
-    ping_interval.tick().await;
+    let mut next_ping = tokio::time::Instant::now() + Duration::from_millis(1500);
     loop {
+        // Buffered packets must yield to the outer watchdog/cancellation and pings.
+        tokio::task::yield_now().await;
+        if ping_enabled && tokio::time::Instant::now() >= next_ping {
+            let payload = liveness.request();
+            send_plain(transport, 0, 0x000b, &payload).await?;
+            next_ping = tokio::time::Instant::now() + Duration::from_millis(1500);
+        }
         if let Some(packet) = decoder.packet()? {
             let encrypted = packet.flags & 8 != 0;
 
@@ -251,14 +287,36 @@ pub async fn run(
                     .into());
                 }
 
+                if message_id == 0x000c {
+                    liveness.response(&body[2..]);
+                }
                 if message_id == 0x000b {
+                    // Echo compatibility is retained, but unsolicited plaintext
+                    // requests are not authenticated liveness evidence.
                     send_plain(transport, 0, 0x000c, &body[2..]).await?;
                 }
 
                 continue;
             }
 
-            for effect in channels.handle(packet.channel, message_id, &body[2..])? {
+            if packet.channel == 0 && message_id == 0x000c {
+                liveness.response(&body[2..]);
+                continue;
+            }
+            if packet.channel == 0
+                && message_id == 0x000b
+                && !crate::aa_channels::numbers(&body[2..])
+                    .is_ok_and(|fields| fields.contains_key(&1))
+            {
+                continue;
+            }
+            let effects = channels.handle(packet.channel, message_id, &body[2..])?;
+            // Unknown/ignored and rejected optional messages have no validated
+            // effect. Neither they nor incomplete TLS/AA frames renew the timer.
+            if !effects.is_empty() {
+                liveness.valid();
+            }
+            for effect in effects {
                 match effect {
                     Effect::Reply(reply) => send(transport, &mut tls, reply).await?,
                     Effect::End => return Ok(()),
@@ -306,6 +364,7 @@ pub async fn run(
                         });
                     }
                     Effect::Established => {
+                        liveness.establish();
                         if let Some(readiness) = readiness {
                             readiness.establish();
                         }
@@ -332,7 +391,7 @@ pub async fn run(
             if service_discovery {
                 ping_enabled = true;
 
-                let payload = ping_payload();
+                let payload = liveness.request();
                 send_plain(
                     transport, 0, 0x000b, // PING_REQUEST
                     &payload,
@@ -361,19 +420,7 @@ pub async fn run(
                 };
                 if let Some(reply)=reply {send(transport,&mut tls,reply).await?;}
             },
-            _ = ping_interval.tick(), if ping_enabled => {
-                let payload = ping_payload();
-
-                send_plain(
-                    transport,
-                    0,
-                    0x000b,
-                    &payload,
-                )
-                .await?;
-
-                crate::daemon_log!(Trace, "aa-session", "AA PingRequest sent");
-            },
+            _ = tokio::time::sleep_until(next_ping), if ping_enabled => {},
             _=tokio::time::sleep_until(setup_deadline),if !streaming=>return Err(Failure::timeout("AA video setup timeout after TLS")),
         }
     }
