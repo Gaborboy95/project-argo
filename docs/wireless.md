@@ -57,7 +57,10 @@ a non-overlapping private IPv4 /24. NetworkManager stores them in the inactive,
 non-autoconnecting, account-restricted `Argo Projection credentials (<interface>)`
 profile, marked `org.argo.owner=projection-credentials-v1`. This credential template
 is never activated by Argo. Reconnecting the same selected phone reuses its network
-and permanent radio BSSID, allowing the phone to recognize the AP. Connecting a
+and permanent radio BSSID, allowing the phone to recognize the AP. The D-Bus
+profile uses `802-11-wireless.assigned-mac-address="permanent"`; the similarly
+named `cloned-mac-address` is a legacy byte-array field on D-Bus, despite its
+string form in nmcli/libnm. Connecting a
 different phone rotates the template; Forget removes matching credentials. A removal
 failure is reported separately from bond removal. The attempt's active profile
 remains volatile and bound to its D-Bus owner. Credentials are delivered only over
@@ -264,7 +267,9 @@ AP/firewall cleanup (which can wait for authorization), and retry/backoff. A pen
 firewall prompt must not be mistaken for late detection or successful teardown.
 
 - AP failure: inspect capabilities, regulatory flags, interface use and polkit/NM
-  permissions. Do not change country settings to bypass a refusal.
+  permissions. Credential-save/rotation and activation failures retain the structured
+  NetworkManager D-Bus error name; profile values and remote error bodies are redacted.
+  An invalid profile is a configuration error, not evidence of missing permissions. Do not change country settings to bypass a refusal.
 - Waiting for Bluetooth: check the selected bond, phone prompts, HFP trigger result
   and AA profile/channel conflicts.
 - Accepted start but no TCP: check AP association/DHCP and interface firewall policy.

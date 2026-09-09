@@ -17,6 +17,64 @@ fn section(
 ) -> HashMap<String, OwnedValue> {
     items.into_iter().map(|(k, v)| (k.into(), v)).collect()
 }
+// Construct once for both the credential template and the volatile activation.
+fn ap_settings(ap: &AccessPoint) -> Settings {
+    let mut settings = Settings::new();
+    settings.insert(
+        "connection".into(),
+        section([
+            ("id", value(format!("Argo Projection ({})", ap.interface))),
+            ("type", value("802-11-wireless")),
+            ("interface-name", value(ap.interface.clone())),
+            ("autoconnect", value(false)),
+        ]),
+    );
+    settings.insert(
+        "802-11-wireless".into(),
+        section([
+            ("ssid", value(ap.ssid.as_bytes().to_vec())),
+            ("mode", value("ap")),
+            // D-Bus differs from nmcli/libnm: the legacy cloned field is ay.
+            ("assigned-mac-address", value("permanent")),
+            ("band", value(ap.band.nm_band())),
+            ("channel", value(u32::from(ap.channel))),
+        ]),
+    );
+    settings.insert(
+        "802-11-wireless-security".into(),
+        section([
+            ("key-mgmt", value("wpa-psk")),
+            ("psk", value(ap.password.clone())),
+            ("proto", value(vec!["rsn".to_string()])),
+            ("pairwise", value(vec!["ccmp".to_string()])),
+        ]),
+    );
+    let address = section([
+        ("address", value(ap.address.to_string())),
+        ("prefix", value(24u32)),
+    ]);
+    settings.insert(
+        "ipv4".into(),
+        section([
+            ("method", value("shared")),
+            ("never-default", value(true)),
+            ("address-data", value(vec![address])),
+        ]),
+    );
+    settings.insert("ipv6".into(), section([("method", value("disabled"))]));
+    settings
+}
+
+fn nm_failure(action: &str, error: zbus::Error) -> Failure {
+    // A remote error body may echo profile values. Retain its structured name,
+    // never the body or the submitted settings (SSID/PSK/peer remain private).
+    let kind = match &error {
+        zbus::Error::MethodError(name, _, _) => name.as_str(),
+        _ => "local D-Bus transport or encoding failure",
+    };
+    Failure::configuration(format!("{action}: {kind}; profile values redacted"))
+}
+
 pub struct Network {
     bus: Connection,
 }
@@ -409,48 +467,7 @@ impl Network {
             .map_err(Failure::configuration)?;
         // No profile mutations before an explicit Connect. NM removes this
         // volatile profile after deactivation and on daemon/service death.
-        let mut settings = Settings::new();
-        settings.insert(
-            "connection".into(),
-            section([
-                ("id", value(format!("Argo Projection ({})", ap.interface))),
-                ("type", value("802-11-wireless")),
-                ("interface-name", value(ap.interface.clone())),
-                ("autoconnect", value(false)),
-            ]),
-        );
-        settings.insert(
-            "802-11-wireless".into(),
-            section([
-                ("ssid", value(ap.ssid.as_bytes().to_vec())),
-                ("mode", value("ap")),
-                ("cloned-mac-address", value("permanent")),
-                ("band", value(ap.band.nm_band())),
-                ("channel", value(u32::from(ap.channel))),
-            ]),
-        );
-        settings.insert(
-            "802-11-wireless-security".into(),
-            section([
-                ("key-mgmt", value("wpa-psk")),
-                ("psk", value(ap.password.clone())),
-                ("proto", value(vec!["rsn".to_string()])),
-                ("pairwise", value(vec!["ccmp".to_string()])),
-            ]),
-        );
-        let address = section([
-            ("address", value(ap.address.to_string())),
-            ("prefix", value(24u32)),
-        ]);
-        settings.insert(
-            "ipv4".into(),
-            section([
-                ("method", value("shared")),
-                ("never-default", value(true)),
-                ("address-data", value(vec![address])),
-            ]),
-        );
-        settings.insert("ipv6".into(), section([("method", value("disabled"))]));
+        let settings = ap_settings(ap);
         if ap.save_template {
             let mut template = Settings::new();
             for (key, values) in &settings {
@@ -494,13 +511,33 @@ impl Network {
                 )]),
             );
             if let Some(path) = &ap.template_path {
-                let _: HashMap<String, OwnedValue> = self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Settings.Connection").await?
-                    .call("Update2", &(template, 1u32, HashMap::<String, OwnedValue>::new())).await
-                    .map_err(|_| Failure::configuration("Could not rotate owned projection credentials; check NM own-profile permissions"))?;
+                let _: HashMap<String, OwnedValue> = self
+                    .proxy(
+                        path.as_str(),
+                        "org.freedesktop.NetworkManager.Settings.Connection",
+                    )
+                    .await?
+                    .call(
+                        "Update2",
+                        &(template, 1u32, HashMap::<String, OwnedValue>::new()),
+                    )
+                    .await
+                    .map_err(|e| nm_failure("Could not rotate owned projection credentials", e))?;
             } else {
-                let (path, _): (OwnedObjectPath, HashMap<String, OwnedValue>) = self.proxy("/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings").await?
-                    .call("AddConnection2", &(template, 1u32, HashMap::<String, OwnedValue>::new())).await
-                    .map_err(|_| Failure::configuration("Could not save NetworkManager projection credentials; check own-profile permissions"))?;
+                let (path, _): (OwnedObjectPath, HashMap<String, OwnedValue>) = self
+                    .proxy(
+                        "/org/freedesktop/NetworkManager/Settings",
+                        "org.freedesktop.NetworkManager.Settings",
+                    )
+                    .await?
+                    .call(
+                        "AddConnection2",
+                        &(template, 1u32, HashMap::<String, OwnedValue>::new()),
+                    )
+                    .await
+                    .map_err(|e| {
+                        nm_failure("Could not save NetworkManager projection credentials", e)
+                    })?;
                 ap.template_path = Some(path);
             }
             ap.save_template = false;
@@ -510,9 +547,25 @@ impl Network {
             ("bind-activation", value("dbus-client")),
         ]);
         ap.activation_pending = true;
-        let result: (OwnedObjectPath, OwnedObjectPath, HashMap<String, OwnedValue>) = self.proxy(ROOT, NM).await.map_err(Failure::configuration)?
-            .call("AddAndActivateConnection2", &(settings, path.clone(), OwnedObjectPath::try_from("/").unwrap(), options)).await
-            .map_err(|_| Failure::configuration("NetworkManager AP activation failed (check NM journal; credentials are redacted)"))?;
+        let result: (
+            OwnedObjectPath,
+            OwnedObjectPath,
+            HashMap<String, OwnedValue>,
+        ) = self
+            .proxy(ROOT, NM)
+            .await
+            .map_err(Failure::configuration)?
+            .call(
+                "AddAndActivateConnection2",
+                &(
+                    settings,
+                    path.clone(),
+                    OwnedObjectPath::try_from("/").unwrap(),
+                    options,
+                ),
+            )
+            .await
+            .map_err(|e| nm_failure("NetworkManager AP activation failed", e))?;
         ap.active = Some(result.1);
         ap.activation_pending = false;
         tokio::time::timeout(Duration::from_secs(25), async {
@@ -782,6 +835,33 @@ fn validate_credentials(ssid: &str, password: &str, address: Ipv4Addr) -> Result
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
+    #[test]
+    fn ap_request_uses_dbus_string_mac_policy_and_redacts_remote_errors() {
+        let settings = ap_settings(&ap());
+        let wifi = &settings["802-11-wireless"];
+        assert_eq!(
+            <&str>::try_from(&wifi["assigned-mac-address"]).unwrap(),
+            "permanent"
+        );
+        assert!(!wifi.contains_key("cloned-mac-address"));
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from(
+                "org.freedesktop.NetworkManager.Settings.InvalidConnection",
+            )
+            .unwrap(),
+            Some("secret-psk-and-peer".into()),
+            zbus::message::Message::method_call("/test", "Test")
+                .unwrap()
+                .build(&())
+                .unwrap(),
+        );
+        let failure = nm_failure("Credential save failed", err);
+        let message = failure.to_string();
+        assert!(message.contains("Settings.InvalidConnection"));
+        assert!(!message.contains("secret-psk-and-peer"));
+        assert!(!message.contains("permissions"));
+    }
+
     #[test]
     fn credential_template_validation_rejects_unsafe_reuse() {
         assert!(
