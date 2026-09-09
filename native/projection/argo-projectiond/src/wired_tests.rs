@@ -308,6 +308,59 @@ fn touch_uses_negotiated_pixels_and_tracks_pointer_lifecycle() {
     assert!(channels.touch(10, 2, 0.5, 0.5, 134).unwrap().is_some());
 }
 #[test]
+fn android_touch_ids_stay_bounded_across_many_gestures_and_overlapping_contacts() {
+    // Assert the actual input-channel wire message, including action index.
+    fn expected(ids: &[u8], index: u64, action: u64) -> Vec<u8> {
+        let mut touch = Proto::default();
+        for id in ids {
+            touch = touch.nested(
+                1,
+                Proto::default()
+                    .number(1, 0)
+                    .number(2, 0)
+                    .number(3, u64::from(*id)),
+            );
+        }
+        Proto::default()
+            .number(1, 123)
+            .nested(3, touch.number(2, index).number(3, action))
+            .finish()
+    }
+    let mut channels = opened();
+    for host in 32..=100 {
+        for (phase, action) in [(0, 0), (1, 2), (2, 1)] {
+            let event = channels.touch(host, phase, 0.0, 0.0, 123).unwrap().unwrap();
+            assert_eq!((event.channel, event.id), (8, 0x8001));
+            assert_eq!(event.body, expected(&[0], 0, action));
+        }
+    }
+    // Host IDs differing by 32 must not collide. Insertion of a lower host ID
+    // changes indices but must preserve the existing contact's Android ID.
+    channels.touch(65535, 0, 0.0, 0.0, 123).unwrap();
+    let second = channels.touch(65503, 0, 0.0, 0.0, 123).unwrap().unwrap();
+    assert_eq!(second.body, expected(&[1, 0], 0, 5));
+    let up = channels.touch(65535, 2, 0.0, 0.0, 123).unwrap().unwrap();
+    assert_eq!(up.body, expected(&[1, 0], 1, 6));
+    let replacement = channels.touch(60000, 0, 0.0, 0.0, 123).unwrap().unwrap();
+    assert_eq!(replacement.body, expected(&[0, 1], 0, 5));
+    let cancel = channels.touch(65503, 3, 0.0, 0.0, 123).unwrap().unwrap();
+    assert_eq!(cancel.body, expected(&[0, 1], 1, 3));
+    assert!(channels.touch(60000, 2, 0.0, 0.0, 123).unwrap().is_none());
+    for host in 100..110 {
+        assert!(channels.touch(host, 0, 0.0, 0.0, 123).unwrap().is_some());
+    }
+    assert!(channels.touch(110, 0, 0.0, 0.0, 123).unwrap().is_none());
+    channels.touch(100, 3, 0.0, 0.0, 123).unwrap();
+    assert_eq!(
+        channels
+            .touch(65535, 0, 0.0, 0.0, 123)
+            .unwrap()
+            .unwrap()
+            .body,
+        expected(&[0], 0, 0)
+    );
+}
+#[test]
 fn audio_roles_start_stop_ack_and_fresh_session_are_independent() {
     let mut channels = opened();
     for channel in 4..=6 {

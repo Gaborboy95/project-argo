@@ -266,7 +266,9 @@ pub struct Channels {
     open: BTreeSet<u8>,
     setup: BTreeSet<u8>,
     sessions: BTreeMap<u8, u64>,
-    pointers: BTreeMap<u16, (u32, u32)>,
+    // IPC/Flutter contact identity is not an Android MotionEvent pointer ID.
+    pointers: BTreeMap<u16, (u8, u32, u32)>,
+    reported_large_pointer: bool,
     discovered: bool,
     // Explicit host/phone return remains in effect until a host activation.
     video_requested: bool,
@@ -280,6 +282,7 @@ impl Channels {
             setup: BTreeSet::new(),
             sessions: BTreeMap::new(),
             pointers: BTreeMap::new(),
+            reported_large_pointer: false,
             discovered: false,
             video_requested: true,
             metadata_warnings: BTreeSet::new(),
@@ -640,10 +643,26 @@ impl Channels {
         } else if !self.pointers.contains_key(&pointer) {
             return Ok(None);
         }
-        self.pointers.insert(pointer, point);
+        // Android permits IDs 0..31. Keep the existing ten-contact bound and
+        // allocate IDs 0..9 for the lifetime of each contact, not modulo host ID
+        // (which would collide). UP/CANCEL release the mapping after encoding.
+        let wire_id = self.pointers.get(&pointer).map(|p| p.0).unwrap_or_else(|| {
+            (0..10)
+                .find(|id| !self.pointers.values().any(|p| p.0 == *id))
+                .expect("contact capacity checked above")
+        });
+        if pointer > 31 && !self.reported_large_pointer {
+            self.reported_large_pointer = true;
+            crate::daemon_log!(
+                Debug,
+                "aa-input",
+                "Host pointer {pointer} exceeds Android ID range; mapped to contact {wire_id}"
+            );
+        }
+        self.pointers.insert(pointer, (wire_id, point.0, point.1));
         let mut touch = Proto::default();
         let mut index = 0;
-        for (i, (&id, &(x, y))) in self.pointers.iter().enumerate() {
+        for (i, (&id, &(wire_id, x, y))) in self.pointers.iter().enumerate() {
             if id == pointer {
                 index = i;
             }
@@ -652,7 +671,7 @@ impl Channels {
                 Proto::default()
                     .number(1, x as u64)
                     .number(2, y as u64)
-                    .number(3, id as u64),
+                    .number(3, wire_id as u64),
             );
         }
         let action = match phase {

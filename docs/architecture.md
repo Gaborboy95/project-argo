@@ -138,6 +138,14 @@ Input is sent only by ProjectionView's mapped Listener; platform controller touc
 dispatch is deliberately a no-op. Rendering and input share fitted geometry;
 content insets are removed once, safe insets remain metadata, and logical
 pointer coordinates are not blindly multiplied by DPR.
+The AA engine maps host contact IDs to reusable Android pointer IDs 0–9, preserving
+identity until Up or gesture-wide Cancel. Flutter pointer IDs change on every Down
+and must not be copied directly into Android MotionEvents, whose IDs are limited
+to 0–31. Allocation is per session, retains the ten-contact bound, and does not use
+modulo mapping (simultaneous contacts must never collide). See the
+[Flutter pointer contract](https://api.flutter.dev/flutter/gestures/PointerEvent/pointer.html)
+and [Android input limits](https://android.googlesource.com/platform/frameworks/base/+/00a10a1494954d124e1b11bc1ba3128e47b8ffbd/include/androidfw/Input.h).
+
 
 The [native view](../native/projection/argo-projection-view/src/projection_view.cpp)
 negotiates IHS kind/format support, decodes/converts with GStreamer and exports
