@@ -8,12 +8,13 @@ final class MediaDetails {
     this.title,
     this.artist,
     this.album,
+    this.artworkPath,
     this.application,
     this.playback = MediaPlaybackState.unknown,
     this.positionMs,
     this.durationMs,
   });
-  final String? title, artist, album, application;
+  final String? title, artist, album, application, artworkPath;
   final MediaPlaybackState playback;
   final int? positionMs, durationMs;
   @override
@@ -22,6 +23,7 @@ final class MediaDetails {
       title == other.title &&
       artist == other.artist &&
       album == other.album &&
+      artworkPath == other.artworkPath &&
       application == other.application &&
       playback == other.playback &&
       positionMs == other.positionMs &&
@@ -31,6 +33,7 @@ final class MediaDetails {
     title,
     artist,
     album,
+    artworkPath,
     application,
     playback,
     positionMs,

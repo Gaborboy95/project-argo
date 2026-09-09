@@ -44,6 +44,7 @@ class Connection implements ConnectivityService {
                 'updated_at_ms': 1,
                 'commands': ['play', 'pause'],
                 'title': 'Track',
+                'artwork_path': '/private/owned-reference.img',
                 'artist': null,
                 'album': null,
                 'position_ms': null,
@@ -64,6 +65,10 @@ void main() {
     connection.emit();
     expect(media.current.sources.single.kind, MediaSourceKind.bluetooth);
     expect(media.current.sources.single.details.positionMs, isNull);
+    expect(
+      media.current.sources.single.details.artworkPath,
+      '/private/owned-reference.img',
+    );
     expect(media.current.activeSourceId, isNull);
     final selecting = media.selectSource('bluetooth:1');
     await Future<void>.delayed(Duration.zero);

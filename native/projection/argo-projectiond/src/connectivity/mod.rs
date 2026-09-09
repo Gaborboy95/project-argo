@@ -1,5 +1,6 @@
 //! Shared, protocol-neutral connectivity state. BlueZ and NM retain secrets.
 pub mod bluetooth;
+mod cover;
 pub mod music;
 pub mod network;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,10 @@ pub struct Device {
 #[derive(Clone, Default, Serialize)]
 pub struct Radio {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub usable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     pub id: String,
     pub name: String,
@@ -28,6 +33,10 @@ pub struct Prompt {
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wireless_available: Option<bool>,
+    #[serde(skip)]
+    pub wireless_disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub music: Option<music::Snapshot>,
     pub adapters: Vec<Radio>,
@@ -49,6 +58,35 @@ pub struct Snapshot {
     pub ap_frequency_mhz: Option<u32>,
 }
 impl Snapshot {
+    /// Availability never creates a connection request or resets an explicit Disable.
+    pub fn update_networks(&mut self, radios: Vec<Radio>, projection_enabled: bool) {
+        let usable: Vec<_> = radios.iter().filter(|r| r.usable == Some(true)).collect();
+        if self.interface.is_empty() && usable.len() == 1 {
+            self.interface = usable[0].id.clone();
+        }
+        let available = usable.iter().any(|r| r.id == self.interface);
+        self.wireless_available = Some(available);
+        if !self.wifi_connected
+            && !matches!(
+                self.phase.as_str(),
+                "preparing"
+                    | "bootstrap"
+                    | "connecting"
+                    | "streaming"
+                    | "retrying"
+                    | "backoff"
+                    | "cleanup"
+            )
+        {
+            self.enabled = available && !self.wireless_disabled && projection_enabled;
+            if self.phase == "disabled" && self.enabled {
+                self.phase = "idle".into();
+                self.detail = "Wireless available. Select a phone and press Connect.".into();
+            }
+        }
+        self.networks = radios;
+    }
+
     pub fn require_selected_adapter(&self, device: &str) -> Result<(), String> {
         if self.adapter.is_empty() || !self.adapters.iter().any(|a| a.id == self.adapter) {
             return Err("Select an available Bluetooth adapter in Settings".into());
@@ -197,7 +235,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             encoded,
-            include_str!("../../../../../test/fixtures/projection/ipc_v5_connectivity.hex").trim()
+            include_str!("../../../../../test/fixtures/projection/ipc_v6_connectivity.hex").trim()
         );
         assert!(
             control
@@ -217,6 +255,44 @@ mod tests {
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
+    #[test]
+    fn detected_wifi_enables_capability_without_connection_or_rearming_disable() {
+        let radio = |id: &str, usable| Radio {
+            id: id.into(),
+            usable: Some(usable),
+            ..Default::default()
+        };
+        let mut state = Snapshot {
+            phase: "disabled".into(),
+            ..Default::default()
+        };
+        state.update_networks(
+            vec![radio("management", false), radio("projection", true)],
+            true,
+        );
+        assert_eq!(state.interface, "projection");
+        assert!(state.enabled);
+        assert_eq!(state.phase, "idle");
+        assert!(!state.wifi_connected);
+        state.wireless_disabled = true;
+        state.update_networks(vec![radio("projection", true)], true);
+        assert!(!state.enabled);
+        state.wireless_disabled = false;
+        state.update_networks(vec![], true);
+        assert!(!state.enabled);
+        assert_eq!(state.wireless_available, Some(false));
+        state.update_networks(vec![radio("projection", true)], false);
+        assert!(!state.enabled); // Bluetooth-only launch
+        state.update_networks(vec![radio("projection", true)], true);
+        state.phase = "streaming".into();
+        state.wifi_connected = true;
+        state.update_networks(vec![radio("projection", false)], true);
+        assert!(state.enabled); // Session health owns active loss/cleanup.
+        let mut ambiguous = Snapshot::default();
+        ambiguous.update_networks(vec![radio("first", true), radio("second", true)], true);
+        assert!(!ambiguous.enabled);
+        assert!(ambiguous.interface.is_empty());
+    }
     #[test]
     fn shared_adapter_admission_rejects_other_and_missing_radios() {
         let mut state = Snapshot {

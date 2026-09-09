@@ -266,7 +266,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v5_host_return.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v6_host_return.hex").trim()
         );
 
         let ready = connecting.clone().ready();

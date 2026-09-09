@@ -63,7 +63,7 @@ workflows describe their scoped opt-ins and fake-systemctl tests.
 
 ## Projection launch
 
-Use a staged release containing a matching IPC v5 application and daemon; Argo does
+Use a staged release containing a matching IPC v6 application and daemon; Argo does
 not spawn the daemon. `ARGO_WIRELESS_BUNDLE` selects it through the existing
 [launcher](../tool/connectivity/run-release.sh). Its fallback path is a local
 convenience; deployments should select their release explicitly from its manifest.
@@ -79,7 +79,6 @@ Terminal 1 — identity belongs only to the daemon:
 : "${ARGO_ANDROID_AUTO_CERT_FILE:?Set the existing external PEM certificate path}"
 : "${ARGO_ANDROID_AUTO_KEY_FILE:?Set the existing external PKCS#8 PEM key path}"
 export ARGO_WIRELESS_BUNDLE ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
-export ARGO_WIRELESS_DEVELOPMENT=1
 "$HOME/dev/argo/tool/connectivity/run-release.sh" daemon
 ```
 
@@ -95,12 +94,14 @@ unset ARGO_ANDROID_AUTO_CERT_FILE ARGO_ANDROID_AUTO_KEY_FILE
 The launcher selects LIVE/production Android Auto, dedicated IPC/media sockets,
 IHS paths, native-view and Lua libraries. It refuses a second daemon/homescreen and
 requires a desktop XDG_RUNTIME_DIR. It does not provision identity, install the
-firewall helper or enable wireless. Follow [pairing and connection](wireless.md#pairing-and-connection)
+firewall helper or start wireless. It defaults host volume control to PipeWire,
+respecting an explicit `ARGO_AUDIO_BACKEND=disabled`. Wireless availability follows
+read-only adapter/channel checks. Follow [pairing and connection](wireless.md#pairing-and-connection)
 after launch. Credentials must already exist; Argo does not provide a phone-accepted
 self-signed provisioning recipe.
 
-For wired operation, omit/unset ARGO_WIRELESS_DEVELOPMENT in terminal 1, leave
-wireless disabled and connect USB data. USB device permissions must cover both
+For wired operation, leave wireless unconnected (or disable it in Settings →
+Devices) and connect USB data. Availability alone never starts an AP. USB device permissions must cover both
 normal and accessory modes. The launcher and session engine are otherwise shared.
 
 ## Shutdown and rollback
@@ -111,9 +112,11 @@ message as completed shutdown. An async timeout cannot interrupt synchronous nat
 FFI. Forced termination cannot guarantee settings flush or graceful resource release.
 
 Keep the previous release directory and its manifest. To roll back, stop both current
-processes, set ARGO_WIRELESS_BUNDLE to the previous compatible IPC v5 bundle in both
-terminals, and relaunch. Older IPC v4 wired bundles require their corresponding
-application/daemon workflow; never mix IPC versions. Do not overwrite loaded binaries.
+processes, set ARGO_WIRELESS_BUNDLE to the preserved previous bundle in both
+terminals, and run that bundle's own `run-release.sh daemon` / `run-release.sh app`.
+IPC v5 rollbacks require their original wireless development flag when connecting
+wirelessly. Never combine an IPC v5 executable with an IPC v6 application. Older
+wired releases likewise require their own matching workflow. Do not overwrite loaded binaries.
 
 Before removing a stale socket, inspect `pgrep -af argo-projectiond`,
 `pgrep -a homescreen` and `ss -xlpn`; verify the exact path and absence of a live owner.

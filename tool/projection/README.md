@@ -78,14 +78,14 @@ Offline builds require cached locked dependencies. Resolve missing dependencies
 explicitly without updating the lockfile; do not silently upgrade the toolchain.
 Tests use OpenSSL for isolated memory-TLS fixtures, not production identity provisioning.
 
-Choose an existing compatible IPC v5 bundle and a **new, nonexistent** destination.
+Choose an existing compatible IPC v6 bundle and a **new, nonexistent** destination.
 ARGO_BASE_BUNDLE and ARGO_RELEASE below are shell recipe variables, not application
 configuration options.
 The working source bundle may remain running because its files are only read:
 
 ```bash
 set -euo pipefail
-: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v5 release directory}"
+: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v6 release directory}"
 : "${ARGO_RELEASE:?Set a new absolute release directory}"
 test -d "$ARGO_BASE_BUNDLE"
 test ! -e "$ARGO_RELEASE"
@@ -102,6 +102,30 @@ toolchain/features, dependency/asset hashes and validation scope for this build.
 Keep the previous bundle as rollback. Stop the previous processes before selecting
 the new bundle through the [shared launch workflow](../../docs/setup.md#projection-launch).
 No Engine, IHS, Flutter application or native-view rebuild is needed for this path.
+
+For application/IPC changes, build a new application with `emb` and copy only
+unchanged compatible native assets from the preserved bundle. Do not copy the old
+`libapp.so` or Flutter assets over the new build:
+
+```bash
+set -euo pipefail
+: "${ARGO_BASE_BUNDLE:?Set the preserved native-compatible release}"
+: "${ARGO_RELEASE:?Set a new nonexistent release directory}"
+test ! -e "$ARGO_RELEASE"
+emb bundle --app-path "$ARGO" --workspace "$FLUTTER_WORKSPACE" \
+  --arch x86_64 --mode release --build --output "$ARGO_RELEASE"
+for argo_library in libargo_projection_view.so libveloce_lua_native.so libsqlite3.so; do
+  cp -a "$ARGO_BASE_BUNDLE/lib/$argo_library" "$ARGO_RELEASE/lib/$argo_library"
+done
+install -d "$ARGO_RELEASE/bin"
+install -m 755 "$ARGO/native/projection/target/release/argo-projectiond" "$ARGO_RELEASE/bin/argo-projectiond"
+install -m 755 "$ARGO/tool/connectivity/run-release.sh" "$ARGO_RELEASE/run-release.sh"
+```
+
+Use the installed `emb` path from the next section. Verify the unchanged Engine,
+IHS/native-view and Lua/SQLite asset hashes against the source manifest. Native
+video framing is unchanged by control IPC v6; an IPC v5 bundle can supply these
+native assets, but its daemon/application must not be mixed into the new release.
 
 ## Build the native view and Argo bundle
 

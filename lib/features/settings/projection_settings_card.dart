@@ -19,32 +19,29 @@ class ProjectionSettingsCard extends StatelessWidget {
       final enabled = caps != null && !service.saving;
       return Card(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Android Auto / Apple CarPlay',
+                'Android Auto',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const Text(
-                'Projection settings — wired Android Auto. CarPlay is not implemented.',
+                'Display preferences for wired and wireless projection.',
               ),
               const SizedBox(height: 12),
-              Text('Backend: ${state.message}'),
               Text('Saved request: $p'),
               Text(
                 state.active == null
                     ? 'Current session: none'
                     : 'Current session selected: ${state.active}',
               ),
-              if (state.sessionId != null) Text('Session: ${state.sessionId}'),
               Text(
                 state.pending == null
                     ? 'Next connection: not yet validated by the daemon'
                     : 'Next connection (validated): ${state.pending}',
               ),
-              if (caps != null) Text('Daemon defaults: ${caps.defaults}'),
               if (caps == null)
                 const Text(
                   'Saved preferences remain visible. Connect the daemon to edit supported modes.',
@@ -60,6 +57,7 @@ class ProjectionSettingsCard extends StatelessWidget {
               const Text(
                 'Applies on next phone connection. Changing settings does not disconnect the phone.',
               ),
+              const SizedBox(height: 12),
               DropdownButtonFormField<(int, int)>(
                 key: ValueKey('projection-resolution-${p.width}-${p.height}'),
                 decoration: const InputDecoration(
@@ -90,6 +88,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                       }
                     : null,
               ),
+              const SizedBox(height: 12),
               DropdownButtonFormField<int>(
                 key: ValueKey('projection-fps-${p.framesPerSecond}'),
                 decoration: const InputDecoration(
@@ -118,6 +117,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                       }
                     : null,
               ),
+              const SizedBox(height: 12),
               TextFormField(
                 key: ValueKey('projection-dpi-${p.dpi}'),
                 initialValue: '${p.dpi}',
@@ -149,6 +149,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                   }
                 },
               ),
+              const SizedBox(height: 12),
               DropdownButtonFormField<ProjectionDriverSide>(
                 key: ValueKey('projection-driver-${p.driverSide.name}'),
                 decoration: const InputDecoration(labelText: 'Driver side'),
@@ -180,28 +181,40 @@ class ProjectionSettingsCard extends StatelessWidget {
                     : () => unawaited(service.reset()),
                 child: const Text('Reset projection defaults'),
               ),
-              const Text(
-                'Saved safe-area preferences are retained but not applied by this backend.',
-              ),
-              const Text(
-                'Source FPS is not physical screen refresh rate. Source DPI is not Flutter DPR or presentation scale.',
-              ),
-              const Text(
-                'Session values describe selected negotiation parameters; decoded video dimensions and output-device audio format are not observed here.',
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Native playback formats (read-only)',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              for (final format in caps?.audio ?? [])
-                Text(
-                  '${format.role}: PCM, ${format.rate / 1000} kHz, ${format.bits}-bit, ${format.channels == 2 ? 'stereo' : 'mono'}',
-                ),
-              if (caps == null)
-                const Text('Audio format capabilities unavailable.'),
-              const Text(
-                'Per-stream focus gain is separate from system master volume. Microphone capture is not implemented.',
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Technical details'),
+                childrenPadding: const EdgeInsets.symmetric(vertical: 12),
+                expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Backend: ${state.message}'),
+                  if (state.sessionId != null)
+                    Text('Session: ${state.sessionId}'),
+                  if (caps != null) Text('Daemon defaults: ${caps.defaults}'),
+                  const Text(
+                    'Saved safe-area preferences are retained but not applied by this backend.',
+                  ),
+                  const Text(
+                    'Source FPS is not physical screen refresh rate. Source DPI is not Flutter DPR or presentation scale.',
+                  ),
+                  const Text(
+                    'Session values describe selected negotiation parameters; decoded video dimensions and output-device audio format are not observed here.',
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Native playback formats (read-only)',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  for (final format in caps?.audio ?? [])
+                    Text(
+                      '${format.role}: PCM, ${format.rate / 1000} kHz, ${format.bits}-bit, ${format.channels == 2 ? 'stereo' : 'mono'}',
+                    ),
+                  if (caps == null)
+                    const Text('Audio format capabilities unavailable.'),
+                  const Text(
+                    'Per-stream focus gain is separate from system master volume. Microphone capture is not implemented.',
+                  ),
+                ],
               ),
             ],
           ),

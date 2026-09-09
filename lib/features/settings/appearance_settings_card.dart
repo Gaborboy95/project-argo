@@ -38,7 +38,7 @@ class AppearanceSettingsCard extends StatelessWidget {
       final accent = settings.get(AppSettingKeys.appearanceSeedColor);
       return Card(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

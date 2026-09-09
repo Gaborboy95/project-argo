@@ -1,3 +1,4 @@
+import 'media_artwork.dart';
 import '../../core/connectivity/connectivity_service.dart';
 import '../../core/media/media_session_service.dart';
 import '../../core/media/media_state.dart';
@@ -70,25 +71,7 @@ class _MediaPageState extends State<MediaPage> {
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Semantics(
-                  label: 'Music artwork unavailable',
-                  child: Container(
-                    width: 160,
-                    height: 160,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .surfaceContainerHighest,
-                    child: Icon(
-                      Icons.music_note_outlined,
-                      size: 64,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                _MediaFacts(snapshot: _snapshot, media: widget.media),
-              ],
+              children: [_MediaFacts(snapshot: _snapshot, media: widget.media)],
             ),
           ),
         ),
@@ -160,6 +143,10 @@ class _MediaFacts extends StatelessWidget {
                     ),
                 ],
               ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: MediaArtwork(path: details?.artworkPath),
+            ),
             Text(
               source?.kind == MediaSourceKind.bluetooth
                   ? 'Bluetooth · ${source?.displayName ?? "Phone"}'
@@ -278,6 +265,12 @@ class _MusicConnectionState extends State<_MusicConnection> {
           Text(
             '${state.music?['phase'] ?? ""} · ${state.music?['error'] ?? state.music?['detail'] ?? ""}',
           ),
+          if (state.music?['source']?['artwork_path'] == null &&
+              state.music?['source']?['artwork_status'] != null)
+            Text(
+              '${state.music!['source']['artwork_status']}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           if (state.music?['cleanup_error'] != null)
             Text('Cleanup: ${state.music?["cleanup_error"]}'),
           const SizedBox(height: 12),

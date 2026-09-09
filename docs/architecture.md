@@ -92,14 +92,14 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v5 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v6 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
 loads them from its environment. The native video feed is separately framed/bounded. Argo connects to an already
 running daemon and does not provide automatic daemon respawn supervision.
 
-IPC v5 includes a u32 host-return revision in session messages (kind 3), and a
+IPC retains a u32 host-return revision in session messages (kind 3), and a
 u32 presentation revision to video messages (kind 4). Both are session-scoped,
 start at zero and use network byte order. Explicit phone UNFOCUSED requests advance
 the first; AV stop does not. The application compares revisions only for the same
@@ -206,7 +206,7 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
-## Projection configuration ownership (IPC v5)
+## Projection configuration ownership (IPC v6)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -268,7 +268,8 @@ Bluetooth pairing database is introduced. See [Media sources](media.md) for rout
 installation, bounded connection intent and extension contracts.
 
 The daemon's bounded metadata parser handles track replacement separately from
-status/battery patches. It never copies artwork into state. Semantic duplicates
+status/battery patches. A bounded artwork owner stores the encoded image in a private runtime file. IPC v6
+appends an optional cache reference to kind 11; no media bytes enter control IPC. Semantic duplicates
 produce no revision or notification. Each live session has its own revision and
 receive timestamp; the existing unique session ID supplies its epoch. Replacement,
 failure and disconnect discard metadata; session-ID checks reject late updates.
@@ -278,8 +279,8 @@ session/message type, while unrelated AV handling continues. Bounds remain 64 Ki
 IPC payload and 256 KiB buffered IPC; AA optional parsing respects the existing
 4 MiB message limit, 1024 fields and 1024 UTF-8 bytes per accepted text.
 
-Media reads shared state in a scrollable Now Playing layout with a neutral artwork
-placeholder, track facts and optional phone battery. It owns no session state or
+Media reads shared state in a scrollable Now Playing layout with bounded cached album artwork (or a neutral
+placeholder), track facts and optional phone battery. It owns no session state or
 native video. Suspension/host return retain metadata and audio. The layer regression
 checks the same native ID across metadata, host navigation and resume.
 
@@ -323,7 +324,7 @@ updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
 System-mode resolution uses Flutter's host brightness only; a future normalized
 vehicle day/night source would require a separate explicit policy.
 
-## Shared connectivity and wireless admission (IPC v5)
+## Shared connectivity and wireless admission (IPC v6)
 
 The existing daemon contains the protocol-neutral BlueZ device/pairing adapter
 and NetworkManager AP adapter in `connectivity/`. The single non-default agent
@@ -334,9 +335,16 @@ A shared session semaphore is acquired before USB publishes session state/AOAP
 or wireless opens any AP/listener. It is released after owned cleanup.
 No alternate renderer/audio/channel engine exists. Public transport `wifi` flows
 through existing media/Veloce mappings; private radio identity stays in connectivity.
-IPC v5 adds kind 30 status and kind 31 commands; all control remains bounded and
+Connectivity uses kind 30 status and kind 31 commands; all control remains bounded and
 credential-free. Client closure cancels connectivity through a separate watch
 revision, even when the command queue is full.
+
+Read-only network inventory derives wireless capability from selected-interface
+availability, AP/band support and legal channel flags. It never creates a connection
+request or overrides an explicit Disable. The inactive NM credential template
+retains the same phone's network between connections; the active AP remains a
+volatile, D-Bus-lifetime-bound resource. Phone changes rotate credentials and Forget
+removes the matching template. See [wireless ownership/security](wireless.md).
 
 ### Attempt readiness and termination
 

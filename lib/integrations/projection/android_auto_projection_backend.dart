@@ -426,6 +426,7 @@ final class AndroidAutoProjectionBackend
     final application = text(), position = millis(), duration = millis();
     final name = text(), manufacturer = text(), model = text();
     final battery = r.uint8(), critical = r.uint8();
+    final artworkPath = text();
     _requireDone(r);
     if ((battery > 100 && battery != 255) ||
         critical > 2 ||
@@ -451,6 +452,7 @@ final class AndroidAutoProjectionBackend
                 title: title,
                 artist: artist,
                 album: album,
+                artworkPath: artworkPath,
                 playback: playback,
                 application: application,
                 positionMs: position,

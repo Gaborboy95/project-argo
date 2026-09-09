@@ -15,11 +15,12 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 
 - Wired and wireless Android Auto using one video/audio/input/metadata engine.
 - Shared Bluetooth pairing and device selection; controlled projection AP with
-  saved 2.4/5 GHz band selection and current regulatory checks.
+  saved 2.4/5 GHz band selection, automatic capability detection and current regulatory checks.
 - Bluetooth A2DP reception through PipeWire, BlueZ metadata/playback controls and
   entertainment-source selection.
 - Home projection and Media/Now Playing with session-preserving AA Exit and resume.
-- Material 3 light/dark/system appearance, seed color and persistent settings.
+- Album artwork from AA and optional BlueZ BIP thumbnails, with a shared Media cache.
+- Focused Settings sections, host volume/mute, Material 3 appearance and persistent preferences.
 - Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
   explicitly enabled host power integration.
 - External vehicle bundles and permission-controlled Lua host-state reads through

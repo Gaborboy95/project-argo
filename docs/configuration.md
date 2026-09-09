@@ -56,12 +56,12 @@ handshake signatures are checked separately; see [wireless security](wireless.md
 
 | Connectivity/launcher variable | Default and application timing |
 |---|---|
-| `ARGO_WIRELESS_DEVELOPMENT` | Unset: wireless admission unavailable; exactly `1` permits the development policy. Daemon startup. UI Enable/Connect still required; not persistent enablement. |
 | `ARGO_WIRELESS_BUNDLE` | Optional absolute staged release directory selected by `tool/connectivity/run-release.sh`; its local fallback is defined in the script. Set explicitly in both terminals for deployment. |
 | `IHS_PREFIX` | Launcher/build convention, default `$HOME/dev/ivi-build/out/usr/local`; must contain matched executable/library/header assets. |
 
 The release launcher fixes control/media socket paths beneath
-`$XDG_RUNTIME_DIR/argo-wireless-ipc5/`, selects production/android-auto, and clears
+`$XDG_RUNTIME_DIR/argo-wireless-ipc6/`, defaults host audio to PipeWire (explicit
+`ARGO_AUDIO_BACKEND=disabled` is respected), selects production/android-auto, and clears
 the renderer-test flag. Direct daemon/app launches instead use the socket resolution
 rules in the table. It sets native-view/Lua library and loader paths from the bundle.
 It does not read identity into the application or perform pairing/provisioning.
@@ -157,7 +157,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v5 is incompatible with v1, v2, v3 and v4: rebuild/restart both client and daemon together.
+IPC v6 is incompatible with v1–v5: rebuild/restart both client and daemon together.
 Session/video messages include session-scoped presentation revisions; AV stops
 are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
@@ -170,7 +170,8 @@ connection. The daemon has no user-settings database; restart restores daemon
 defaults until Argo sends its saved request. See the [wire contract](architecture.md).
 
 
-Host media/phone state is live, not a setting. Track, playback, phone, artwork and credential data are not persisted. Backend DEBUG emits bounded revision-only
+Host media/phone state is live, not a setting. Track, playback and phone state are not persisted in Argo settings. Artwork is an ephemeral private runtime cache; NetworkManager alone retains the
+owned AP credential template. Backend DEBUG emits bounded revision-only
 metadata diagnostics; packet metadata remains TRACE. The optional host diagnostic
 switch only exposes observer DEBUG lines; it does not grant Lua read permission.
 Read access requires `argo.host.read.v1`; see [the host API](vehicle-integrations.md#read-only-argo-host-state-v1).
@@ -205,20 +206,24 @@ shaders and vehicle-driven day/night selection remain future work.
 
 ## Connectivity requests
 
-Settings → Devices & connectivity saves `connectivity.bluetoothAdapter`,
+Settings → Devices saves `connectivity.bluetoothAdapter`,
 `connectivity.projectionInterface`, and `connectivity.projectionPhone` as bounded
 string references (default empty). BlueZ owns bonds and NM owns AP profiles; no
 secrets are saved in these preferences. `connectivity.projectionBand` stores
 `2.4ghz` or `5ghz` (default `5ghz`); the daemon validates it and uses only permitted
 channels in that band, without automatic cross-band fallback. Selection changes during a session apply
-on the next connection. Enable/Connect are explicit and never restored at launch.
-The daemon gate `ARGO_WIRELESS_DEVELOPMENT=1` permits the development admission
-policy but does not enable wireless, start discovery, register AA or create an AP.
+on the next connection. Wireless capability is enabled automatically when a selected
+managed Wi-Fi interface supports AP mode and a permitted channel in that band.
+A card used by another connection is unavailable. If exactly one candidate is viable
+and no interface was chosen, it is selected; ambiguity requires selection. Disable
+persists for the application connection until explicitly enabled again. Connect and
+discovery remain explicit, never restored or initiated by capability detection.
+The former `ARGO_WIRELESS_DEVELOPMENT` flag is no longer read.
 See [security, permissions, launch and rollback](wireless.md).
 
 ## Bluetooth music and media ownership
 
-Bluetooth music uses the same IPC v5 connectivity envelope with an optional `music`
+Bluetooth music uses the same IPC v6 connectivity envelope with an optional `music`
 capability/state object, generation-scoped requests and operation acknowledgements.
 Use a matched release: an older daemon without this object has no music controller.
 There is no new media payload channel or Lua write permission.

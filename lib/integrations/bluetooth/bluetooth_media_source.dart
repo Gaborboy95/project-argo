@@ -107,6 +107,7 @@ final class BluetoothMediaSource {
             title: source['title'] as String?,
             artist: source['artist'] as String?,
             album: source['album'] as String?,
+            artworkPath: source['artwork_path'] as String?,
             playback:
                 MediaPlaybackState.values
                     .where((s) => s.name == state)

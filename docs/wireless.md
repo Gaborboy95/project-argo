@@ -8,21 +8,26 @@ Argo-owned NetworkManager AP; projection then runs over TCP. Read
 
 ## Pairing and connection
 
-1. Open Settings → Devices & connectivity. Select the Bluetooth adapter and an
+1. Open Settings → Devices. Select the Bluetooth adapter and an
    idle projection Wi-Fi interface when discovery is ambiguous.
 2. Start the bounded discovery window, open the phone's Bluetooth settings and
    pair the intended device. Confirm matching device-scoped passkeys; reject
    unexpected requests. Prompts expire. Existing BlueZ bonds can be reused.
 3. Select the paired phone and AP band. Disconnect USB data for wireless testing.
-4. Enable wireless, then Connect. Approve any required phone or desktop permission
+4. With a viable selected adapter, wireless is available automatically. Press Connect. Approve any required phone or desktop permission
    prompts. AP readiness, Bluetooth bootstrap, TCP and streaming are distinct stages.
 5. Use Disconnect or Disable to stop the connection request and its retries.
    Forget revokes the device selection and removes its BlueZ bond.
 
-Wireless is disabled at each launch. The development gate permits enablement but
-neither starts an AP nor connects a phone. Saved adapter/interface/phone/band choices
-are restored without connecting. Changed choices remain pending for the next explicit
-connection; each current attempt and its retries keep the frozen selection.
+Wireless availability follows read-only NetworkManager managed/radio state, AP/band
+capabilities and current permitted channels. An idle viable interface is selected
+automatically only when unambiguous. A card serving another network is unavailable
+for projection. No environment enable flag is required. Discovery, AP creation and
+connection still require explicit controls; availability alone starts none of them.
+Disable stays in effect for the current application connection until enabled again.
+Saved adapter/interface/phone/band choices are restored without connecting. Changed
+choices remain pending for the next connection; current attempts and retries retain
+their frozen selection. Bluetooth pairing/music do not depend on NM readiness.
 
 Argo registers one non-default BlueZ pairing agent for Argo-initiated pairing.
 Incoming desktop pairing continues through the desktop agent. Argo does not replace
@@ -47,9 +52,16 @@ legally possible deployments. Regulatory country, power, drivers and firmware ar
 not changed. The active AP configuration frequency is shown separately from the
 saved band choice; `iw dev` can independently inspect actual radio configuration.
 
-Each attempt generates fresh WPA2/RSN/CCMP credentials and a non-overlapping private
-IPv4 /24. Credentials are sent only over selected authenticated bootstrap, never
-through ordinary IPC, logs, settings or Veloce. Readiness requires NM activation,
+On first Connect, Argo generates deployment-specific WPA2/RSN/CCMP credentials and
+a non-overlapping private IPv4 /24. NetworkManager stores them in the inactive,
+non-autoconnecting, account-restricted `Argo Projection credentials (<interface>)`
+profile, marked `org.argo.owner=projection-credentials-v1`. This credential template
+is never activated by Argo. Reconnecting the same selected phone reuses its network
+and permanent radio BSSID, allowing the phone to recognize the AP. Connecting a
+different phone rotates the template; Forget removes matching credentials. A removal
+failure is reported separately from bond removal. The attempt's active profile
+remains volatile and bound to its D-Bus owner. Credentials are delivered only over
+selected authenticated bootstrap, never through IPC, logs, Argo settings or Veloce. Readiness requires NM activation,
 the assigned AP address and its DHCP service, not merely an activation request.
 
 NM IPv4 shared mode runs DHCP/DNS and adds forwarding/masquerading through the host
@@ -107,7 +119,8 @@ authorizations expire. `pkexec --disable-internal-agent` with an unapproved inte
 must fail inside the helper; a non-enrolled account must fail polkit authorization.
 These are installation/hardware checks, separate from input-validation tests.
 
-Cleanup stops only the owned activation and input guard. A partial activation
+Cleanup stops only the owned activation and input guard. The inactive credential
+template survives Disconnect and daemon restart; it does not retain a hotspot. A partial activation
 failure closes its attempt-local D-Bus owner. If activation/deactivation is uncertain,
 the firewall guard remains and automatic replacement is blocked. Inspect the owned
 profile and interface before recovery. After verifying that the owned AP is stopped,
@@ -130,9 +143,22 @@ helper before wireless use; rollback does not require restoring generic password
 prompts. Complete cleanup with the old helper before first upgrading from an
 ifindex-named guard; the new helper never deletes unrelated or legacy tables.
 
+To reset the saved projection network, stop Argo and verify the activation has
+completed cleanup. Inspect `nmcli -f NAME,UUID,TYPE connection show`, identify the
+owned inactive credential template, then remove only its UUID:
+
+```bash
+: "${ARGO_CREDENTIAL_UUID:?Set the verified inactive Argo credential template UUID}"
+nmcli connection delete uuid "$ARGO_CREDENTIAL_UUID"
+```
+
+This deletes the saved SSID/password/address; the next explicit Connect generates
+new ones. Use this after a persistent subnet/route conflict or credential exposure.
+No unrelated network profile or Bluetooth bond needs removal.
+
 ## Startup and session lifetime
 
-Disabled → enabled → connecting → established describes connection ownership;
+Unavailable/disabled → available/enabled → connecting → established describes connection ownership;
 video visibility is a separate state. One session lease arbitrates USB and Wi-Fi
 before AP/listener/media resources are created. An incoming wireless request cannot
 replace wired projection. Explicit switching waits for old cleanup.
@@ -210,13 +236,14 @@ FFI, and workers are not abandoned to make shutdown appear complete.
 
 ## Security and admission
 
-`ARGO_WIRELESS_DEVELOPMENT=1` explicitly enables the development admission policy.
-It requires a selected paired phone, authenticated/encrypted BlueZ RFCOMM, successful
-version/start exchange, fresh credentials delivered only to that peer, a bounded
+Wireless admission remains experimental even though capability detection no longer
+requires an environment gate. Explicit Connect authorizes the selected paired phone,
+authenticated/encrypted BlueZ RFCOMM, successful version/start exchange, credentials
+delivered only to that peer, a bounded
 interface/subnet-restricted TCP window and rejection of unsolicited/second candidates.
 
-TCP association relies on possession of fresh AP credentials; it is **not a
-cryptographic binding to Bluetooth phone identity**. A compromised credential holder
+TCP association relies on possession of the selected phone's AP credentials; it is **not a
+cryptographic binding to Bluetooth phone identity**. Credentials are reused for that phone across connections. A compromised credential holder
 can race the intended phone. Source IP, display name and completed TLS are not proof
 of phone identity. Wireless TLS verifies handshake signatures while retaining legacy
 certificate-chain compatibility. The wired AttachedUsbPeer policy is unchanged.
@@ -224,7 +251,9 @@ External identity format/ownership is defined in [configuration](configuration.m
 
 ## Troubleshooting and manual validation
 
-INFO logs distinguish AP/DHCP readiness, HFP trigger outcome, authenticated RFCOMM,
+INFO timing logs measure preflight, AP/DHCP readiness and TCP acceptance from Connect.
+They distinguish cold AP/network association from the subsequent AA handshake;
+there is no deliberate post-bootstrap delay. INFO logs also distinguish HFP trigger outcome, authenticated RFCOMM,
 version scalars, credential delivery, StartResponse and TCP admission. No secrets or
 raw WPP payloads are logged. Check the first failure and any separate cleanup error.
 With `ARGO_PROJECTION_LOG_LEVEL=debug`, established-session liveness reports at most
@@ -284,3 +313,9 @@ AA session heartbeat fields (distinct from WPP Ping/Pong) follow the existing
 [PingRequest timestamp](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/PingRequestMessage.proto)
 and [PingResponse timestamp](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/PingResponseMessage.proto)
 declarations. Correlation adds no wire fields or changes to encryption policy.
+
+The startup/artwork comparison uses [LIVI revision b8651d7](https://github.com/f-io/LIVI/tree/b8651d795e5f84871d7454ce25e6ff6fb79e03d5).
+Its dedicated-interface deployment can keep an AP ready outside NetworkManager;
+Argo retains explicit activation and management-network protection. Reusing a
+phone's network reduces avoidable network churn, but cold activation and phone
+association remain hardware-dependent. No fixed few-second startup guarantee is made.

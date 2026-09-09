@@ -7,7 +7,7 @@
 | Application | Retained module navigation, typed persistent settings, diagnostics and lifecycle cleanup. |
 | Appearance | Material 3 light/dark/system modes and seed color; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. |
-| Media | Native video/PCM, touch, AA and Bluetooth metadata, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
+| Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -40,10 +40,13 @@ PipeWire 1.4.2 and WirePlumber 0.5.8. Actual phone reception, command support,
 AA/Bluetooth audibility switching and focus require hardware acceptance. The
 installation-time polkit grant also requires deployed verification after cached
 authorizations expire; source validation tests do not establish installed policy.
+AA artwork, Bluetooth BIP artwork and network-credential reuse need phone
+verification. No new startup-latency result is established by automated tests.
+BlueZ experimental artwork APIs are disabled in the inspected installation.
 See [Media sources](media.md) for the opt-in and limitations.
 
 
-Wireless admission requires a development gate. See the canonical
+Wireless availability is detected automatically; admission remains experimental. See the canonical
 [security policy](wireless.md#security-and-admission) for its identity-binding
 limitation and the [network policy](wireless.md#projection-network) for NAT and
 firewall behavior. External AA identity is required; format and ownership are in
@@ -54,7 +57,7 @@ Mu, and Home has resumed that same session. The wireless receive-liveness watchd
 has controlled-time regression coverage, including a real loopback TCP peer that
 keeps draining requests without replying or closing, heartbeat-only suspended
 operation, and cancellation/replacement. Hardware silent-loss detection and cleanup
-latency remain unverified. Repeated Exit/Home cycles, reconnect endurance, phone app
+latency remain unverified. The corrected Exit input path and multi-touch gestures have phone coverage. Reconnect endurance, phone app
 internet access and fresh wired regression remain hardware acceptance work. Management Ethernet was unavailable
 in the latest wireless setup; a separate Wi-Fi adapter carried management traffic.
 Do not infer Ethernet-connected acceptance from projection success.
@@ -67,12 +70,12 @@ the stock Flutter GTK runner lacks the IHS platform-view contract.
 ## Unsupported features
 
 - Full HFP calls, contacts and phonebook.
-- CarPlay, artwork delivery, microphone capture and a general local-media player.
+- CarPlay, microphone capture and a general local-media player.
 - Wallpaper/shaders and automatic vehicle day/night appearance policy.
 - Argo-rendered Lua UI extension registries; host-state reads do not create UI.
 - Portable PipeWire balance/fader/EQ/output-routing mutations in the wpctl backend.
 - Vehicle-specific protocols, production power policy, boot-time wireless
-  auto-connect or persistent wireless enablement.
+  auto-connect or an unlimited connection supervisor.
 
 Microphone protocol signaling does not provide microphone audio. Declared vehicle
 capabilities do not install hardware backends. CAN reception cannot continue while

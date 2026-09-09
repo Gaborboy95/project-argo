@@ -28,6 +28,8 @@ pub struct Snapshot {
 }
 #[derive(Clone, Serialize)]
 pub struct Source {
+    pub artwork_path: Option<String>,
+    pub artwork_status: String,
     pub id: String,
     pub device_id: String,
     pub session_id: String,
@@ -193,6 +195,7 @@ fn route_plan(graph: &[Value], address: &str, owner: &str) -> Result<RoutePlan, 
     })
 }
 struct Music {
+    cover: super::cover::Cover,
     bus: zbus::Connection,
     host: HostControl,
     projection: watch::Sender<ProjectionRuntimeSnapshot>,
@@ -422,6 +425,7 @@ impl Music {
             .unwrap_or(false);
         if !connected {
             self.snapshot.source = None;
+            self.cover = Default::default();
             self.player.clear();
             self.silence().await?;
             if self.intent && self.attempts < 3 && tokio::time::Instant::now() >= self.next {
@@ -494,7 +498,28 @@ impl Music {
             self.snapshot.source.as_ref().unwrap().id.clone()
         };
         let revision = self.snapshot.source.as_ref().map_or(1, |s| s.revision + 1);
+        let art_key = format!(
+            "{id}:{:?}:{:?}:{:?}",
+            text("Title"),
+            text("Artist"),
+            text("Album")
+        );
+        let local = self
+            .host
+            .connectivity
+            .state
+            .borrow()
+            .adapters
+            .iter()
+            .find(|a| a.id == adapter)
+            .and_then(|a| a.address.clone())
+            .unwrap_or_default();
+        self.cover
+            .update(art_key, player_path.clone(), local, address.into())
+            .await;
         self.snapshot.source = Some(Source {
+            artwork_path: self.cover.image.as_ref().map(|a| a.path()),
+            artwork_status: self.cover.status.clone(),
             id: id.clone(),
             session_id: id,
             device_id: self.snapshot.device.clone(),
@@ -592,6 +617,7 @@ impl Music {
                 }
                 self.silence().await?;
                 self.snapshot.source = None;
+                self.cover = Default::default();
                 self.player.clear();
                 if self.snapshot.selected == "bluetooth" {
                     self.snapshot.selected.clear();
@@ -606,6 +632,7 @@ impl Music {
             "musicDisconnect" => {
                 self.intent = false;
                 self.snapshot.source = None;
+                self.cover = Default::default();
                 self.player.clear();
                 self.snapshot.phase = "disconnecting".into();
                 if self.snapshot.selected == "bluetooth" {
@@ -619,6 +646,7 @@ impl Music {
                         .await;
                 }
                 self.snapshot.source = None;
+                self.cover = Default::default();
                 self.player.clear();
                 self.snapshot.phase = "disconnected".into();
                 self.snapshot.detail = "Music stopped; Connect starts a new attempt".into();
@@ -708,6 +736,7 @@ pub async fn run(
         return;
     };
     let mut music = Music {
+        cover: Default::default(),
         bus,
         host,
         projection,
@@ -744,7 +773,7 @@ pub async fn run(
         tokio::select! { biased;
             _=shutdown.changed()=>break,
             _=cancel.changed()=>{
-                music.intent=false; music.snapshot.source=None; music.player.clear();
+                music.intent=false; music.snapshot.source=None; music.cover=Default::default(); music.player.clear();
                 music.snapshot.phase="disconnected".into(); music.snapshot.detail="Music stopped; Connect starts a new attempt".into();
                 if music.snapshot.selected=="bluetooth" {music.snapshot.selected.clear();}
                 if let Err(error)=music.silence().await {music.snapshot.error=Some(error);}
@@ -752,7 +781,7 @@ pub async fn run(
             },
             Some(event)=removed.next()=>{
                 if let Ok(args)=event.args() && !music.player.is_empty() && (args.object_path().as_str()==music.player || music.player.starts_with(&format!("{}/",args.object_path()))) {
-                    music.snapshot.source=None; music.player.clear();
+                    music.snapshot.source=None; music.cover=Default::default(); music.player.clear();
                     if let Err(error)=music.silence().await {music.intent=false;music.snapshot.error=Some(error);}
                     music.snapshot.phase="waiting".into(); music.snapshot.detail="Bluetooth player disappeared".into();music.publish();
                 }
@@ -781,7 +810,7 @@ pub async fn run(
                 } {
                     music.snapshot.detail=error; music.snapshot.phase=if music.intent {"waiting"} else {"disconnected"}.into();
                     if let Err(error)=music.silence().await { music.intent=false; music.snapshot.error=Some(error); }
-                    music.snapshot.source=None;
+                    music.snapshot.source=None; music.cover=Default::default();
                     // A routing failure must not recreate links on every tick.
                     if music.snapshot.selected=="bluetooth" {music.snapshot.selected.clear();}
                 }

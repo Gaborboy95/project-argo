@@ -102,9 +102,8 @@ impl AaTls {
         Self::with_policy(identity, false)
     }
     pub(crate) fn wireless(identity: &AndroidAutoIdentity) -> Result<Self, String> {
-        if std::env::var("ARGO_WIRELESS_DEVELOPMENT").as_deref() != Ok("1") {
-            return Err("Wireless development admission is not enabled".into());
-        }
+        // Admission is owned by the selected-peer bootstrap and interface-bound
+        // listener. Capability detection does not bypass signature verification.
         Self::with_policy(identity, true)
     }
     fn with_policy(identity: &AndroidAutoIdentity, wireless: bool) -> Result<Self, String> {
@@ -189,6 +188,6 @@ impl AaTls {
 #[cfg(test)]
 impl AaTls {
     pub(crate) fn test_wireless(identity: &AndroidAutoIdentity) -> Result<Self, String> {
-        Self::with_policy(identity, true)
+        Self::wireless(identity)
     }
 }

@@ -192,7 +192,7 @@ unknown; arrays are Lua sequence tables):
 | `projection.activeSessionId` | Existing selected projection ID, independent of media selection. |
 | `projection.sessions[]` | Current nonfailed, nondisconnected sessions: `sessionId`, `deviceId`, `protocol`, `transport`, `state`, `deviceName`, nullable `manufacturer`, nullable `model`. Device name falls back to the existing generic device descriptor when the phone has not supplied one. |
 | `media.activeSourceId` | Selected media-source ID, or nil. |
-| `media.sources[]` | `sourceId`, `sourceKind`, `sessionId`, `deviceId`, `revision`, `updatedAtMs`, nullable `title`, `artist`, `album`, `application`, `positionMs`, `durationMs`, plus `playbackState`, optional `displayName` and implemented `commands`. |
+| `media.sources[]` | `sourceId`, `sourceKind`, `sessionId`, `deviceId`, `revision`, `updatedAtMs`, nullable `title`, `artist`, `album`, `application`, `positionMs`, `durationMs`, plus `playbackState`, `hasArtwork` (boolean; no image/path access), optional `displayName` and implemented `commands`. |
 | `phones[]` | Session/device IDs, nullable `batteryPercent`, `criticalBattery`, `charging`, `revision`, `updatedAtMs`. Revision/time describe the originating session-metadata snapshot, not a separate battery sample clock; time is nil before any metadata has arrived. |
 
 Protocol values are `androidAuto`/`carPlay`, transport `usb`/`wifi`. Wired and wireless AA are implemented. Bluetooth music appears as a separate

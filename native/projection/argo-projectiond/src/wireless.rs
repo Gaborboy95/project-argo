@@ -55,25 +55,36 @@ pub async fn run(
     let inventory = async {
         loop {
             if let Some(network) = &network {
-                match tokio::time::timeout(Duration::from_secs(4), network.interfaces()).await {
+                let band = c.state.borrow().band;
+                let radios = async {
+                    let mut radios = network.interfaces().await?;
+                    for radio in &mut radios {
+                        let checked = network.eligible(&radio.id, band).await;
+                        radio.usable = Some(checked.is_ok());
+                        radio.detail = checked.err();
+                    }
+                    Ok::<_, String>(radios)
+                };
+                match tokio::time::timeout(Duration::from_secs(8), radios).await {
                     Ok(Ok(radios)) => {
                         c.state.send_modify(|s| {
-                            if s.interface.is_empty() && radios.len() == 1 {
-                                s.interface = radios[0].id.clone();
-                            }
-                            s.networks = radios;
+                            s.update_networks(radios, *host.projection_enabled.borrow());
                         });
                     }
                     _ => {
                         c.state.send_modify(|s| {
                             s.networks.clear();
+                            s.wireless_available = Some(false);
+                            if !s.wifi_connected {
+                                s.enabled = false;
+                            }
                             s.detail =
                                 "NetworkManager unavailable; Bluetooth remains available".into();
                         });
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     };
     tokio::pin!(inventory);
@@ -95,7 +106,7 @@ pub async fn run(
                 if let Some(a) = activity.take() { a.stop().await; }
                 if let Some(d) = discovery.take() { d.stop().await; }
                 if let Some(p) = pairing.take() { p.abort(); let _ = p.await; }
-                c.state.send_modify(|s| { s.enabled = false; s.prompt = None; });
+                c.state.send_modify(|s| { s.enabled = false; s.wireless_disabled=true; s.prompt = None; });
                 c.progress("disabled", "Application disconnected; wireless stopped");
             },
             Ok(crate::host_control::Command::Disconnect(id)) = commands.recv() => {
@@ -162,6 +173,10 @@ async fn process_request(
                 return Err("Disconnect projection before disabling it".into());
             }
             host.projection_enabled.send_replace(r.accept);
+            c.state.send_modify(|s| {
+                s.wireless_disabled = false;
+                s.enabled = r.accept && s.wireless_available == Some(true);
+            });
         }
         "confirm" => bt.respond(r.prompt, r.accept),
         "adapter" => {
@@ -178,6 +193,8 @@ async fn process_request(
                     id: String::new(),
                     name: String::new(),
                     address: Some(r.target.clone()),
+                    usable: None,
+                    detail: None,
                 },
                 None => return Err("Selected Bluetooth adapter is unavailable".into()),
             };
@@ -296,13 +313,13 @@ async fn process_request(
             }));
         }
         "enable" => {
-            if r.accept && std::env::var("ARGO_WIRELESS_DEVELOPMENT").as_deref() != Ok("1") {
-                return Err(
-                    "Wireless requires the documented ARGO_WIRELESS_DEVELOPMENT=1 admission gate"
-                        .into(),
-                );
+            if r.accept && c.state.borrow().wireless_available != Some(true) {
+                return Err("No viable projection Wi-Fi interface/channel selected; inspect the Wi-Fi controls".into());
             }
-            c.state.send_modify(|s| s.enabled = r.accept);
+            c.state.send_modify(|s| {
+                s.enabled = r.accept;
+                s.wireless_disabled = !r.accept;
+            });
             if !r.accept {
                 if let Some(a) = activity.take() {
                     a.stop().await;
@@ -333,6 +350,11 @@ async fn process_request(
                         s.selected.clear();
                     }
                 });
+                tokio::time::timeout(Duration::from_secs(8), async {
+                    Network::open().await?.forget_credentials(&r.target).await
+                })
+                .await
+                .map_err(|_| "Bond removed; AP credential removal timed out".to_string())??;
             }
             c.progress(
                 "disconnected",
@@ -515,16 +537,34 @@ async fn attempt_connection(
     }
     let network = Network::open().await.map_err(Failure::configuration)?;
     let c = &host.connectivity;
+    let started = tokio::time::Instant::now();
+    crate::daemon_log!(
+        Info,
+        "wireless-timing",
+        "Connect requested; checking network"
+    );
     c.progress("preparing", "Checking projection network and permissions");
     let mut ap = tokio::select! {
         biased;
         _ = cancel.changed() => return Err(Failure::cancelled()),
-        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface, band)) => result.map_err(|_| Failure::timeout("Wireless network preflight timed out"))?.map_err(Failure::configuration)?,
+        result = tokio::time::timeout(Duration::from_secs(10), network.prepare(interface, band, selected)) => result.map_err(|_| Failure::timeout("Wireless network preflight timed out"))?.map_err(Failure::configuration)?,
     };
     let readiness = crate::readiness::Readiness::default();
     let mut media = crate::native_playback::SessionMedia::default();
     let operation = async {
+        crate::daemon_log!(
+            Info,
+            "wireless-timing",
+            "Network preflight complete after {} ms",
+            started.elapsed().as_millis()
+        );
         network.activate(&mut ap).await?;
+        crate::daemon_log!(
+            Info,
+            "wireless-timing",
+            "AP/DHCP ready after {} ms",
+            started.elapsed().as_millis()
+        );
         crate::daemon_log!(
             Info,
             "wireless",
@@ -673,7 +713,8 @@ async fn attempt_connection(
         crate::daemon_log!(
             Info,
             "wireless",
-            "Bootstrap-authorized TCP peer admitted; starting AA version handshake"
+            "Bootstrap-authorized TCP peer admitted after {} ms; starting AA version handshake",
+            started.elapsed().as_millis()
         );
         drop(listener); // No second projection peer can enter this attempt.
         let mut transport = crate::tcp_transport::TcpAaTransport::admitted(stream)

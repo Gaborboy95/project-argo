@@ -210,6 +210,7 @@ final class ArgoHostStateBridge {
     'title': d.title,
     'artist': d.artist,
     'album': d.album,
+    'hasArtwork': d.artworkPath != null,
     'application': d.application,
     'playbackState': d.playback.name,
     'positionMs': d.positionMs,

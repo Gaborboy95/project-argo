@@ -11,8 +11,16 @@ abstract interface class ConnectivityService {
 }
 
 final class ConnectivityRadio {
-  const ConnectivityRadio(this.id, this.name, {this.address});
+  const ConnectivityRadio(
+    this.id,
+    this.name, {
+    this.address,
+    this.usable,
+    this.detail,
+  });
   final String? address;
+  final bool? usable;
+  final String? detail;
   final String id, name;
 }
 
@@ -47,7 +55,9 @@ final class ConnectivitySnapshot {
     this.band,
     this.apFrequencyMhz,
     this.music,
+    this.wirelessAvailable,
   });
+  final bool? wirelessAvailable;
   final bool available, enabled, discovering, wifiConnected;
   final List<ConnectivityRadio> adapters, networks;
   final List<ConnectivityDevice> devices;
@@ -66,12 +76,15 @@ final class ConnectivitySnapshot {
             r['id'] as String,
             r['name'] as String,
             address: r['address'] as String?,
+            usable: r['usable'] as bool?,
+            detail: r['detail'] as String?,
           ),
         )
         .toList(growable: false);
     final p = j['prompt'];
     return ConnectivitySnapshot(
       music: j['music'] as Map<String, dynamic>?,
+      wirelessAvailable: j['wireless_available'] as bool?,
       available: j['phase'] != 'unavailable',
       adapters: radios('adapters'),
       networks: radios('networks'),

@@ -9,6 +9,7 @@ pub struct Metadata {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub artwork: Option<std::sync::Arc<crate::artwork::Image>>,
     pub playback: u8,
     pub application: Option<String>,
     pub position_ms: Option<u64>,
@@ -31,6 +32,8 @@ pub enum Update {
         title: Option<String>,
         artist: Option<String>,
         album: Option<String>,
+        artwork: Option<Vec<u8>>,
+        duration_ms: Option<u64>,
     },
     Playback {
         state: Option<u8>,
@@ -55,6 +58,8 @@ impl Snapshot {
                 title,
                 artist,
                 album,
+                artwork,
+                duration_ms,
             } => {
                 // A track message replaces all descriptive fields. Artwork-only
                 // refreshes with identical text do not reset the position.
@@ -67,6 +72,21 @@ impl Snapshot {
                 d.title = title;
                 d.artist = artist;
                 d.album = album;
+                d.duration_ms = duration_ms;
+                d.artwork = artwork.and_then(|bytes| {
+                    if let Some(old) = &d.artwork
+                        && old.matches(&bytes)
+                    {
+                        return Some(old.clone());
+                    }
+                    match crate::artwork::store(bytes) {
+                        Ok(image) => Some(image),
+                        Err(e) => {
+                            crate::daemon_log!(Debug, "artwork", "AA artwork unavailable: {e}");
+                            None
+                        }
+                    }
+                });
                 d.media_received = true;
             }
             Update::Playback {
@@ -81,6 +101,7 @@ impl Snapshot {
                         d.title = None;
                         d.artist = None;
                         d.album = None;
+                        d.artwork = None;
                         d.position_ms = None;
                         d.duration_ms = None;
                     }
@@ -155,6 +176,7 @@ impl Snapshot {
             Some(false) => 1,
             Some(true) => 2,
         });
+        optional_string(&mut w, &d.artwork.as_ref().map(|a| a.path()))?;
         Ok(Message {
             kind: 11,
             payload: w.finish(),
@@ -222,7 +244,7 @@ fn fields(mut input: &[u8]) -> Result<std::collections::BTreeMap<u32, Value<'_>>
             }
             _ => return Err("unsupported wire type".into()),
         };
-        // Borrow only: artwork and unknown fields are never copied or decoded.
+        // Borrow first; only the supported, bounded artwork field is copied below.
         result.insert((tag >> 3) as u32, value);
     }
     Ok(result)
@@ -254,6 +276,13 @@ pub fn parse(channel: u8, id: u16, body: &[u8]) -> Result<Update, String> {
             title: text(1)?,
             artist: text(2)?,
             album: text(3)?,
+            artwork: match f.get(&4) {
+                Some(Value::Bytes(b)) if b.len() <= crate::artwork::MAX_BYTES => Some(b.to_vec()),
+                _ => None,
+            },
+            duration_ms: number(6)?
+                .filter(|v| *v <= u64::from(u32::MAX))
+                .map(|v| v * 1000),
         }),
         (CHANNEL, 0x8001) => {
             let state = number(1)?;
@@ -290,6 +319,48 @@ pub fn parse(channel: u8, id: u16, body: &[u8]) -> Result<Update, String> {
 mod tests {
     use super::*;
     use crate::aa_channels::{Channels, DisplayConfig, Effect, Proto};
+    #[test]
+    fn aa_artwork_and_duration_follow_track_replacement_and_session_removal() {
+        let mut png = vec![0; 33];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[12..16].copy_from_slice(b"IHDR");
+        png[16..20].copy_from_slice(&1u32.to_be_bytes());
+        png[20..24].copy_from_slice(&1u32.to_be_bytes());
+        let track = Proto::default()
+            .bytes(1, b"Song")
+            .bytes(4, &png)
+            .number(6, 123)
+            .finish();
+        let mut state = crate::daemon_state::ProjectionRuntimeSnapshot::connecting(
+            "device".into(),
+            "Phone".into(),
+        );
+        let id = state.session.as_ref().unwrap().id.clone();
+        state.update_metadata(&id, parse(CHANNEL, 0x8003, &track).unwrap());
+        assert_eq!(state.metadata.data.duration_ms, Some(123000));
+        let path = state.metadata.data.artwork.as_ref().unwrap().path();
+        assert!(std::path::Path::new(&path).exists());
+        let revision = state.metadata.revision;
+        state.update_metadata(&id, parse(CHANNEL, 0x8003, &track).unwrap());
+        assert_eq!(state.metadata.revision, revision);
+        state.update_metadata("stale-session", parse(CHANNEL, 0x8003, &[]).unwrap());
+        assert!(state.metadata.data.artwork.is_some());
+        state.update_metadata(
+            &id,
+            parse(
+                CHANNEL,
+                0x8003,
+                &Proto::default().bytes(1, b"Next song").finish(),
+            )
+            .unwrap(),
+        );
+        assert!(state.metadata.data.artwork.is_none());
+        assert!(!std::path::Path::new(&path).exists());
+        state.update_metadata(&id, parse(CHANNEL, 0x8003, &track).unwrap());
+        let path = state.metadata.data.artwork.as_ref().unwrap().path();
+        drop(state);
+        assert!(!std::path::Path::new(&path).exists());
+    }
     #[test]
     fn bounded_optional_fields_and_track_status_semantics() {
         let mut snapshot = Snapshot::default();
@@ -409,7 +480,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v5_metadata.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v6_metadata.hex").trim()
         );
         let initial =
             crate::daemon_state::snapshot_messages(&Default::default(), &current).unwrap();

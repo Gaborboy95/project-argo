@@ -1,19 +1,15 @@
-import '../../core/connectivity/connectivity_service.dart';
-import 'connectivity_settings_card.dart';
-
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_service.dart';
-import '../../core/audio/audio_snapshot.dart';
-import '../../core/audio/audio_types.dart';
+import '../../core/connectivity/connectivity_service.dart';
 import '../../core/projection/projection_settings_service.dart';
-import 'projection_settings_card.dart';
-import 'appearance_settings_card.dart';
 import '../../core/settings/settings_service.dart';
+import 'appearance_settings_card.dart';
+import 'audio_settings_card.dart';
+import 'connectivity_settings_card.dart';
+import 'projection_settings_card.dart';
 
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({
     required this.audio,
     this.projectionSettings,
@@ -21,128 +17,117 @@ class SettingsPage extends StatelessWidget {
     this.connectivity,
     super.key,
   });
-
+  final AudioService audio;
+  final ProjectionSettingsService? projectionSettings;
   final SettingsService? settings;
   final ConnectivityService? connectivity;
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
 
-  final ProjectionSettingsService? projectionSettings;
-
-  final AudioService audio;
-
+class _SettingsPageState extends State<SettingsPage> {
+  int selected = 0;
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<AudioSnapshot>(
-      stream: audio.changes,
-      initialData: audio.current,
-      builder: (context, snapshot) {
-        final state = snapshot.requireData;
-        return ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            if (connectivity != null)
-              ConnectivitySettingsCard(service: connectivity!),
-            if (settings != null) AppearanceSettingsCard(settings: settings!),
-            if (projectionSettings != null)
-              ProjectionSettingsCard(service: projectionSettings!),
-            Text('Audio', style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 12),
-            Text(
-              state.backendAvailable
-                  ? 'System output: ${state.selectedOutput ?? 'default'}'
-                  : 'Host audio control is disabled',
+    final sections = <(String, IconData, Widget)>[
+      (
+        'Sound',
+        Icons.volume_up_outlined,
+        AudioSettingsCard(audio: widget.audio),
+      ),
+      if (widget.connectivity != null)
+        (
+          'Devices',
+          Icons.devices_outlined,
+          ConnectivitySettingsCard(service: widget.connectivity!),
+        ),
+      if (widget.projectionSettings != null)
+        (
+          'Projection',
+          Icons.directions_car_outlined,
+          ProjectionSettingsCard(service: widget.projectionSettings!),
+        ),
+      if (widget.settings != null)
+        (
+          'Appearance',
+          Icons.palette_outlined,
+          AppearanceSettingsCard(settings: widget.settings!),
+        ),
+    ];
+    final index = selected.clamp(0, sections.length - 1);
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Settings', style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              for (var i = 0; i < sections.length; i++)
+                ChoiceChip(
+                  avatar: Icon(sections[i].$2, size: 20),
+                  label: Text(sections[i].$1),
+                  selected: index == i,
+                  onSelected: (_) => setState(() => selected = i),
+                ),
+            ],
+          ),
+          if (widget.connectivity != null)
+            StreamBuilder<ConnectivitySnapshot>(
+              stream: widget.connectivity!.connectivityChanges,
+              initialData: widget.connectivity!.connectivity,
+              builder: (context, snapshot) =>
+                  snapshot.data?.prompt != null &&
+                      sections[index].$1 != 'Devices'
+                  ? TextButton.icon(
+                      icon: const Icon(Icons.bluetooth_searching),
+                      label: Text(
+                        'Pairing request from ${snapshot.data!.prompt!.name} — review in Devices',
+                      ),
+                      onPressed: () => setState(
+                        () => selected = sections.indexWhere(
+                          (s) => s.$1 == 'Devices',
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
             ),
-            _slider(
-              label: 'Volume',
-              value: state.masterVolume,
-              minimum: 0,
-              maximum: 1,
-              enabled:
-                  state.backendAvailable && state.capabilities.masterVolume,
-              onChanged: audio.setMasterVolume,
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Mute'),
-              value: state.muted,
-              onChanged: state.backendAvailable && state.capabilities.mute
-                  ? (value) => _run(audio.setMuted(value))
-                  : null,
-            ),
-            _slider(
-              label: 'Balance',
-              value: state.balance,
-              minimum: -1,
-              maximum: 1,
-              enabled: state.backendAvailable && state.capabilities.balance,
-              onChanged: audio.setBalance,
-            ),
-            _slider(
-              label: 'Fader',
-              value: state.fader,
-              minimum: -1,
-              maximum: 1,
-              enabled: state.backendAvailable && state.capabilities.fader,
-              onChanged: audio.setFader,
-            ),
-            for (final band
-                in <(String, double, Future<void> Function(double))>[
-                  (
-                    'Bass',
-                    state.equalizer.bassDb,
-                    (value) => audio.setEqualizer(
-                      state.equalizer.copyWith(bassDb: value),
+          const SizedBox(height: 16),
+          Expanded(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 880),
+                child: Theme(
+                  data: Theme.of(context).copyWith(
+                    inputDecorationTheme: InputDecorationTheme(
+                      filled: true,
+                      fillColor: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 18,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
                   ),
-                  (
-                    'Mid',
-                    state.equalizer.midDb,
-                    (value) => audio.setEqualizer(
-                      state.equalizer.copyWith(midDb: value),
-                    ),
+                  child: ListView(
+                    key: PageStorageKey(sections[index].$1),
+                    children: [sections[index].$3],
                   ),
-                  (
-                    'Treble',
-                    state.equalizer.trebleDb,
-                    (value) => audio.setEqualizer(
-                      state.equalizer.copyWith(trebleDb: value),
-                    ),
-                  ),
-                ])
-              _slider(
-                label: '${band.$1} (dB)',
-                value: band.$2,
-                minimum: AudioEqualizer.minimumDb,
-                maximum: AudioEqualizer.maximumDb,
-                enabled: state.backendAvailable && state.capabilities.equalizer,
-                onChanged: band.$3,
+                ),
               ),
-          ],
-        );
-      },
+            ),
+          ),
+        ],
+      ),
     );
-  }
-
-  static Widget _slider({
-    required String label,
-    required double value,
-    required double minimum,
-    required double maximum,
-    required bool enabled,
-    required Future<void> Function(double) onChanged,
-  }) => ListTile(
-    contentPadding: EdgeInsets.zero,
-    title: Text(label),
-    subtitle: Slider(
-      value: value.clamp(minimum, maximum),
-      min: minimum,
-      max: maximum,
-      onChanged: enabled ? (_) {} : null,
-      onChangeEnd: enabled ? (value) => _run(onChanged(value)) : null,
-    ),
-    trailing: Text(value.toStringAsFixed(2)),
-  );
-
-  static void _run(Future<void> operation) {
-    unawaited(operation.catchError((Object _) {}));
   }
 }

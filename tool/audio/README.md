@@ -2,7 +2,8 @@
 
 Argo controls the system output through WirePlumber's `wpctl`; PCM remains in
 PipeWire. The default backend is `disabled`, so development and tests cannot
-change host audio unless `ARGO_AUDIO_BACKEND=pipewire` is explicitly selected.
+change host audio unless `ARGO_AUDIO_BACKEND=pipewire` is selected. The hardware
+release launcher supplies that default; an explicit `disabled` still overrides it.
 
 The current `wpctl` backend implements default-sink volume and mute. It reports
 balance, fader, EQ, output selection, and per-source routing unavailable because

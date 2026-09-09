@@ -67,6 +67,9 @@ pub struct AccessPoint {
     active: Option<OwnedObjectPath>,
     firewall: bool,
     activation_pending: bool,
+    template_path: Option<OwnedObjectPath>,
+    save_template: bool,
+    peer: String,
 }
 impl Network {
     pub async fn open() -> Result<Self, String> {
@@ -98,6 +101,8 @@ impl Network {
                     .await
                     .map_err(|e| e.to_string())?;
                 result.push(Radio {
+                    usable: None,
+                    detail: None,
                     address: None,
                     name: id.clone(),
                     id,
@@ -113,7 +118,206 @@ impl Network {
             .await
             .map_err(|e| e.to_string())
     }
-    pub async fn prepare(&self, interface: &str, band: ApBand) -> Result<AccessPoint, String> {
+    // Read-only: no activation, secret creation or network mutation.
+    pub async fn eligible(&self, interface: &str, band: ApBand) -> Result<(), String> {
+        let path = self.device_path(interface).await?;
+        let dev = self
+            .proxy(path.as_str(), "org.freedesktop.NetworkManager.Device")
+            .await?;
+        let managed = dev
+            .get_property::<bool>("Managed")
+            .await
+            .map_err(|e| e.to_string())?;
+        let state = dev
+            .get_property::<u32>("State")
+            .await
+            .map_err(|e| e.to_string())?;
+        if !managed || state < 30 {
+            return Err("Wi-Fi unavailable, disabled or unmanaged".into());
+        }
+        let active: OwnedObjectPath = dev
+            .get_property("ActiveConnection")
+            .await
+            .map_err(|e| e.to_string())?;
+        if active.as_str() != "/" {
+            let connection = self
+                .proxy(
+                    active.as_str(),
+                    "org.freedesktop.NetworkManager.Connection.Active",
+                )
+                .await?;
+            let id = connection
+                .get_property::<String>("Id")
+                .await
+                .map_err(|e| e.to_string())?;
+            if id != format!("Argo Projection ({interface})") {
+                return Err("Wi-Fi is in use by another connection".into());
+            }
+        }
+        let wifi = self
+            .proxy(
+                path.as_str(),
+                "org.freedesktop.NetworkManager.Device.Wireless",
+            )
+            .await?;
+        let caps = wifi
+            .get_property::<u32>("WirelessCapabilities")
+            .await
+            .map_err(|e| e.to_string())?;
+        let required = 0x40
+            | match band {
+                ApBand::Ghz2 => 0x200,
+                ApBand::Ghz5 => 0x400,
+            };
+        if caps & required != required {
+            return Err(format!("No AP / {} capability", band.label()));
+        }
+        permitted_channel(interface, band).await?;
+        Ok(())
+    }
+    async fn profiles(&self) -> Result<Vec<(OwnedObjectPath, Settings)>, String> {
+        let root = self
+            .proxy(
+                "/org/freedesktop/NetworkManager/Settings",
+                "org.freedesktop.NetworkManager.Settings",
+            )
+            .await?;
+        let profiles: Vec<OwnedObjectPath> = root
+            .call("ListConnections", &())
+            .await
+            .map_err(|e| e.to_string())?;
+        if profiles.len() > 128 {
+            return Err("Too many NM profiles for bounded projection lookup".into());
+        }
+        let mut result = Vec::new();
+        for path in profiles {
+            let settings: Settings = self
+                .proxy(
+                    path.as_str(),
+                    "org.freedesktop.NetworkManager.Settings.Connection",
+                )
+                .await?
+                .call("GetSettings", &())
+                .await
+                .map_err(|_| "Could not inspect NM profiles")?;
+            result.push((path, settings));
+        }
+        Ok(result)
+    }
+    async fn credentials(
+        &self,
+        interface: &str,
+        peer: &str,
+    ) -> Result<(Option<OwnedObjectPath>, Option<(String, String, Ipv4Addr)>), String> {
+        let mut result = None;
+        let mut owned = None;
+        for (path, settings) in self.profiles().await? {
+            let profile = self
+                .proxy(
+                    path.as_str(),
+                    "org.freedesktop.NetworkManager.Settings.Connection",
+                )
+                .await?;
+            let text = |section: &str, key: &str| {
+                settings
+                    .get(section)
+                    .and_then(|s| s.get(key))
+                    .and_then(|v| <&str>::try_from(v).ok())
+            };
+            if text("connection", "id")
+                != Some(format!("Argo Projection credentials ({interface})").as_str())
+            {
+                continue;
+            }
+            let tags: HashMap<String, String> = settings
+                .get("user")
+                .and_then(|s| s.get("data"))
+                .and_then(|v| v.try_clone().ok())
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or_default();
+            if tags.get("org.argo.owner").map(String::as_str) != Some("projection-credentials-v1")
+                || text("connection", "interface-name") != Some(interface)
+            {
+                return Err(
+                    "Projection credential profile name conflicts with an unrelated profile".into(),
+                );
+            }
+            if owned.is_some() {
+                return Err(
+                    "Multiple projection credential profiles; resolve in NetworkManager".into(),
+                );
+            }
+            owned = Some(path.clone());
+            if tags.get("org.argo.peer").map(String::as_str) != Some(peer) {
+                continue;
+            }
+            let ssid: Vec<u8> = settings
+                .get("802-11-wireless")
+                .and_then(|s| s.get("ssid"))
+                .and_then(|v| v.try_clone().ok())
+                .and_then(|v| v.try_into().ok())
+                .ok_or("Missing projection SSID")?;
+            let secrets: Settings = profile
+                .call("GetSecrets", &("802-11-wireless-security",))
+                .await
+                .map_err(|_| "NetworkManager projection credentials unavailable")?;
+            let password = secrets
+                .get("802-11-wireless-security")
+                .and_then(|s| s.get("psk"))
+                .and_then(|v| <&str>::try_from(v).ok())
+                .ok_or("Missing projection PSK")?
+                .to_string();
+            let address: Ipv4Addr = tags
+                .get("org.argo.address")
+                .ok_or("Missing projection address")?
+                .parse()
+                .map_err(|_| "Invalid projection address")?;
+            let ssid = String::from_utf8(ssid).map_err(|_| "Invalid projection SSID")?;
+            validate_credentials(&ssid, &password, address)?;
+            result = Some((ssid, password, address));
+        }
+        Ok((owned, result))
+    }
+    pub async fn forget_credentials(&self, peer: &str) -> Result<(), String> {
+        // Revocation must also find templates for radios currently unplugged.
+        // It needs no secret access and never depends on Wi-Fi inventory.
+        for (path, settings) in self.profiles().await? {
+            let tags: HashMap<String, String> = settings
+                .get("user")
+                .and_then(|s| s.get("data"))
+                .and_then(|v| v.try_clone().ok())
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or_default();
+            if tags.get("org.argo.owner").map(String::as_str) != Some("projection-credentials-v1")
+                || tags.get("org.argo.peer").map(String::as_str) != Some(peer)
+            {
+                continue;
+            }
+            let text = |key: &str| {
+                settings
+                    .get("connection")
+                    .and_then(|s| s.get(key))
+                    .and_then(|v| <&str>::try_from(v).ok())
+            };
+            let interface = text("interface-name").ok_or("Invalid owned credential interface")?;
+            if text("id") != Some(format!("Argo Projection credentials ({interface})").as_str()) {
+                return Err(
+                    "Owned credential profile name changed; inspect NetworkManager before removal"
+                        .into(),
+                );
+            }
+            self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Settings.Connection").await?
+                .call::<_, _, ()>("Delete", &()).await
+                .map_err(|_| "Bond removed, but owned AP credentials could not be removed; inspect NM permissions".to_string())?;
+        }
+        Ok(())
+    }
+    pub async fn prepare(
+        &self,
+        interface: &str,
+        band: ApBand,
+        peer: &str,
+    ) -> Result<AccessPoint, String> {
         if !self.interfaces().await?.iter().any(|r| r.id == interface) {
             return Err("Select an available Wi-Fi interface".into());
         }
@@ -153,7 +357,15 @@ impl Network {
         std::fs::File::open("/dev/urandom")
             .and_then(|mut f| f.read_exact(&mut random))
             .map_err(|e| e.to_string())?;
-        let address = Ipv4Addr::new(10, 77, random[0], 1);
+        let (template_path, saved) = self.credentials(interface, peer).await?;
+        let save_template = saved.is_none();
+        let (ssid, password, address) = saved.unwrap_or_else(|| {
+            (
+                format!("Argo Projection {:02X}{:02X}", random[1], random[2]),
+                random[3..].iter().map(|v| format!("{v:02x}")).collect(),
+                Ipv4Addr::new(10, 77, random[0], 1),
+            )
+        });
         // A dedicated /24 must not overlap any existing non-default IPv4 route.
         let routes = std::fs::read_to_string("/proc/net/route").map_err(|e| e.to_string())?;
         let subnet = u32::from_le_bytes(address.octets());
@@ -166,7 +378,7 @@ impl Network {
                 && subnet & mask == dest & mask
             {
                 return Err(
-                    "Projection subnet overlaps a host route; retry for a fresh subnet".into(),
+                    "Projection subnet overlaps a host route; remove the inactive owned credential profile before retrying".into(),
                 );
             }
         }
@@ -175,12 +387,15 @@ impl Network {
             address,
             channel,
             band,
-            ssid: format!("Argo Projection {:02X}{:02X}", random[1], random[2]),
-            password: random[3..].iter().map(|v| format!("{v:02x}")).collect(),
+            ssid,
+            password,
             bssid: String::new(),
             active: None,
             firewall: false,
             activation_pending: false,
+            template_path,
+            save_template,
+            peer: peer.into(),
         })
     }
     pub async fn activate(&self, ap: &mut AccessPoint) -> Result<(), Failure> {
@@ -209,6 +424,7 @@ impl Network {
             section([
                 ("ssid", value(ap.ssid.as_bytes().to_vec())),
                 ("mode", value("ap")),
+                ("cloned-mac-address", value("permanent")),
                 ("band", value(ap.band.nm_band())),
                 ("channel", value(u32::from(ap.channel))),
             ]),
@@ -235,6 +451,60 @@ impl Network {
             ]),
         );
         settings.insert("ipv6".into(), section([("method", value("disabled"))]));
+        if ap.save_template {
+            let mut template = Settings::new();
+            for (key, values) in &settings {
+                template.insert(
+                    key.clone(),
+                    values
+                        .iter()
+                        .map(|(k, v)| {
+                            Ok((
+                                k.clone(),
+                                v.try_clone().map_err(|_| {
+                                    Failure::configuration("Cannot prepare NM credential template")
+                                })?,
+                            ))
+                        })
+                        .collect::<Result<_, Failure>>()?,
+                );
+            }
+            template.get_mut("connection").unwrap().insert(
+                "id".into(),
+                value(format!("Argo Projection credentials ({})", ap.interface)),
+            );
+            let user = std::env::var("USER")
+                .map_err(|_| Failure::configuration("Desktop account unavailable"))?;
+            template
+                .get_mut("connection")
+                .unwrap()
+                .insert("permissions".into(), value(vec![format!("user:{user}:")]));
+            template.insert(
+                "user".into(),
+                section([(
+                    "data",
+                    value(HashMap::from([
+                        (
+                            "org.argo.owner".to_string(),
+                            "projection-credentials-v1".to_string(),
+                        ),
+                        ("org.argo.address".to_string(), ap.address.to_string()),
+                        ("org.argo.peer".to_string(), ap.peer.clone()),
+                    ])),
+                )]),
+            );
+            if let Some(path) = &ap.template_path {
+                let _: HashMap<String, OwnedValue> = self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Settings.Connection").await?
+                    .call("Update2", &(template, 1u32, HashMap::<String, OwnedValue>::new())).await
+                    .map_err(|_| Failure::configuration("Could not rotate owned projection credentials; check NM own-profile permissions"))?;
+            } else {
+                let (path, _): (OwnedObjectPath, HashMap<String, OwnedValue>) = self.proxy("/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings").await?
+                    .call("AddConnection2", &(template, 1u32, HashMap::<String, OwnedValue>::new())).await
+                    .map_err(|_| Failure::configuration("Could not save NetworkManager projection credentials; check own-profile permissions"))?;
+                ap.template_path = Some(path);
+            }
+            ap.save_template = false;
+        }
         let options = section([
             ("persist", value("volatile")),
             ("bind-activation", value("dbus-client")),
@@ -493,10 +763,56 @@ async fn cleanup(system: &impl CleanupAdapter, ap: &mut AccessPoint) -> Result<(
     }
     Ok(())
 }
+fn validate_credentials(ssid: &str, password: &str, address: Ipv4Addr) -> Result<(), String> {
+    let octets = address.octets();
+    if !ssid.starts_with("Argo Projection ")
+        || ssid.len() > 32
+        || !(8..=63).contains(&password.len())
+        || !password.is_ascii()
+        || password.bytes().any(|b| b.is_ascii_control())
+        || octets[0..2] != [10, 77]
+        || octets[3] != 1
+    {
+        return Err("Invalid owned projection credential template".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
+    #[test]
+    fn credential_template_validation_rejects_unsafe_reuse() {
+        assert!(
+            validate_credentials(
+                "Argo Projection 1234",
+                "deployment-specific-test",
+                Ipv4Addr::new(10, 77, 3, 1)
+            )
+            .is_ok()
+        );
+        for (ssid, key, ip) in [
+            (
+                "Other network",
+                "deployment-specific-test",
+                Ipv4Addr::new(10, 77, 3, 1),
+            ),
+            ("Argo Projection 1234", "short", Ipv4Addr::new(10, 77, 3, 1)),
+            (
+                "Argo Projection 1234",
+                "bad\npassword",
+                Ipv4Addr::new(10, 77, 3, 1),
+            ),
+            (
+                "Argo Projection 1234",
+                "deployment-specific-test",
+                Ipv4Addr::new(192, 168, 1, 1),
+            ),
+        ] {
+            assert!(validate_credentials(ssid, key, ip).is_err());
+        }
+    }
     #[test]
     fn channels_respect_selected_band_and_regulatory_restrictions() {
         let info = "* 2412 MHz [1] (20.0 dBm) (no IR)\n* 2437.0 MHz [6] (20.0 dBm)\n* 2462 MHz [11] (disabled)\n* 5745.0 MHz [149] (13.0 dBm)\n* 5955 MHz [1] (23.0 dBm)";
@@ -549,6 +865,9 @@ pub(crate) mod tests {
             active: Some(OwnedObjectPath::try_from("/owned/activation").unwrap()),
             firewall: true,
             activation_pending: false,
+            template_path: None,
+            save_template: true,
+            peer: "test-peer".into(),
         }
     }
     #[tokio::test]

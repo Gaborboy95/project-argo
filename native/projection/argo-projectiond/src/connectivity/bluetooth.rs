@@ -93,6 +93,8 @@ impl Bluetooth {
         for name in names.into_iter().take(8) {
             let a = self.session.adapter(&name).map_err(|e| e.to_string())?;
             adapters.push(Radio {
+                usable: None,
+                detail: None,
                 address: Some(a.address().await.map_err(|e| e.to_string())?.to_string()),
                 id: name.clone(),
                 name: format!("{} ({})", a.alias().await.unwrap_or_default(), name),

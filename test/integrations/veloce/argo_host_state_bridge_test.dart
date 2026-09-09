@@ -155,6 +155,7 @@ void main() {
           sessionId: 'bluetooth:test',
           details: MediaDetails(
             title: 'Bluetooth track',
+            artworkPath: '/private/daemon-owned-cover.img',
             playback: MediaPlaybackState.playing,
           ),
           revision: 1,
@@ -167,6 +168,11 @@ void main() {
           (read(nextGeneration)['media'] as Map)['sources'] as List;
       expect((musicSources.single as Map)['sourceKind'], 'bluetooth');
       expect((musicSources.single as Map)['title'], 'Bluetooth track');
+      expect((musicSources.single as Map)['hasArtwork'], isTrue);
+      expect(
+        jsonEncode(read(nextGeneration)),
+        isNot(contains('/private/daemon-owned-cover.img')),
+      );
       expect((musicSources.single as Map)['commands'], ['play', 'pause']);
       bluetooth.close();
       await manager.unloadPlugin(id);

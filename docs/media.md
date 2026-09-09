@@ -43,7 +43,7 @@ connecting music; merely writing the file does not change an already-running
 WirePlumber configuration.
 
 1. Launch the matched daemon and application using [the normal workflow](setup.md#projection-launch).
-2. Choose **Bluetooth adapter (all tasks)** under Settings → Devices & connectivity,
+2. Choose **Bluetooth adapter (all tasks)** under Settings → Devices,
    then pair/confirm the actual phone. Pairing, wireless AA and music share this
    adapter. The saved hardware address survives `hciN` renumbering; an absent radio
    does not select a different card. Stop discovery and disconnect wireless/music
@@ -60,6 +60,47 @@ terminals before starting the daemon/application. Identity exports can be unset;
 the launcher no longer requires them for shared connectivity. Identity remains
 mandatory on the daemon for actual AA projection. No boot-time music connection or
 persistent auto-connect is enabled.
+
+## Artwork and output volume
+
+AA's media-playback metadata (`0x8003`) supplies embedded album art in field 4 and
+optional duration in seconds in field 6. Argo uses both. Title/artist/album/art
+follow track replacement; a missing image clears the prior track's cover. Idle
+Media and hidden projection retain the current session's metadata.
+
+Bluetooth covers use BlueZ's optional experimental BIP API: MediaPlayer1.ObexPort,
+a user-session `org.bluez.obex` client with target `bip-avrcp`, the current Track
+ImgHandle and Image1.GetThumbnail. One cancellable transfer is permitted per track,
+with a 12-second bound. Track/player changes invalidate the transfer and cached
+image. Missing support produces a concise artwork status; music and AVRCP controls
+continue normally. No alternate Bluetooth audio profile is registered.
+
+The reference BlueZ 5.82 installation has OBEX running but does not enable
+experimental bluetoothd APIs. Bluetooth covers therefore require administrator
+provisioning of experimental BlueZ/OBEX BIP support and a phone offering AVRCP cover
+art before hardware verification. Argo does not edit bluetoothd configuration or
+restart services to enable it. Merely having AVRCP track text does not establish
+cover-art support. [LIVI's Bluetooth bridge](https://github.com/f-io/LIVI/blob/b8651d795e5f84871d7454ce25e6ff6fb79e03d5/native/livi-helperd/crates/livi-runtime/src/bt.rs)
+exposes empty MPRIS metadata; its
+CarPlay file-transfer artwork is not an A2DP artwork mechanism.
+
+Artwork accepts bounded PNG/JPEG headers (at most 1 MiB encoded and 2048 pixels per
+side); the UI handles decode failures with a music placeholder. The daemon owns
+private runtime cache files, retiring them with their last metadata owner. A crash
+may leave files until the runtime directory is cleared at logout. IPC v6 carries
+only an opaque local cache reference, never embedded image bytes or phone URLs.
+The UI rejects references outside the private cache pattern. Lua receives only
+`hasArtwork`, not filesystem paths, images or retrieval permissions.
+
+The release launcher defaults to `ARGO_AUDIO_BACKEND=pipewire`; explicit `disabled`
+is still respected. Settings → Sound controls the actual default output's volume
+and mute. Volume follows the drag and commits once on release. Host failures are
+visible. Balance/fader/EQ appear only when the backend implements them.
+
+References: [LIVI AA metadata at b8651d7](https://github.com/f-io/LIVI/blob/b8651d795e5f84871d7454ce25e6ff6fb79e03d5/src/main/services/projection/driver/aa/stack/channels/MediaInfoChannel.ts),
+[BlueZ 5.82 MediaPlayer](https://github.com/bluez/bluez/blob/5.82/doc/org.bluez.MediaPlayer.rst),
+[OBEX Image](https://github.com/bluez/bluez/blob/5.82/doc/org.bluez.obex.Image.rst) and
+[OBEX Client](https://github.com/bluez/bluez/blob/5.82/doc/org.bluez.obex.Client.rst).
 
 ## Audibility, focus and lifecycle
 
@@ -125,8 +166,8 @@ Phone acceptance remains required: Bluetooth-only music, same-phone simultaneous
 and Lua, all supported playback controls, switching between Bluetooth and AA without
 overlap, navigation ducking, disconnect/reconnect, and routine wireless cleanup
 after authorization caches expire. Phone AVRCP/A2DP interoperability and long-run
-routing behavior are not established by the virtual-node tests. Artwork, local-file
-playback, hands-free calls, contacts and phonebook remain unsupported.
+routing behavior are not established by the virtual-node tests. AA covers/duration and
+Bluetooth BIP transfers still require phone verification. Local-file playback, hands-free calls, contacts and phonebook remain unsupported.
 
 ## Rollback
 

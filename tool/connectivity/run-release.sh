@@ -2,12 +2,13 @@
 # Run only a staged, matching pair; this script does not build or provision.
 set -euo pipefail
 [[ $EUID -ne 0 ]] || { echo 'Run Argo as your desktop user.' >&2; exit 1; }
-argo_bundle=${ARGO_WIRELESS_BUNDLE:-"$HOME/dev/infotainment/bundle/argo-wireless-start-ipc5-20260908"}
+argo_bundle=${ARGO_WIRELESS_BUNDLE:-"$HOME/dev/infotainment/bundle/argo-media-settings-ipc6-20260909"}
 argo_ihs=${IHS_PREFIX:-"$HOME/dev/ivi-build/out/usr/local"}
 : "${XDG_RUNTIME_DIR:?Launch from the logged-in desktop environment}"
-export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc5/projection.sock"
-export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc5/video.sock"
+export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc6/projection.sock"
+export ARGO_PROJECTION_MEDIA_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc6/video.sock"
 export ARGO_MODE=production ARGO_PROJECTION_BACKEND="${ARGO_PROJECTION_BACKEND:-android-auto}"
+export ARGO_AUDIO_BACKEND="${ARGO_AUDIO_BACKEND:-pipewire}"
 unset ARGO_PROJECTION_RENDER_TEST
 case ${1:-} in
   daemon)
