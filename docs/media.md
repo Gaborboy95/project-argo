@@ -43,7 +43,11 @@ connecting music; merely writing the file does not change an already-running
 WirePlumber configuration.
 
 1. Launch the matched daemon and application using [the normal workflow](setup.md#projection-launch).
-2. Pair/confirm the actual phone under Settings → Devices & connectivity.
+2. Choose **Bluetooth adapter (all tasks)** under Settings → Devices & connectivity,
+   then pair/confirm the actual phone. Pairing, wireless AA and music share this
+   adapter. The saved hardware address survives `hciN` renumbering; an absent radio
+   does not select a different card. Stop discovery and disconnect wireless/music
+   before changing adapters. Bonds on the other radio remain in BlueZ.
 3. In Media, select the paired music phone and press **Connect music**.
 4. Select its Bluetooth entertainment source. Start playback with **play** or on
    the phone. Some phones instantiate their A2DP receiver only after first Play;

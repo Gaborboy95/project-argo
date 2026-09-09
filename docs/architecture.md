@@ -103,7 +103,8 @@ IPC v5 includes a u32 host-return revision in session messages (kind 3), and a
 u32 presentation revision to video messages (kind 4). Both are session-scoped,
 start at zero and use network byte order. Explicit phone UNFOCUSED requests advance
 the first; AV stop does not. The application compares revisions only for the same
-session and only navigates from its owned Home presentation. An initial historical
+session and navigates from Home even while a resume is awaiting fresh video.
+Frame visibility is not a prerequisite for honoring explicit Exit. An initial historical
 revision is state, not a navigation command. Video revisions survive coalesced daemon
 watch snapshots: Home waits for a newer visible revision after requesting activation.
 Explicit Home activation keeps the existing focus-indication wire layout. After

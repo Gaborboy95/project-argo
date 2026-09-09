@@ -15,6 +15,8 @@ use zbus::zvariant::OwnedValue;
 const AUDIO_SOURCE: &str = "0000110a-0000-1000-8000-00805f9b34fb";
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    #[serde(skip)]
+    pub busy: bool,
     pub selected: String,
     pub device: String,
     pub phase: String,
@@ -564,6 +566,11 @@ impl Music {
                 }
             }
             "musicConnect" => {
+                self.host
+                    .connectivity
+                    .state
+                    .borrow()
+                    .require_selected_adapter(&r.target)?;
                 let config = std::path::PathBuf::from(
                     std::env::var_os("HOME").ok_or("Desktop HOME unavailable")?,
                 )
@@ -591,6 +598,8 @@ impl Music {
                 }
                 self.snapshot.device = r.target;
                 self.intent = true;
+                self.snapshot.phase = "connecting".into();
+                self.snapshot.detail = "Preparing selected Bluetooth music phone".into();
                 self.attempts = 0;
                 self.next = tokio::time::Instant::now();
             }
@@ -753,11 +762,13 @@ pub async fn run(
                 let routing_action=matches!(r.action.as_str(), "musicSelect"|"musicConnect"|"musicDisconnect");
                 if r.action!="musicDisconnect" && r.generation!=*cancel.borrow() {continue;}
                 cancel.borrow_and_update();
+                music.snapshot.busy=true; music.publish();
                 let result=tokio::select! { biased;
                     _=cancel.changed()=>{music.intent=false; Err("Music operation cancelled".into())},
                     _=shutdown.changed()=>break,
                     result=tokio::time::timeout(Duration::from_secs(15),music.request(r,&bt))=>result.unwrap_or_else(|_|Err("Music operation timed out; selection not confirmed".into()))
                 };
+                music.snapshot.busy=false;
                 if result.is_err() && routing_action && music.snapshot.selected.is_empty() && music.silence().await.is_err() {music.intent=false;}
                 if operation!=0 {music.snapshot.operation=operation;}
                 music.snapshot.error=result.err(); music.publish();

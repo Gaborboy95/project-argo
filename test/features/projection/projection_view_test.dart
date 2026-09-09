@@ -457,6 +457,24 @@ void main() {
       expect(find.text('Now Playing'), findsOneWidget);
       expect(service.activations, hasLength(3));
       expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      // Exit wins even if Home is awaiting a new presentation revision. Four
+      // rapid Exit/resume cycles must never get stuck on black/cached AA video.
+      await tester.pump(const Duration(minutes: 4));
+      for (var revision = 4; revision < 8; revision++) {
+        await tester.tap(find.text('Home'));
+        await tester.pump();
+        backend.emit(
+          _liveSnapshot(
+            stream: streamAt(2),
+            metadata: metadata,
+            state: ProjectionSessionState.suspended,
+            hostReturnRevision: revision,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Now Playing'), findsOneWidget);
+        expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      }
       backend.emit(ProjectionSnapshot(backendAvailable: true));
       await tester.pumpAndSettle();
       expect(find.text('Synthetic track'), findsNothing);

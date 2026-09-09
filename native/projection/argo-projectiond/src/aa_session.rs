@@ -340,6 +340,11 @@ async fn run_engine(
                         }
                     }
                     Effect::HostReturn => {
+                        crate::daemon_log!(
+                            Info,
+                            "aa-focus",
+                            "Phone Exit: returning presentation to Media; session retained"
+                        );
                         awaiting_video = false;
                         state.send_modify(|snapshot| {
                             if snapshot.session.as_ref().is_some_and(|s| s.id == id) {

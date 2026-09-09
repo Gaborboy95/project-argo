@@ -32,14 +32,32 @@ final class ConnectivityPreferences implements ConnectivityService {
     final adapter = settings.get(AppSettingKeys.connectivityAdapter);
     final interface = settings.get(AppSettingKeys.connectivityInterface);
     final phone = settings.get(AppSettingKeys.connectivityPhone);
-    if (state.adapters.any((r) => r.id == adapter)) {
-      await backend.connectivityCommand('adapter', target: adapter);
+    final radio = state.adapters
+        .where((r) => r.address == adapter || r.id == adapter)
+        .firstOrNull;
+    if (adapter.isNotEmpty) {
+      await backend.connectivityCommand(
+        'adapter',
+        target: radio?.address ?? adapter,
+      );
+      // Migrate older hciN preferences without changing BlueZ bonds.
+      if (radio != null) {
+        await settings.set(
+          AppSettingKeys.connectivityAdapter,
+          radio.address ?? radio.id,
+        );
+      }
     }
     if (state.networks.any((r) => r.id == interface)) {
       await backend.connectivityCommand('interface', target: interface);
     }
-    if (state.devices.any((d) => d.id == phone && d.paired)) {
-      await backend.connectivityCommand('select', target: phone);
+    final phoneAddress = phone.contains('/') ? phone.split('/').last : '';
+    final restoredPhone = radio != null && phoneAddress.isNotEmpty
+        ? '${radio.id}/$phoneAddress'
+        : phone;
+    if ((adapter.isEmpty || radio != null) &&
+        state.devices.any((d) => d.id == restoredPhone && d.paired)) {
+      await backend.connectivityCommand('select', target: restoredPhone);
     }
     // Each daemon/application launch starts disabled. Explicit enable is a
     // session-local authorization, deliberately not an autostart preference.
@@ -70,7 +88,15 @@ final class ConnectivityPreferences implements ConnectivityService {
       'band' => AppSettingKeys.connectivityBand,
       _ => null,
     };
-    if (key != null) await settings.set(key, target);
+    if (key != null) {
+      final radio = connectivity.adapters
+          .where((r) => r.id == target || r.address == target)
+          .firstOrNull;
+      await settings.set(
+        key,
+        action == 'adapter' ? (radio?.address ?? target) : target,
+      );
+    }
     if (action == 'forget' &&
         settings.get(AppSettingKeys.connectivityPhone) == target) {
       await settings.reset(AppSettingKeys.connectivityPhone);

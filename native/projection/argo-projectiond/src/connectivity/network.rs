@@ -98,6 +98,7 @@ impl Network {
                     .await
                     .map_err(|e| e.to_string())?;
                 result.push(Radio {
+                    address: None,
                     name: id.clone(),
                     id,
                 });

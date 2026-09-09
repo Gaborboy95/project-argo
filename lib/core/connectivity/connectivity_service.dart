@@ -11,7 +11,8 @@ abstract interface class ConnectivityService {
 }
 
 final class ConnectivityRadio {
-  const ConnectivityRadio(this.id, this.name);
+  const ConnectivityRadio(this.id, this.name, {this.address});
+  final String? address;
   final String id, name;
 }
 
@@ -60,7 +61,13 @@ final class ConnectivitySnapshot {
   final Map<String, dynamic>? music;
   factory ConnectivitySnapshot.fromJson(Map<String, dynamic> j) {
     List<ConnectivityRadio> radios(String key) => (j[key] as List)
-        .map((r) => ConnectivityRadio(r['id'] as String, r['name'] as String))
+        .map(
+          (r) => ConnectivityRadio(
+            r['id'] as String,
+            r['name'] as String,
+            address: r['address'] as String?,
+          ),
+        )
         .toList(growable: false);
     final p = j['prompt'];
     return ConnectivitySnapshot(

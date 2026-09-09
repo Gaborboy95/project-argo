@@ -232,7 +232,9 @@ class _MusicConnectionState extends State<_MusicConnection> {
     builder: (context, _) {
       final state = widget.service.connectivity;
       if (state.music == null) return const SizedBox.shrink();
-      final phones = state.devices.where((d) => d.paired).toList();
+      final phones = state.devices
+          .where((d) => d.paired && d.id.startsWith('${state.adapter}/'))
+          .toList();
       final selected = phones.any((d) => d.id == _phone)
           ? _phone
           : phones.where((d) => d.id == state.music?['device']).firstOrNull?.id;

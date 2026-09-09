@@ -71,7 +71,12 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
               if (active && s.phase != 'streaming')
                 const LinearProgressIndicator(),
               for (final choice in [
-                (s.adapters, s.adapter, 'Bluetooth adapter', 'adapter'),
+                (
+                  s.adapters,
+                  s.adapter,
+                  'Bluetooth adapter (all tasks)',
+                  'adapter',
+                ),
                 (
                   s.networks,
                   s.interface,
@@ -182,8 +187,8 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
                 ),
               for (final d in s.devices.where(
                 (d) =>
-                    d.paired ||
-                    (s.discovering && d.id.startsWith('${s.adapter}/')),
+                    d.id.startsWith('${s.adapter}/') &&
+                    (d.paired || s.discovering),
               ))
                 ListTile(
                   contentPadding: EdgeInsets.zero,

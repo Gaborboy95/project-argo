@@ -93,6 +93,7 @@ impl Bluetooth {
         for name in names.into_iter().take(8) {
             let a = self.session.adapter(&name).map_err(|e| e.to_string())?;
             adapters.push(Radio {
+                address: Some(a.address().await.map_err(|e| e.to_string())?.to_string()),
                 id: name.clone(),
                 name: format!("{} ({})", a.alias().await.unwrap_or_default(), name),
             });
@@ -116,8 +117,16 @@ impl Bluetooth {
             }
         }
         self.control.state.send_modify(|s| {
-            if s.adapter.is_empty() && adapters.len() == 1 {
+            if !s.adapter_address.is_empty() {
+                // Do not silently switch radios when USB enumeration changes.
+                s.adapter = adapters
+                    .iter()
+                    .find(|a| a.address.as_deref() == Some(&s.adapter_address))
+                    .map(|a| a.id.clone())
+                    .unwrap_or_default();
+            } else if s.adapter.is_empty() && adapters.len() == 1 {
                 s.adapter = adapters[0].id.clone();
+                s.adapter_address = adapters[0].address.clone().unwrap_or_default();
             }
             s.adapters = adapters;
             s.devices = devices;

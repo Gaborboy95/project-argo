@@ -30,7 +30,7 @@ class _AppShellState extends State<AppShell> {
   ProjectionService? _projection;
   StreamSubscription<ProjectionSnapshot>? _projectionSubscription;
   ProjectionSnapshot? _previous;
-  String? _presentedSession, _waitingSession, _activationError;
+  String? _waitingSession, _activationError;
   bool _activating = false;
   String? _activatingSession, _queuedHomeSession;
   int _requestedAfterRevision = 0;
@@ -87,23 +87,21 @@ class _AppShellState extends State<AppShell> {
         session != null &&
         previous != null &&
         session.hostReturnRevision > previous.hostReturnRevision;
-    if (_home && hostReturn && _presentedSession == session.id) {
+    // Phone Exit is explicit navigation intent even during a pending resume.
+    // Presentation snapshots can lag the phone's focus request.
+    if (_home && hostReturn) {
       debugPrint(
         'Argo projection presentation: phone host-return revision=${session.hostReturnRevision}',
       );
       _returnToHost(phoneRequested: true);
       return;
     }
-    if (_presentedSession != session?.id) _presentedSession = null;
     if (_waitingSession != session?.id) _waitingSession = null;
     if (_waitingSession != null &&
         projectionVideoUsable(session) &&
         mainProjectionStream(session)!.presentationRevision >
             _requestedAfterRevision) {
       _waitingSession = null;
-    }
-    if (_home && projectionVideoUsable(session) && _waitingSession == null) {
-      _presentedSession = session!.id;
     }
     if (mounted) setState(() {});
   }
@@ -129,7 +127,6 @@ class _AppShellState extends State<AppShell> {
       _waitingSession = session.id;
       _requestedAfterRevision =
           mainProjectionStream(session)?.presentationRevision ?? 0;
-      _presentedSession = null;
     });
     unawaited(
       _projection!
@@ -256,7 +253,6 @@ class _AppShellState extends State<AppShell> {
       _selectedIndex = index;
       _waitingSession = null;
       _queuedHomeSession = null;
-      _presentedSession = null;
       _activationError = null;
     });
     if (oldStream != null && !phoneRequested) {

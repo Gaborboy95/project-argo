@@ -235,3 +235,10 @@ Administrator-approved firewall interfaces/accounts are stored only in root-owne
 grant. The per-account A2DP routing opt-in requires logout/login and does not change
 Bluetooth roles or codecs. See [Media setup](media.md#setup-and-use) and the
 [permission installer](wireless.md#permissions-and-helper-installation).
+
+The shared Bluetooth adapter choice is saved by its hardware address (older `hciN`
+choices migrate when that adapter is available). Pairing, wireless bootstrap and
+music admission use that same adapter. Settings and Media list its devices only;
+other adapters and bonds remain available to the desktop. A missing preferred
+adapter does not authorize a fallback. Change adapters while discovery, pairing,
+wireless projection and music are idle.

@@ -164,12 +164,62 @@ async fn process_request(
             host.projection_enabled.send_replace(r.accept);
         }
         "confirm" => bt.respond(r.prompt, r.accept),
-        "adapter" | "interface" | "select" | "band" => {
+        "adapter" => {
+            let radio = c
+                .state
+                .borrow()
+                .adapters
+                .iter()
+                .find(|a| a.id == r.target || a.address.as_deref() == Some(r.target.as_str()))
+                .cloned();
+            let radio = match radio {
+                Some(radio) => radio,
+                None if r.target.parse::<bluer::Address>().is_ok() => crate::connectivity::Radio {
+                    id: String::new(),
+                    name: String::new(),
+                    address: Some(r.target.clone()),
+                },
+                None => return Err("Selected Bluetooth adapter is unavailable".into()),
+            };
+            if c.state.borrow().adapter == radio.id
+                && c.state.borrow().adapter_address == radio.address.clone().unwrap_or_default()
+            {
+                return Ok(());
+            }
+            if activity.is_some()
+                || discovery.is_some()
+                || pairing.is_some()
+                || c.state.borrow().music.as_ref().is_some_and(|m| {
+                    m.busy
+                        || (!matches!(m.phase.as_str(), "disconnected" | "idle")
+                            && !m.device.is_empty())
+                })
+            {
+                return Err("Stop discovery and disconnect wireless AA/music before changing the shared Bluetooth adapter".into());
+            }
+            c.state.send_modify(|s| {
+                s.adapter = radio.id.clone();
+                s.adapter_address = radio.address.clone().unwrap_or_default();
+                if !s.selected.starts_with(&format!("{}/", radio.id)) {
+                    s.selected.clear();
+                }
+                s.detail = if radio.id.is_empty() {
+                    "Preferred Bluetooth adapter is unavailable; no fallback radio selected"
+                } else {
+                    "Bluetooth adapter selected for pairing, wireless AA and music"
+                }
+                .into();
+            });
+        }
+        "interface" | "select" | "band" => {
             let band = if r.action == "band" {
                 Some(ApBand::parse(&r.target)?)
             } else {
                 None
             };
+            if r.action == "select" {
+                c.state.borrow().require_selected_adapter(&r.target)?;
+            }
             if r.action == "select"
                 && !bt
                     .device(&r.target)?
@@ -180,7 +230,6 @@ async fn process_request(
                 return Err("Pair this device before selecting projection".into());
             }
             c.state.send_modify(|s| match r.action.as_str() {
-                "adapter" => s.adapter = r.target.clone(),
                 "interface" => s.interface = r.target.clone(),
                 "band" => s.band = band.expect("validated band"),
                 _ => s.selected = r.target.clone(),
@@ -221,6 +270,7 @@ async fn process_request(
             }
         }
         "pair" => {
+            c.state.borrow().require_selected_adapter(&r.target)?;
             if !c.state.borrow().discovering {
                 return Err("Start the discovery window first".into());
             }
@@ -307,6 +357,7 @@ async fn process_request(
                         .into(),
                 );
             }
+            config.require_selected_adapter(&config.selected)?;
             let device = bt.device(&config.selected)?;
             if !device.is_paired().await.map_err(|e| e.to_string())? {
                 return Err("Selected phone is no longer paired".into());

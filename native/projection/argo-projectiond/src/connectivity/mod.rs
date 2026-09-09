@@ -14,6 +14,8 @@ pub struct Device {
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Radio {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     pub id: String,
     pub name: String,
 }
@@ -32,6 +34,8 @@ pub struct Snapshot {
     pub networks: Vec<Radio>,
     pub devices: Vec<Device>,
     pub adapter: String,
+    #[serde(skip)]
+    pub adapter_address: String,
     pub interface: String,
     pub selected: String,
     pub enabled: bool,
@@ -43,6 +47,17 @@ pub struct Snapshot {
     pub cleanup_error: String,
     pub band: network::ApBand,
     pub ap_frequency_mhz: Option<u32>,
+}
+impl Snapshot {
+    pub fn require_selected_adapter(&self, device: &str) -> Result<(), String> {
+        if self.adapter.is_empty() || !self.adapters.iter().any(|a| a.id == self.adapter) {
+            return Err("Select an available Bluetooth adapter in Settings".into());
+        }
+        if device.split_once('/').map(|(a, _)| a) != Some(self.adapter.as_str()) {
+            return Err("Device belongs to a different Bluetooth adapter; use the shared Settings selection".into());
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,5 +211,43 @@ mod tests {
                 .is_err()
         );
         assert!(control.request(&vec![b' '; 2049]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    #[test]
+    fn shared_adapter_admission_rejects_other_and_missing_radios() {
+        let mut state = Snapshot {
+            adapter: "hci1".into(),
+            adapters: vec![
+                Radio {
+                    id: "hci0".into(),
+                    ..Default::default()
+                },
+                Radio {
+                    id: "hci1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            state
+                .require_selected_adapter("hci1/00:11:22:33:44:55")
+                .is_ok()
+        );
+        assert!(
+            state
+                .require_selected_adapter("hci0/00:11:22:33:44:55")
+                .is_err()
+        );
+        state.adapters.pop();
+        assert!(
+            state
+                .require_selected_adapter("hci1/00:11:22:33:44:55")
+                .is_err()
+        );
     }
 }
