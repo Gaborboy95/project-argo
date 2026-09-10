@@ -48,10 +48,11 @@ it from its launcher terminal.
 
 [DashboardGeometry](../lib/app/shell/dashboard_geometry.dart) allocates logical
 rectangles from LayoutBuilder constraints inside the real safe area. On the 4:3
-dashboard, the primary region is full width with height `width × 9/16`. The dock
+dashboard, the media slot begins at `width × 9/16`; projection extends behind that
+slot to the dock. The dock
 has a viewport-derived height, capped at 160 logical pixels; the thin media slot
 is reserved even when hidden. Short landscape development windows reduce the
-primary allocation and aspect-fit video within it. Narrow docks scroll horizontally.
+media allocation and aspect-fit video within the available area above the dock. Narrow docks scroll horizontally.
 There is no portrait dashboard, reference canvas or application scale transform.
 
 Appearance control size affects host fonts, icons and touch targets inside those
@@ -60,7 +61,7 @@ and input continue to use the same ProjectionViewGeometry and ProjectionTouchMap
 Window metric changes update layout and cancel any active projection gesture.
 
 Dock Home resumes projection; Media toggles only the reserved strip directly
-below projection. Pulling up on that strip opens Media with larger artwork,
+over the lower part of projection. Pulling up on that strip opens Media with larger artwork,
 metadata, supported transport commands and source selection. Apps opens a centered
 labelled grid of registered destinations; Settings stays directly accessible.
 Camera is unavailable. Settings and volume have symmetric edge insets; a persistent
@@ -139,7 +140,7 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v6 has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v7 carries View/Safe Area in configuration and has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
@@ -183,7 +184,10 @@ texture name, DMA-BUF fd and Flutter external-texture ID are not interchangeable
 Projection composition requires PlatformViewLayer rather than TextureLayer.
 Input is sent only by ProjectionView's mapped Listener; platform controller touch
 dispatch is deliberately a no-op. Rendering and input share fitted geometry;
-content insets are removed once, safe insets remain metadata, and logical
+negotiated View Area margins are removed once in the native row copy, and the
+cropped dimensions define both aspect fit and the phone touchscreen descriptor.
+Safe Area insets are sent to AA as UI layout hints, not a second crop or an input
+clip. Logical
 pointer coordinates are not blindly multiplied by DPR.
 The AA engine maps host contact IDs to reusable Android pointer IDs 0–9, preserving
 identity until Up or gesture-wide Cancel. Flutter pointer IDs change on every Down
@@ -253,7 +257,7 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
-## Projection configuration ownership (IPC v6)
+## Projection configuration ownership (IPC v7)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -270,7 +274,7 @@ frozen configuration, not a settings-file echo.
 
 Wire header remains big-endian magic/version/kind/payload-length (12 bytes).
 Strings are u16 byte length followed by UTF-8. A display value is width:u16,
-height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right).
+height:u16, DPI:u16, FPS:u8, driver:u8 (0 left, 1 right), followed by eight u16 insets: View Area L/T/R/B, then Safe Area L/T/R/B (24 bytes total).
 
 | Kind | Payload |
 |---|---|
@@ -315,7 +319,7 @@ Bluetooth pairing database is introduced. See [Media sources](media.md) for rout
 installation, bounded connection intent and extension contracts.
 
 The daemon's bounded metadata parser handles track replacement separately from
-status/battery patches. A bounded artwork owner stores the encoded image in a private runtime file. IPC v6
+status/battery patches. A bounded artwork owner stores the encoded image in a private runtime file. IPC v7
 appends an optional cache reference to kind 11; no media bytes enter control IPC. Semantic duplicates
 produce no revision or notification. Each live session has its own revision and
 receive timestamp; the existing unique session ID supplies its epoch. Replacement,
@@ -371,7 +375,7 @@ updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
 System-mode resolution uses Flutter's host brightness only; a future normalized
 vehicle day/night source would require a separate explicit policy.
 
-## Shared connectivity and wireless admission (IPC v6)
+## Shared connectivity and wireless admission (IPC v7)
 
 The existing daemon contains the protocol-neutral BlueZ device/pairing adapter
 and NetworkManager AP adapter in `connectivity/`. The single non-default agent
@@ -447,7 +451,7 @@ are sent by the existing AA engine with bounded acknowledgement credit. The
 capture reader retains partial bytes across select cancellation and is polled
 alongside buffered packet draining, so video cannot starve input. No PCM, keys or
 identity material enters JSON IPC. Optional `calls`, `voice` and `stopped` fields
-and the new connectivity actions extend IPC v6 without altering its framing.
+and the new connectivity actions extend IPC v7 without altering its framing.
 Always stage and launch matching app/daemon builds.
 
 Settings → Application → Quit Argo requests `stopAll` with an operation ID.
@@ -466,7 +470,7 @@ The target is part of KDE's graphical session. Daemon IPC readiness precedes app
 startup; app readiness requires the existing IPC handshake and its first rendered
 frame. A private, bounded same-account administration socket supplies readiness
 and invokes `ApplicationExitService`; it carries neither media nor identity and
-does not compete for the projection IPC client lease. Projection IPC remains v6.
+does not compete for the projection IPC client lease. Projection IPC remains v7.
 
 The app orders after and is part of the daemon service, so daemon stop/restart
 stops the app first. Quit acknowledges native `stopAll`, runs the application

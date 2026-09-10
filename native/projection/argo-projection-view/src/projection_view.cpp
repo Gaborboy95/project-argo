@@ -1,3 +1,4 @@
+#include "view_area.h"
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
@@ -461,9 +462,21 @@ struct ViewState {
     return true;
   }
 
+  std::uint16_t encoded_width = 0, encoded_height = 0;
+  std::uint16_t crop_left = 0, crop_top = 0, crop_right = 0, crop_bottom = 0;
+  bool crop_error_reported = false;
+
   void SubmitRgb(const std::uint8_t* pixels, std::size_t stride,
                  std::uint32_t frame_width, std::uint32_t frame_height) {
     std::scoped_lock lock(mutex);
+    if (encoded_width != 0) {
+      if (!ApplyViewArea(pixels, stride, frame_width, frame_height, encoded_width, encoded_height,
+                         crop_left, crop_top, crop_right, crop_bottom)) {
+        if (!crop_error_reported) std::fprintf(stderr, "Argo projection: decoded dimensions disagree with frozen View Area; rejecting frame\n");
+        crop_error_reported = true;
+        return;
+      }
+    }
     if (!suspended && allocator != nullptr &&
         (grant.granted_kind == IHS_PV_KIND_TEXTURE_DMABUF_IMPORT ||
          grant.granted_kind == IHS_PV_KIND_DRM_PLANE)) {
@@ -659,6 +672,17 @@ int Create(const IhsPvCreateInfo* info, void*, IhsPlatformView* view,
       std::strcmp(backend, "disabled") != 0) {
     std::fprintf(stderr, "Argo renderer test: create rejected: requires ARGO_PROJECTION_BACKEND=disabled\n");
     return IHS_PV_ERR_INVALID;
+  }
+  if (info->params_size == 20 && info->params != nullptr && std::memcmp(info->params, "ARVW", 4) == 0) {
+    const auto* p = info->params;
+    const auto word = [p](std::size_t offset) -> std::uint16_t { return (static_cast<std::uint16_t>(p[offset]) << 8) | p[offset+1]; };
+    if (p[4] != 0 || p[5] != 0 || p[6] != 0 || p[7] != 1) return IHS_PV_ERR_INVALID;
+    state->encoded_width=word(8); state->encoded_height=word(10);
+    state->crop_left=word(12); state->crop_top=word(14); state->crop_right=word(16); state->crop_bottom=word(18);
+    if (state->encoded_width > 1920 || state->encoded_height > 1080 ||
+        state->crop_left + state->crop_right >= state->encoded_width || state->crop_top + state->crop_bottom >= state->encoded_height) return IHS_PV_ERR_INVALID;
+    std::fprintf(stderr, "Argo projection: encoded=%ux%u view-area crop L/T/R/B=%u/%u/%u/%u; no intermediate resize\n",
+      state->encoded_width,state->encoded_height,state->crop_left,state->crop_top,state->crop_right,state->crop_bottom);
   }
   state->view_id = info->id;
   state->view = view;

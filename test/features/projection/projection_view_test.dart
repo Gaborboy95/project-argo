@@ -1,5 +1,6 @@
 import 'package:argo/app/app.dart';
 import 'package:argo/app/shell/dashboard_dock.dart';
+import 'package:argo/app/shell/dashboard_geometry.dart';
 import 'package:argo/app/shell/dashboard_climate.dart';
 import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/media/media_state.dart';
@@ -82,11 +83,13 @@ void main() {
       expect(create['viewType'], ProjectionView.viewType);
       expect(create['width'], 320.0); // Logical size, despite DPR 2.
       expect(create['height'], 180.0);
+      final crop = ByteData.sublistView(create['params'] as Uint8List);
+      expect(crop.lengthInBytes, 20);
+      expect(crop.getUint32(0), 0x41525657);
+      expect(crop.getUint32(4), 1);
       expect(
-        const StandardMessageCodec().decodeMessage(
-          ByteData.sublistView(create['params'] as Uint8List),
-        ),
-        {'streamId': 'main'},
+        [for (var i = 0; i < 6; i++) crop.getUint16(8 + i * 2)],
+        [1280, 720, 0, 0, 0, 0],
       );
       expect(
         tester.layers.whereType<PlatformViewLayer>().map(
@@ -316,16 +319,19 @@ void main() {
           .single
           .viewId;
       expect(tester.layers.whereType<TextureLayer>(), isEmpty);
-      final fitted = const ProjectionViewGeometry(
+      final fitted = ProjectionViewGeometry(
         width: 800,
-        height: 450,
+        height: DashboardGeometry(const Size(800, 600)).dockTop,
         devicePixelRatio: 2,
-      ).fit(1280, 720)!;
+      ).fit(1280, 720, contentInsets: stream.contentInsets)!;
       expect(
         tester.getRect(find.byType(PlatformViewSurface)),
         Rect.fromLTWH(fitted.left, fitted.top, fitted.width, fitted.height),
       );
-      expect(fitted.physicalWidth, 1600);
+      expect(
+        fitted.physicalHeight,
+        2 * DashboardGeometry(const Size(800, 600)).dockTop,
+      );
       final beforeRect = tester.getRect(find.byType(PlatformViewSurface));
       final beforeVisibility = List.of(service.visibility);
       // Actual PlatformViewLayer, not just a calculated rectangle. Exercise
@@ -341,8 +347,24 @@ void main() {
         tester.view.devicePixelRatio = metrics.$2;
         await tester.pumpAndSettle();
         final rectangle = tester.getRect(find.byType(PlatformViewSurface));
-        expect(rectangle.width * metrics.$2, closeTo(metrics.$1.width, .001));
-        expect(rectangle.height / rectangle.width, closeTo(9 / 16, .00001));
+        final viewport = metrics.$1 / metrics.$2;
+        final layout = DashboardGeometry(viewport);
+        expect(rectangle.width, lessThanOrEqualTo(viewport.width));
+        final expected = ProjectionViewGeometry(
+          width: viewport.width,
+          height: layout.dockTop,
+          devicePixelRatio: metrics.$2,
+        ).fit(1280, 720, contentInsets: stream.contentInsets)!;
+        expect(
+          rectangle,
+          Rect.fromLTWH(
+            expected.left,
+            expected.top,
+            expected.width,
+            expected.height,
+          ),
+        );
+        expect(rectangle.height / rectangle.width, closeTo(720 / 1120, .00001));
         final dock = tester.getRect(find.byType(DashboardDock));
         if (find.byTooltip('Expand media').evaluate().isEmpty) {
           await tester.tap(find.byTooltip('Media strip'));
@@ -351,8 +373,8 @@ void main() {
         final floating = tester.getRect(
           find.byKey(const ValueKey('floating-media-surface')),
         );
-        expect(floating.left, closeTo(rectangle.width * .025, .001));
-        expect(floating.top, closeTo(rectangle.bottom + 4, .001));
+        expect(floating.left, closeTo(viewport.width * .025, .001));
+        expect(floating.top, closeTo(layout.primaryHeight + 4, .001));
         expect(floating.bottom, closeTo(dock.top - 4, .001));
 
         for (final size in [1.0, 1.15, 1.3]) {
@@ -454,7 +476,7 @@ void main() {
       );
       final pointer = await tester.startGesture(
         Offset(
-          fitted.left + (80 + 1120 * 0.25) * fitted.width / 1280,
+          fitted.left + fitted.width * 0.25,
           fitted.top + fitted.height / 2,
         ),
       );
@@ -533,8 +555,13 @@ void main() {
       tester.view.physicalSize = const Size(1000, 700);
       await tester.pumpAndSettle();
       final smallSize = tester.getSize(find.byType(PlatformViewSurface));
-      expect(smallSize.width, closeTo(243 * 16 / 9, .00001));
-      expect(smallSize.height, closeTo(243, .00001));
+      final smallViewport =
+          const Size(1000, 700) / tester.view.devicePixelRatio;
+      final smallFit = ProjectionViewGeometry(
+        width: smallViewport.width,
+        height: DashboardGeometry(smallViewport).dockTop,
+      ).fit(1280, 720, contentInsets: stream.contentInsets)!;
+      expect(smallSize, Size(smallFit.width, smallFit.height));
       backend.emit(
         _liveSnapshot(
           stream: streamAt(2),

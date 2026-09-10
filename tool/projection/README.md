@@ -78,14 +78,14 @@ Offline builds require cached locked dependencies. Resolve missing dependencies
 explicitly without updating the lockfile; do not silently upgrade the toolchain.
 Tests use OpenSSL for isolated memory-TLS fixtures, not production identity provisioning.
 
-Choose an existing compatible IPC v6 bundle and a **new, nonexistent** destination.
+Choose an existing compatible IPC v7 bundle and a **new, nonexistent** destination.
 ARGO_BASE_BUNDLE and ARGO_RELEASE below are shell recipe variables, not application
 configuration options.
 The working source bundle may remain running because its files are only read:
 
 ```bash
 set -euo pipefail
-: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v6 release directory}"
+: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v7 release directory}"
 : "${ARGO_RELEASE:?Set a new absolute release directory}"
 test -d "$ARGO_BASE_BUNDLE"
 test ! -e "$ARGO_RELEASE"
@@ -103,8 +103,8 @@ Keep the previous bundle as rollback. Stop the previous processes before selecti
 the new bundle through the [shared launch workflow](../../docs/setup.md#graphical-session-deployment).
 No Engine, IHS, Flutter application or native-view rebuild is needed for this path.
 
-For application/IPC changes, build a new application with `emb` and copy only
-unchanged compatible native assets from the preserved bundle. Do not copy the old
+For application changes within IPC7, build a new application with `emb` and copy only
+unchanged compatible IPC7 native assets from the preserved bundle. For migration from IPC6 use the native-view build recipe below. Do not copy the old
 `libapp.so` or Flutter assets over the new build:
 
 ```bash
@@ -123,9 +123,9 @@ install -m 755 "$ARGO/tool/connectivity/run-release.sh" "$ARGO_RELEASE/run-relea
 ```
 
 Use the installed `emb` path from the next section. Verify the unchanged Engine,
-IHS/native-view and Lua/SQLite asset hashes against the source manifest. Native
-video framing is unchanged by control IPC v6; an IPC v5 bundle can supply these
-native assets, but its daemon/application must not be mixed into the new release.
+IHS/native-view and Lua/SQLite asset hashes against the source manifest. IPC7 requires a rebuilt native view with the ARVW creation contract: do not reuse
+an IPC6 native-view library. Engine, IHS and Lua/SQLite may be reused when their
+recorded requirements match. The native video socket framing itself is unchanged.
 
 ## Build the native view and Argo bundle
 
@@ -235,8 +235,10 @@ Both managed and renderer launchers request supported Wayland fullscreen. Flutte
 view metrics and LayoutBuilder allocate the dashboard; they never set a fake DPR.
 On the reference Mu at 125% desktop scaling, IHS reports 1638×1229 logical surface
 configuration and an actual 2048×1536 framebuffer. Flutter's physical view is divided
-by its real DPR for layout; the 16:9 native region is 2048×1152 physical pixels.
-The 1280×720 source therefore enlarges uniformly by 1.6. The half-logical-pixel
+by its real DPR for layout; the earlier 16:9 native region measured 2048×1152 physical pixels.
+That measurement used the earlier 16:9 viewport. The current View Area extends
+to the dock; compare fresh native crop/buffer logs with the measured destination
+for its actual scale. The half-logical-pixel
 rounding in Wayland configuration is not a separate touch-coordinate conversion.
 
 Opt-in Dart logs report geometry changes, not every frame. Native logs report decoded
@@ -289,3 +291,27 @@ media or AA identity is exposed to Lua.
   [playback status](https://github.com/mrmees/open-android-auto/blob/main/oaa/media/MediaPlaybackStatusMessage.proto).
 - [Video focus request](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/VideoFocusRequestMessage.proto) and
   [focus mode](https://github.com/f1xpl/aasdk/blob/master/aasdk_proto/VideoFocusModeEnum.proto).
+
+## Negotiated View Area native contract
+
+IPC7 adds eight u16 configuration values: View Area then Safe Area, each in
+left/top/right/bottom order. The native platform view receives a 20-byte big-endian
+creation payload: `ARVW`, u32 version 1, then six u16 values for encoded width,
+height, left, top, right and bottom crop. The matched bundle manifest records
+`native_view_contract: 1`. Creation parameters are immutable for a session; a new
+session creates its own view. Decoded dimensions must agree with the frozen encoded
+tier. A mismatch rejects the frame with a bounded diagnostic.
+
+The native row copy retains the original decoded stride and copies only negotiated
+content into the existing GBM/SHM buffer. IHS composition and linear filtering are
+unchanged. Native logs expose encoded/crop values and submitted buffer dimensions;
+Dart geometry logs expose cropped source size, destination and real DPR. CTest's
+`view_area_copy` covers padded source rows and rejected geometry; physical phone
+layout, map-under-overlay behavior and touch alignment still require a live check.
+
+Protocol reference: [LIVI ServiceDiscoveryBuilder](https://github.com/f-io/LIVI/blob/5937a057584449f22a0f1ac3ef28b546c3989cbf/src/main/services/projection/driver/aa/stack/session/ServiceDiscoveryBuilder.ts)
+and its media UiConfig/Insets schemas at revision
+`5937a057584449f22a0f1ac3ef28b546c3989cbf`. VideoConfiguration field 11 contains
+UiConfig: margins 1, content insets 2, stable content insets 3. Insets use
+**top, bottom, left, right** fields 1–4. Argo implements the wire contract
+independently; no LIVI code or credentials are included.

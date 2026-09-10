@@ -122,7 +122,8 @@ The service's `set`/`reset` is the supported in-app change path.
 | `projection.display.dpi` | Integer `160`, 80..640 | Validated next-session request, not desktop DPR. |
 | `projection.display.framesPerSecond` | Integer `30`, 30 or 60 | Next-session negotiation request. |
 | `projection.display.driverSide` | String `left`, `left` or `right` | Next-session negotiation request. |
-| `projection.display.safeInset.left`, `.top`, `.right`, `.bottom` | Each integer `0`, 0..1000 | Stored compatibility keys only: configuration IPC does not transmit these preferences. Runtime stream insets come from the daemon descriptor. |
+| `projection.display.viewInset.left`, `.top`, `.right`, `.bottom` | Each integer `0`, 0..1000 | Additional encoded-pixel margins, combined with measured aspect fitting; next connection. |
+| `projection.display.safeInset.left`, `.top`, `.right`, `.bottom` | Each integer `0`, 0..1000 | Minimum content-pixel safe insets; bottom also reserves the collapsed floating media slot; next connection. |
 
 The daemon advertises supported resolution **pairs** 800×480, 1280×720 and
 1920×1080, 30/60 FPS, DPI 80..640, left/right driver, and fixed audio formats.
@@ -141,11 +142,30 @@ reset can save defaults locally with an explicit unvalidated notice. Acknowledge
 is not phone acceptance. All negotiation-sensitive changes apply on the **next
 phone connection**, without automatic disconnection.
 
-Safe-inset keys remain compatible storage but have no applied AA mapping and no
-enabled controls. Runtime stream content/safe insets remain independent metadata;
-Home uses a shared aspect fit for rendering/touch. Fullscreen presentation does
-not renegotiate source resolution, DPI or FPS. Renderer-test source stays fixed
-at 1280×720/30. Wireless uses `android-auto` with transport `wifi`. See [wireless setup](wireless.md).
+### View Area and Safe Area
+
+The encoded video tier stays unchanged. Argo measures the actual region above the
+dock and adds balanced View Area margins so the remaining content fits that aspect
+ratio, rounded to even content dimensions. Settings expose additional margins in
+encoded pixels. The native view removes only these negotiated margin pixels during
+its existing row copy; there is no extra resampling stage. Touch uses the same
+remaining content rectangle. Do not use margins to crop arbitrary controls from an
+already negotiated picture.
+
+Safe Area is separate: `UiConfig.content_insets` and `stable_content_insets` request
+that AA keep important UI clear of the host overlay. Its minimum bottom inset covers
+the collapsed media slot, even when that strip is hidden. Maps may render beneath
+it; individual phone applications must honor the layout hint for this to work.
+Expanded panels remain modal overlays, not new safe-area negotiations.
+
+Manual values are persisted; measured margins are runtime requests. The first
+measured layout and subsequent viewport changes are debounced. The daemon freezes
+both areas when a session begins. A phone connected before the first application
+layout keeps its prior geometry; reconnect to apply the measured fit. Resizing an
+active session aspect-fits its frozen content until the next connection. Media
+visibility, panel expansion and Control size do not change the reserved geometry.
+Invalid combinations that leave no content are rejected. Renderer-test source stays
+1280×720 with no phone-negotiated crop. See [wireless setup](wireless.md).
 
 Native playback reports fixed PCM formats: media 48 kHz/16-bit/stereo;
 speech/navigation and system 16 kHz/16-bit/mono. They share the daemon's discovery,
@@ -160,7 +180,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v6 is incompatible with v1–v5: rebuild/restart both client and daemon together.
+IPC v7 is incompatible with v1–v6: rebuild/restart both client and daemon together.
 Session/video messages include session-scoped presentation revisions; AV stops
 are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
@@ -227,7 +247,7 @@ See [security, permissions, launch and rollback](wireless.md).
 
 ## Bluetooth music and media ownership
 
-Bluetooth music uses the same IPC v6 connectivity envelope with an optional `music`
+Bluetooth music uses the same IPC v7 connectivity envelope with an optional `music`
 capability/state object, generation-scoped requests and operation acknowledgements.
 Use a matched release: an older daemon without this object has no music controller.
 There is no new media payload channel or Lua write permission.

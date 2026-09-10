@@ -160,8 +160,8 @@ pub fn snapshot_messages(
             writer.u16(display.width);
             writer.u16(display.height);
             writer.u8(display.fps);
-            for _ in 0..8 {
-                writer.u16(0);
+            for inset in display.view_insets.into_iter().chain(display.safe_insets) {
+                writer.u16(inset);
             }
             writer.u8(u8::from(*visible));
             writer.u8(u8::from(*visible));
@@ -269,7 +269,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v6_host_return.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v7_host_return.hex").trim()
         );
 
         let ready = connecting.clone().ready();

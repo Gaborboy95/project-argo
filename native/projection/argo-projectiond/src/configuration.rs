@@ -80,6 +80,9 @@ pub fn write_display(w: &mut PayloadWriter, d: &DisplayConfig) {
     w.u16(d.dpi);
     w.u8(d.fps);
     w.u8(u8::from(d.right_driver));
+    for inset in d.view_insets.into_iter().chain(d.safe_insets) {
+        w.u16(inset);
+    }
 }
 pub fn read_display(r: &mut PayloadReader<'_>) -> Option<DisplayConfig> {
     let width = r.u16()?;
@@ -96,6 +99,8 @@ pub fn read_display(r: &mut PayloadReader<'_>) -> Option<DisplayConfig> {
         dpi,
         fps,
         right_driver: side == 1,
+        view_insets: [r.u16()?, r.u16()?, r.u16()?, r.u16()?],
+        safe_insets: [r.u16()?, r.u16()?, r.u16()?, r.u16()?],
     })
 }
 pub fn capabilities(readiness: u8, detail: &str) -> Message {
@@ -142,7 +147,7 @@ mod tests {
     #[test]
     fn shared_v2_catalog_fixture_and_endpoint_contract() {
         let hex =
-            include_str!("../../../../test/fixtures/projection/ipc_v6_capabilities.hex").trim();
+            include_str!("../../../../test/fixtures/projection/ipc_v7_capabilities.hex").trim();
         let bytes: Vec<u8> = (0..hex.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())

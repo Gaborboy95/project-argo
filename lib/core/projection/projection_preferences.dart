@@ -10,6 +10,7 @@ final class ProjectionPreferences {
     required this.framesPerSecond,
     required this.driverSide,
     required this.safeInsets,
+    this.viewInsets = const ProjectionInsets(),
   }) {
     if (!const [
       (800, 480),
@@ -26,6 +27,17 @@ final class ProjectionPreferences {
       throw ArgumentError('Projection DPI or FPS is outside supported bounds.');
     }
     safeInsets.validate(name: 'safeInsets');
+    viewInsets.validate(name: 'viewInsets');
+    if (viewInsets.left + viewInsets.right >= width - 1 ||
+        viewInsets.top + viewInsets.bottom >= height - 1 ||
+        safeInsets.left + safeInsets.right >=
+            width - viewInsets.left - viewInsets.right ||
+        safeInsets.top + safeInsets.bottom >=
+            height - viewInsets.top - viewInsets.bottom) {
+      throw ArgumentError(
+        'View Area and Safe Area must leave visible content.',
+      );
+    }
   }
 
   factory ProjectionPreferences.fromSettings(
@@ -38,6 +50,12 @@ final class ProjectionPreferences {
     driverSide: settings.get(AppSettingKeys.projectionDriverSide) == 'right'
         ? ProjectionDriverSide.right
         : ProjectionDriverSide.left,
+    viewInsets: ProjectionInsets(
+      left: settings.get(AppSettingKeys.projectionViewInsetLeft).toDouble(),
+      top: settings.get(AppSettingKeys.projectionViewInsetTop).toDouble(),
+      right: settings.get(AppSettingKeys.projectionViewInsetRight).toDouble(),
+      bottom: settings.get(AppSettingKeys.projectionViewInsetBottom).toDouble(),
+    ),
     safeInsets: ProjectionInsets(
       left: settings.get(AppSettingKeys.projectionSafeInsetLeft).toDouble(),
       top: settings.get(AppSettingKeys.projectionSafeInsetTop).toDouble(),
@@ -60,14 +78,60 @@ final class ProjectionPreferences {
     int? dpi,
     int? framesPerSecond,
     ProjectionDriverSide? driverSide,
+    ProjectionInsets? viewInsets,
+    ProjectionInsets? safeInsets,
   }) => ProjectionPreferences(
     width: width ?? this.width,
     height: height ?? this.height,
     dpi: dpi ?? this.dpi,
     framesPerSecond: framesPerSecond ?? this.framesPerSecond,
     driverSide: driverSide ?? this.driverSide,
-    safeInsets: safeInsets,
+    safeInsets: safeInsets ?? this.safeInsets,
+    viewInsets: viewInsets ?? this.viewInsets,
   );
+
+  /// Fit the negotiated content rectangle, not an arbitrary crop of phone UI.
+  ProjectionPreferences forViewport(
+    double viewportWidth,
+    double viewportHeight,
+    double overlayHeight,
+  ) {
+    if (viewportWidth <= 0 || viewportHeight <= 0) return this;
+    var left = viewInsets.left.toInt(), right = viewInsets.right.toInt();
+    var top = viewInsets.top.toInt(), bottom = viewInsets.bottom.toInt();
+    final availableW = width - left - right, availableH = height - top - bottom;
+    final aspect = viewportWidth / viewportHeight;
+    if (availableW / availableH > aspect) {
+      final content = (availableH * aspect).floor().clamp(2, availableW) & ~1;
+      final margin = availableW - content;
+      left += margin ~/ 2;
+      right += margin - margin ~/ 2;
+    } else {
+      final content = (availableW / aspect).floor().clamp(2, availableH) & ~1;
+      final margin = availableH - content;
+      top += margin ~/ 2;
+      bottom += margin - margin ~/ 2;
+    }
+    final scaleY = viewportHeight / (height - top - bottom);
+    final scaleX = viewportWidth / (width - left - right);
+    final scale = scaleX < scaleY ? scaleX : scaleY;
+    final reserve = (overlayHeight / scale).ceilToDouble();
+    return copyWith(
+      viewInsets: ProjectionInsets(
+        left: left.toDouble(),
+        top: top.toDouble(),
+        right: right.toDouble(),
+        bottom: bottom.toDouble(),
+      ),
+      safeInsets: ProjectionInsets(
+        left: safeInsets.left,
+        top: safeInsets.top,
+        right: safeInsets.right,
+        bottom: reserve > safeInsets.bottom ? reserve : safeInsets.bottom,
+      ),
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       other is ProjectionPreferences &&
@@ -75,14 +139,24 @@ final class ProjectionPreferences {
       height == other.height &&
       dpi == other.dpi &&
       framesPerSecond == other.framesPerSecond &&
-      driverSide == other.driverSide;
+      driverSide == other.driverSide &&
+      safeInsets == other.safeInsets &&
+      viewInsets == other.viewInsets;
   @override
-  int get hashCode =>
-      Object.hash(width, height, dpi, framesPerSecond, driverSide);
+  int get hashCode => Object.hash(
+    width,
+    height,
+    dpi,
+    framesPerSecond,
+    driverSide,
+    viewInsets,
+    safeInsets,
+  );
   @override
   String toString() =>
       '$width×$height, $framesPerSecond FPS, $dpi DPI, ${driverSide.name} driver';
 
+  final ProjectionInsets viewInsets;
   final int width;
   final int height;
   final int dpi;

@@ -41,3 +41,11 @@ set_target_properties(argo_projection_view PROPERTIES
   OUTPUT_NAME argo_projection_view
   CXX_VISIBILITY_PRESET hidden
 )
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(view_area_test test/view_area_test.cpp)
+  target_compile_features(view_area_test PRIVATE cxx_std_20)
+  target_compile_options(view_area_test PRIVATE -Wall -Wextra -Werror)
+  add_test(NAME view_area_copy COMMAND view_area_test)
+endif()

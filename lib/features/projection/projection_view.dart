@@ -251,6 +251,7 @@ class _ProjectionViewState extends State<ProjectionView>
       final fitted = geometry.fit(
         widget.stream?.width ?? 1280,
         widget.stream?.height ?? 720,
+        contentInsets: widget.stream?.contentInsets ?? const ProjectionInsets(),
       );
       if (fitted == null) return const SizedBox();
       _reportGeometry(geometry, fitted);
@@ -319,9 +320,18 @@ class _ProjectionViewState extends State<ProjectionView>
       return builder(context, widget.stream?.id ?? 'renderer-diagnostic');
     }
     return IhsProjectionSurface(
+      key: ValueKey(widget.stream?.id ?? 'renderer-diagnostic'),
       viewType: ProjectionView.viewType,
       creationParams: <String, Object?>{
         if (widget.stream != null) 'streamId': widget.stream!.id,
+        'cropPixels': [
+          widget.stream?.width ?? 1280,
+          widget.stream?.height ?? 720,
+          (widget.stream?.contentInsets.left ?? 0).toInt(),
+          (widget.stream?.contentInsets.top ?? 0).toInt(),
+          (widget.stream?.contentInsets.right ?? 0).toInt(),
+          (widget.stream?.contentInsets.bottom ?? 0).toInt(),
+        ],
       },
       diagnostics: widget.isRendererTest || widget.geometryDiagnostics,
     );

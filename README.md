@@ -11,8 +11,8 @@ An IHS platform view decodes video with GStreamer and presents it through the
 ivi-homescreen compositor. Media bytes stay outside Dart control IPC. Veloce hosts
 Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 
-The Home dashboard reserves a full-width 16:9 projection surface above a media strip
-and persistent control dock. Host control size is adjustable independently of
+The Home dashboard extends projection to the stationary dock, with a floating media strip
+above the dock. Host control size is adjustable independently of
 projection resolution and DPI. Climate is a clearly separated presentation/demo;
 vehicle actuation and Camera are not implemented.
 

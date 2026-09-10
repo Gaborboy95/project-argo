@@ -31,7 +31,7 @@ void main() {
   );
 
   test(
-    'IPC v6 connectivity is independent of AA readiness and closes truthfully',
+    'IPC v7 connectivity is independent of AA readiness and closes truthfully',
     () async {
       final transport = _FakeTransport();
       final backend = AndroidAutoProjectionBackend(
@@ -42,7 +42,7 @@ void main() {
       );
       await backend.start();
       transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
-      final hex = File('test/fixtures/projection/ipc_v6_connectivity.hex')
+      final hex = File('test/fixtures/projection/ipc_v7_connectivity.hex')
           .readAsStringSync()
           .trim();
       transport.emit(
@@ -108,7 +108,7 @@ void main() {
       ),
     );
     session('aa-wired:device');
-    final hex = File('test/fixtures/projection/ipc_v6_metadata.hex')
+    final hex = File('test/fixtures/projection/ipc_v7_metadata.hex')
         .readAsStringSync()
         .trim();
     final packet = ProjectionIpcDecoder().add([
@@ -135,7 +135,7 @@ void main() {
     final subscription = media.changes.listen((_) => changes++);
     transport.emit(packet);
     expect(changes, 0);
-    final returnHex = File('test/fixtures/projection/ipc_v6_host_return.hex')
+    final returnHex = File('test/fixtures/projection/ipc_v7_host_return.hex')
         .readAsStringSync()
         .trim();
     transport.emit(
@@ -205,7 +205,7 @@ void main() {
             .takeBytes(),
       ),
     );
-    final hex = File('test/fixtures/projection/ipc_v6_metadata.hex')
+    final hex = File('test/fixtures/projection/ipc_v7_metadata.hex')
         .readAsStringSync()
         .trim();
     transport.emit(
@@ -347,7 +347,7 @@ void main() {
       expect(transport.sent.last.kind, ProjectionIpcKind.configure);
       expect(
         transport.sent.last.payload.length,
-        12,
+        28,
       ); // revision + display, no paths
       transport.emit(
         ProjectionIpcMessage(
@@ -514,7 +514,7 @@ final class _FakeTransport implements ProjectionControlTransport {
 }
 
 ProjectionIpcMessage _capabilities() {
-  final hex = File('test/fixtures/projection/ipc_v6_capabilities.hex')
+  final hex = File('test/fixtures/projection/ipc_v7_capabilities.hex')
       .readAsStringSync()
       .trim();
   final bytes = [
@@ -541,6 +541,13 @@ ProjectionIpcMessage _configuration(
       ..uint16(p.dpi)
       ..uint8(p.framesPerSecond)
       ..uint8(p.driverSide.index);
+    for (final v in [p.viewInsets, p.safeInsets]) {
+      w
+        ..uint16(v.left.toInt())
+        ..uint16(v.top.toInt())
+        ..uint16(v.right.toInt())
+        ..uint16(v.bottom.toInt());
+    }
   }
 
   display(pending);

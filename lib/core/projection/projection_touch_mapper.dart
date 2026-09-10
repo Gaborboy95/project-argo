@@ -14,7 +14,13 @@ final class ProjectionViewGeometry {
   final double devicePixelRatio;
   final bool preferPhysicalPixels;
 
-  ProjectionFittedGeometry? fit(int sourceWidth, int sourceHeight) {
+  ProjectionFittedGeometry? fit(
+    int sourceWidth,
+    int sourceHeight, {
+    ProjectionInsets contentInsets = const ProjectionInsets(),
+  }) {
+    sourceWidth -= (contentInsets.left + contentInsets.right).toInt();
+    sourceHeight -= (contentInsets.top + contentInsets.bottom).toInt();
     if (!width.isFinite ||
         !height.isFinite ||
         width <= 0 ||
@@ -97,17 +103,23 @@ final class ProjectionTouchMapper {
 
     final sourceWidth = stream.width.toDouble();
     final sourceHeight = stream.height.toDouble();
-    final fitted = view.fit(stream.width, stream.height);
+    final fitted = view.fit(
+      stream.width,
+      stream.height,
+      contentInsets: stream.contentInsets,
+    );
     if (fitted == null) return null;
-    final scale = fitted.width / sourceWidth;
+    final scale =
+        fitted.width /
+        (sourceWidth - stream.contentInsets.left - stream.contentInsets.right);
     final sourceX = (localX - fitted.left) / scale;
     final sourceY = (localY - fitted.top) / scale;
 
     final content = stream.contentInsets;
     final contentWidth = sourceWidth - content.left - content.right;
     final contentHeight = sourceHeight - content.top - content.bottom;
-    final contentX = sourceX - content.left;
-    final contentY = sourceY - content.top;
+    final contentX = sourceX;
+    final contentY = sourceY;
     if (contentX < 0 ||
         contentY < 0 ||
         contentX >= contentWidth ||

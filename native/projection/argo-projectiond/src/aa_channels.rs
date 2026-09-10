@@ -80,6 +80,8 @@ pub struct DisplayConfig {
     pub dpi: u16,
     pub fps: u8,
     pub right_driver: bool,
+    pub view_insets: [u16; 4], // left, top, right, bottom; encoded pixels
+    pub safe_insets: [u16; 4], // relative to the remaining view area
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -89,10 +91,31 @@ impl Default for DisplayConfig {
             dpi: 160,
             fps: 30,
             right_driver: false,
+            view_insets: [0; 4],
+            safe_insets: [0; 4],
         }
     }
 }
 impl DisplayConfig {
+    pub fn content_width(&self) -> u16 {
+        self.width - self.view_insets[0] - self.view_insets[2]
+    }
+    pub fn content_height(&self) -> u16 {
+        self.height - self.view_insets[1] - self.view_insets[3]
+    }
+    fn ui_config(&self) -> Proto {
+        fn insets(v: [u16; 4]) -> Proto {
+            Proto::default()
+                .number(1, v[1].into())
+                .number(2, v[3].into())
+                .number(3, v[0].into())
+                .number(4, v[2].into())
+        }
+        Proto::default()
+            .nested(1, insets(self.view_insets))
+            .nested(2, insets(self.safe_insets))
+            .nested(3, insets(self.safe_insets))
+    }
     pub fn validate(&self) -> Result<(), String> {
         if !crate::configuration::MODES.contains(&(self.width, self.height))
             || !crate::configuration::FPS.contains(&self.fps)
@@ -102,6 +125,21 @@ impl DisplayConfig {
                 "AA display requires 800x480, 1280x720 or 1920x1080, 30/60 FPS and 80..640 DPI"
                     .into(),
             );
+        }
+        {
+            let v = self.view_insets;
+            let dimensions = [self.width, self.height];
+            if u32::from(v[0]) + u32::from(v[2]) >= u32::from(dimensions[0])
+                || u32::from(v[1]) + u32::from(v[3]) >= u32::from(dimensions[1])
+            {
+                return Err("View Area must leave nonempty encoded content".into());
+            }
+        }
+        let v = self.safe_insets;
+        if u32::from(v[0]) + u32::from(v[2]) >= u32::from(self.content_width())
+            || u32::from(v[1]) + u32::from(v[3]) >= u32::from(self.content_height())
+        {
+            return Err("Safe Area must leave nonempty visible content".into());
         }
         Ok(())
     }
@@ -165,8 +203,15 @@ fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
             },
         )
         .number(2, if display.fps == 60 { 1 } else { 2 })
-        .number(3, 0)
-        .number(4, 0)
+        .number(
+            3,
+            u64::from(display.view_insets[0] + display.view_insets[2]),
+        )
+        .number(
+            4,
+            u64::from(display.view_insets[1] + display.view_insets[3]),
+        )
+        .nested(11, display.ui_config())
         .number(5, display.dpi as u64)
         .number(8, 10000)
         .number(10, 3);
@@ -184,8 +229,15 @@ fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
                 },
             )
             .number(2, if display.fps == 60 { 1 } else { 2 })
-            .number(3, 0)
-            .number(4, 0)
+            .number(
+                3,
+                u64::from(display.view_insets[0] + display.view_insets[2]),
+            )
+            .number(
+                4,
+                u64::from(display.view_insets[1] + display.view_insets[3]),
+            )
+            .nested(11, display.ui_config())
             .number(5, display.dpi as u64)
             .number(8, 10000)
             .number(10, 7);
@@ -241,8 +293,8 @@ fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
         ),
     );
     let touch = Proto::default()
-        .number(1, display.width as u64)
-        .number(2, display.height as u64);
+        .number(1, display.content_width() as u64)
+        .number(2, display.content_height() as u64);
 
     response = response.nested(
         1,
@@ -723,8 +775,8 @@ impl Channels {
             return Err("invalid projection touch".into());
         }
         let point = (
-            (x * (self.display.width - 1) as f32).round() as u32,
-            (y * (self.display.height - 1) as f32).round() as u32,
+            (x * (self.display.content_width() - 1) as f32).round() as u32,
+            (y * (self.display.content_height() - 1) as f32).round() as u32,
         );
         if phase == 0 {
             if self.pointers.len() >= 10 || self.pointers.contains_key(&pointer) {
@@ -791,6 +843,34 @@ impl Channels {
 
 #[cfg(test)]
 mod media_key_tests {
+    #[test]
+    fn view_and_safe_area_use_protocol_inset_order_and_bounded_content() {
+        let display = DisplayConfig {
+            view_insets: [80, 2, 80, 4],
+            safe_insets: [5, 6, 7, 100],
+            ..Default::default()
+        };
+        display.validate().unwrap();
+        assert_eq!(
+            (display.content_width(), display.content_height()),
+            (1120, 714)
+        );
+        // UiConfig fields 1/2/3 contain top,bottom,left,right (not IPC L/T/R/B).
+        assert_eq!(
+            display.ui_config().finish(),
+            vec![
+                10, 8, 8, 2, 16, 4, 24, 80, 32, 80, 18, 8, 8, 6, 16, 100, 24, 5, 32, 7, 26, 8, 8,
+                6, 16, 100, 24, 5, 32, 7
+            ]
+        );
+        let mut invalid = display.clone();
+        invalid.view_insets[0] = 1280;
+        assert!(invalid.validate().is_err());
+        invalid = display;
+        invalid.safe_insets[3] = 714;
+        assert!(invalid.validate().is_err());
+    }
+
     use super::*;
     #[test]
     fn media_keys_use_input_reports_and_release_without_changing_video_focus() {

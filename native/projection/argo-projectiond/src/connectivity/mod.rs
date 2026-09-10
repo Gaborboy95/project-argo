@@ -264,7 +264,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             encoded,
-            include_str!("../../../../../test/fixtures/projection/ipc_v6_connectivity.hex").trim()
+            include_str!("../../../../../test/fixtures/projection/ipc_v7_connectivity.hex").trim()
         );
         assert!(
             control

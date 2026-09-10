@@ -1,4 +1,5 @@
 import 'dashboard_geometry.dart';
+import '../../core/projection/projection_settings_service.dart';
 import 'dashboard_dock.dart';
 import 'dashboard_floating_media.dart';
 import 'dashboard_climate.dart';
@@ -194,6 +195,18 @@ class _AppShellState extends State<AppShell> {
                   AppSettingKeys.appearanceControlSize,
                 );
                 final services = widget.environment.services;
+                if (services.contains<ProjectionSettingsService>()) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                      services.get<ProjectionSettingsService>().setViewport(
+                        constraints.maxWidth,
+                        geometry.dockTop,
+                        geometry.dockTop - geometry.primaryHeight,
+                      );
+                    }
+                  });
+                }
+
                 final panel = _panel;
                 final sheetHeight = geometry.dockTop * .82;
                 return Stack(
@@ -202,7 +215,7 @@ class _AppShellState extends State<AppShell> {
                       left: 0,
                       right: 0,
                       top: 0,
-                      height: geometry.primaryHeight,
+                      height: geometry.dockTop,
                       child: _buildContent(modules),
                     ),
                     if (_modal)

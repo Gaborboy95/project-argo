@@ -65,6 +65,20 @@ class DeploymentTest(unittest.TestCase):
         self.d.select(self.first)
         self.d.operations.clear()
 
+    def test_ipc7_requires_view_contract_and_retains_ipc6_rollback(self):
+        m = a.read(self.source / 'argo-release.json')
+        m['ipc'] = 7
+        a.save(self.source / 'argo-release.json', m)
+        with self.assertRaisesRegex(ValueError, 'ARVW'):
+            self.d.validate(self.source)
+        m['native_view_contract'] = 1
+        a.save(self.source / 'argo-release.json', m)
+        updated = self.d.stage(self.source, 'view-area')
+        self.d.select(updated)
+        self.d.select(self.first)
+        self.assertEqual(self.d.current.resolve(), self.first)
+        self.assertFalse(any(op[0] == 'start' for op in self.d.operations))
+
     def test_stopped_select_and_active_rollback(self):
         self.d.select(self.second)
         self.assertFalse(any(op[0] == 'start' for op in self.d.operations))

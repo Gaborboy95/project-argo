@@ -37,6 +37,8 @@ def main():
         if args.ihs_prefix is None:
             p.error('Bundle records require the known matched --ihs-prefix')
         record['managed_control'] = 1
+        if version >= 7:
+            record['native_view_contract'] = 1  # ARVW negotiated crop parameters
         record['ihs_sha256'] = {f: sha(args.ihs_prefix / f) for f in (
             'bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_view.h')}
         record['ihs_contract'] = 'tool/projection/README.md#ihs-base-and-local-patch'

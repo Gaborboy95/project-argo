@@ -162,6 +162,17 @@ abstract final class AppSettingKeys {
       );
     },
   );
+  static final projectionViewInsetLeft = _projectionViewInsetKey('left');
+  static final projectionViewInsetTop = _projectionViewInsetKey('top');
+  static final projectionViewInsetRight = _projectionViewInsetKey('right');
+  static final projectionViewInsetBottom = _projectionViewInsetKey('bottom');
+  static SettingKey<int> _projectionViewInsetKey(String edge) =>
+      SettingKey<int>(
+        id: 'projection.display.viewInset.$edge',
+        defaultValue: 0,
+        serialize: (v) => v,
+        deserialize: _boundedInt('viewInset.$edge', 0, 1000),
+      );
   static final projectionSafeInsetLeft = _projectionInsetKey('left');
   static final projectionSafeInsetTop = _projectionInsetKey('top');
   static final projectionSafeInsetRight = _projectionInsetKey('right');
@@ -191,6 +202,10 @@ abstract final class AppSettingKeys {
     ..register(projectionDisplayDpi)
     ..register(projectionFramesPerSecond)
     ..register(projectionDriverSide)
+    ..register(projectionViewInsetLeft)
+    ..register(projectionViewInsetTop)
+    ..register(projectionViewInsetRight)
+    ..register(projectionViewInsetBottom)
     ..register(projectionSafeInsetLeft)
     ..register(projectionSafeInsetTop)
     ..register(projectionSafeInsetRight)

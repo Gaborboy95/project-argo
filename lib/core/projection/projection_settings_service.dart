@@ -14,7 +14,10 @@ final class ProjectionSettingsService {
     this.backend,
     this.notice,
   }) {
-    _subscription = backend?.configurationChanges.listen((_) => _notify());
+    _subscription = backend?.configurationChanges.listen((_) {
+      _notify();
+      _scheduleViewport();
+    });
   }
   final SettingsService settings;
   final ProjectionConfigurationBackend? backend;
@@ -28,6 +31,46 @@ final class ProjectionSettingsService {
   Stream<void> get changes => _changes.stream;
   ProjectionConfigurationState get current =>
       backend?.configuration ?? const ProjectionConfigurationState();
+
+  (double, double, double)? _viewport;
+  ProjectionPreferences? _sentViewport;
+  Timer? _viewportTimer;
+  ProjectionPreferences get effective {
+    final v = _viewport;
+    return v == null ? requested : requested.forViewport(v.$1, v.$2, v.$3);
+  }
+
+  void setViewport(double width, double height, double mediaHeight) {
+    final next = (width, height, mediaHeight);
+    if (_closed || _viewport == next) return;
+    _viewport = next;
+    _scheduleViewport();
+  }
+
+  void _scheduleViewport() {
+    if (_closed || _viewport == null || backend == null) return;
+    if (current.capabilities == null) {
+      _sentViewport = null;
+      return;
+    }
+    _viewportTimer?.cancel();
+    _viewportTimer = Timer(const Duration(milliseconds: 150), () async {
+      if (_closed || saving) return;
+      try {
+        final value = effective;
+        if (value == _sentViewport ||
+            current.capabilities?.supports(value) != true) {
+          return;
+        }
+        _sentViewport = value;
+        await backend!.requestConfiguration(value);
+      } on Object catch (error) {
+        _sentViewport = null;
+        notice = 'View Area update failed: $error';
+        _notify();
+      }
+    });
+  }
 
   static Future<ProjectionPreferences> load(
     SettingsService settings,
@@ -60,6 +103,29 @@ final class ProjectionSettingsService {
       p.framesPerSecond,
     );
     await settings.set(AppSettingKeys.projectionDriverSide, p.driverSide.name);
+    final keys = [
+      AppSettingKeys.projectionViewInsetLeft,
+      AppSettingKeys.projectionViewInsetTop,
+      AppSettingKeys.projectionViewInsetRight,
+      AppSettingKeys.projectionViewInsetBottom,
+      AppSettingKeys.projectionSafeInsetLeft,
+      AppSettingKeys.projectionSafeInsetTop,
+      AppSettingKeys.projectionSafeInsetRight,
+      AppSettingKeys.projectionSafeInsetBottom,
+    ];
+    final values = [
+      p.viewInsets.left,
+      p.viewInsets.top,
+      p.viewInsets.right,
+      p.viewInsets.bottom,
+      p.safeInsets.left,
+      p.safeInsets.top,
+      p.safeInsets.right,
+      p.safeInsets.bottom,
+    ];
+    for (var i = 0; i < keys.length; i++) {
+      await settings.set(keys[i], values[i].toInt());
+    }
   }
 
   Future<void> reset() {
@@ -110,7 +176,8 @@ final class ProjectionSettingsService {
     try {
       await persist(settings, value);
       requested = value;
-      await backend!.requestConfiguration(value);
+      await backend!.requestConfiguration(effective);
+      _sentViewport = effective;
     } on Object catch (error) {
       notice = 'Projection preference update failed: $error';
     } finally {
@@ -125,6 +192,7 @@ final class ProjectionSettingsService {
 
   Future<void> close() async {
     _closed = true;
+    _viewportTimer?.cancel();
     await _subscription?.cancel();
     if (saving) await _operation;
     await _changes.close();

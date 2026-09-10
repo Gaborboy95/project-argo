@@ -9,7 +9,7 @@
 | Appearance | Material 3 light/dark/system modes, seed color and persisted host control size; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth and AA playback controls, provider-owned source selection and read-only Lua state. |
-| Dashboard | Measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and labelled climate demo; Camera unavailable. |
+| Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and labelled climate demo; Camera unavailable. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -40,7 +40,7 @@ survive media toggles, modal sheets and control-size changes; modal gesture
 cancellation, tap-versus-drag arbitration, temperature clamps, panel replacement
 and AA Exit/resume have automated coverage. Auto-connect persistence and explicit
 stop suppression have focused controller coverage. The real Mu renderer
-has produced a 2048×1152 projection region in a measured 2048×1536 IHS/Wayland
+previously produced a 2048×1152 projection region in a measured 2048×1536 IHS/Wayland
 buffer at 125% scaling. Phone touch alignment, modal occlusion during live AA,
 physical volume dragging and controlled 720p/1080p picture comparisons still need
 hardware acceptance. AA media-key delivery and the continuous floating-panel drag
@@ -112,3 +112,9 @@ audio, crash recovery with an active AP, and
 phone-profile startup interoperability require hardware acceptance. A retained
 firewall ownership record deliberately blocks replacement after uncertain cleanup.
 See [setup](setup.md#graphical-session-deployment) for controls and recovery.
+
+View Area/Safe Area has automated coverage for measured aspect fitting, IPC,
+configuration freezing and native crop copies. The current extended viewport and
+phone UI safe-inset behavior have not yet been verified on the Mu. Test map rendering
+behind the collapsed media surface, important AA controls above it, touch alignment,
+and AA Exit → Media → Home using the same session before accepting the layout.

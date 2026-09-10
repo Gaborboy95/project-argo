@@ -87,7 +87,7 @@ CarPlay file-transfer artwork is not an A2DP artwork mechanism.
 Artwork accepts bounded PNG/JPEG headers (at most 1 MiB encoded and 2048 pixels per
 side); the UI handles decode failures with a music placeholder. The daemon owns
 private runtime cache files, retiring them with their last metadata owner. A crash
-may leave files until the runtime directory is cleared at logout. IPC v6 carries
+may leave files until the runtime directory is cleared at logout. IPC v7 carries
 only an opaque local cache reference, never embedded image bytes or phone URLs.
 The UI rejects references outside the private cache pattern. Lua receives only
 `hasArtwork`, not filesystem paths, images or retrieval permissions.
@@ -119,7 +119,7 @@ These commands work while presentation is suspended and do not request video foc
 A two-second delivery deadline rejects queued stale commands; success means reports
 were written, not proof that a particular phone media app obeyed. Track skipping
 still depends on the phone app and its current queue. Older daemons omit the
-capability and retain metadata-only AA controls. IPC remains v6 with this optional
+capability and retain metadata-only AA controls. IPC remains v7 with this optional
 connectivity field; use a matched release.
 
 The independently encoded wire fields follow aasdk revision
@@ -275,7 +275,7 @@ Forget, loss of the call connection and Quit clear the memory cache and stop own
 OBEX work. A private runtime directory holds the downloaded page only while it is
 processed; normal completion and cancellation remove it. Downloads are limited
 to 256 KiB per page and serialized entries to 16 KiB inside the existing bounded
-IPC6 control snapshot. Contacts are not published to Lua or diagnostic logs.
+IPC7 control snapshot. Contacts are not published to Lua or diagnostic logs.
 Daemon crashes can leave a private temporary directory under `$XDG_RUNTIME_DIR`;
 it contains personal data and can be removed after the daemon has stopped.
 Unconfirmed OBEX cleanup blocks further imports until daemon restart.
@@ -336,7 +336,7 @@ revision `1.4.2`; LIVI microphone channel/protobuf definitions at revision
 H.264 is the default offer. Set `ARGO_ANDROID_AUTO_HEVC=1` in the daemon terminal
 before launch to additionally offer HEVC/H.265. H.264 remains configuration index 0
 and HEVC index 1; Argo validates the phone's codec and configuration selection and
-reports it in the existing IPC6 video descriptor. The selected codec is fixed for the AA session, including stream stops and
+reports it in the existing IPC7 video descriptor. The selected codec is fixed for the AA session, including stream stops and
 presentation suspension. A different codec requires a new connection. This does not implement automatic reconnection in a different
 codec after rejection; disable the offer and start a new explicit connection to
 return to the H.264-only path.
@@ -392,3 +392,8 @@ live relative adjustment. Its floating indicator disappears on release/cancel;
 changes already heard are retained. Accessibility increase/decrease adjusts five
 percentage points. AudioService and the selected host output own volume capability;
 the control is disabled when that backend is unavailable.
+
+The collapsed floating surface overlays the extended projection View Area. Its slot
+remains reserved in AA's Safe Area even when hidden, so toggling media never changes
+phone geometry or the native view. See [View Area and Safe Area](configuration.md#view-area-and-safe-area)
+for negotiation, manual insets and next-connection behavior.

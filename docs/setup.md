@@ -83,7 +83,7 @@ KDE must have imported `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and
 logged-in desktop; do not source the build workspace's `setup_env.sh` at runtime.
 The target requires an already active `graphical-session.target`.
 
-Select an existing **managed-compatible IPC6 bundle** with `argo-release.json`:
+Select an existing **managed-compatible IPC7 bundle** with `argo-release.json`:
 
 ```bash
 export ARGO_WIRELESS_BUNDLE="/absolute/path/to/the/matched/bundle"
@@ -273,3 +273,7 @@ is disabled. Apply the explicit [Bluetooth routing opt-in](media.md#setup-and-us
 before connecting music. No Engine, IHS or native-view rebuild is needed for an
 application/daemon-only release; preserve those compatible native assets from the
 working bundle while replacing the application build and daemon.
+
+### View Area release compatibility
+
+View/Safe Area uses IPC7 and native view creation contract ARVW v1. Stage all three matched components (application, daemon, native view); Engine and IHS are unchanged. The deployment utility accepts retained IPC6 releases for rollback and requires native_view_contract 1 for IPC7. Daemon-only replacement must match the bundle IPC version. Update the installed utility using the existing idempotent installation command before selecting IPC7. Keys and preferences stay outside releases.

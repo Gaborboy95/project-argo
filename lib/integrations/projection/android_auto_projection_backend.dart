@@ -281,7 +281,18 @@ final class AndroidAutoProjectionBackend
       dpi: dpi,
       framesPerSecond: fps,
       driverSide: ProjectionDriverSide.values[side],
-      safeInsets: const ProjectionInsets(),
+      viewInsets: ProjectionInsets(
+        left: r.uint16().toDouble(),
+        top: r.uint16().toDouble(),
+        right: r.uint16().toDouble(),
+        bottom: r.uint16().toDouble(),
+      ),
+      safeInsets: ProjectionInsets(
+        left: r.uint16().toDouble(),
+        top: r.uint16().toDouble(),
+        right: r.uint16().toDouble(),
+        bottom: r.uint16().toDouble(),
+      ),
     );
   }
 
@@ -383,6 +394,13 @@ final class AndroidAutoProjectionBackend
       ..uint16(value.dpi)
       ..uint8(value.framesPerSecond)
       ..uint8(value.driverSide.index);
+    for (final v in [value.viewInsets, value.safeInsets]) {
+      w
+        ..uint16(v.left.toInt())
+        ..uint16(v.top.toInt())
+        ..uint16(v.right.toInt())
+        ..uint16(v.bottom.toInt());
+    }
     await _transport!.send(
       ProjectionIpcMessage(ProjectionIpcKind.configure, w.takeBytes()),
     );

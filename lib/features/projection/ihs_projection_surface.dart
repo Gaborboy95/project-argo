@@ -121,9 +121,20 @@ class _IhsProjectionController extends PlatformViewController {
     final initialDirection = direction;
     return _enqueue(() async {
       if (_disposed) return;
-      final encoded = const StandardMessageCodec().encodeMessage(
-        creationParams,
-      )!;
+      final crop = creationParams['cropPixels'] as List<int>?;
+      final encoded = crop == null
+          ? const StandardMessageCodec().encodeMessage(creationParams)!
+          : ByteData(20);
+      if (crop != null) {
+        if (crop.length != 6 || crop.any((v) => v < 0 || v > 65535)) {
+          throw ArgumentError('Invalid projection crop');
+        }
+        encoded.setUint32(0, 0x41525657); // ARVW, native view parameters v1
+        encoded.setUint32(4, 1);
+        for (var i = 0; i < 6; i++) {
+          encoded.setUint16(8 + i * 2, crop[i]);
+        }
+      }
       _createIssued = true;
       final result = await SystemChannels.platform_views.invokeMethod<Object?>(
         'create',

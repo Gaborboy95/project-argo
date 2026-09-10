@@ -46,7 +46,9 @@ class ProjectionSettingsCard extends StatelessWidget {
                 const Text(
                   'Saved preferences remain visible. Connect the daemon to edit supported modes.',
                 ),
-              if (state.pending != null && state.pending != p && state.accepted)
+              if (state.pending != null &&
+                  state.pending != service.effective &&
+                  state.accepted)
                 const Text('Saved request is awaiting daemon validation.'),
               if (state.rejection != null)
                 Text(
@@ -181,6 +183,34 @@ class ProjectionSettingsCard extends StatelessWidget {
                     : () => unawaited(service.reset()),
                 child: const Text('Reset projection defaults'),
               ),
+              const Text(
+                'View Area fits the encoded stream to the measured dashboard above the dock. Extra margins below are encoded pixels, not screen pixels.',
+              ),
+              _insets(
+                context,
+                'View Area — additional margins',
+                p.viewInsets,
+                enabled,
+                (v) => service.update(p.copyWith(viewInsets: v)),
+              ),
+              const Text(
+                'Safe Area keeps AA controls clear of the floating media slot. Maps may draw underneath. The media-slot reserve stays in place when hidden; changes apply on reconnect.',
+              ),
+              _insets(
+                context,
+                'Safe Area — minimum insets',
+                p.safeInsets,
+                enabled,
+                (v) => service.update(p.copyWith(safeInsets: v)),
+              ),
+              if (state.pending != null)
+                Text(
+                  'Next View Area: ${_describe(state.pending!.viewInsets)}; Safe Area: ${_describe(state.pending!.safeInsets)}',
+                ),
+              if (state.active != null)
+                Text(
+                  'Active View Area: ${_describe(state.active!.viewInsets)}; Safe Area: ${_describe(state.active!.safeInsets)}',
+                ),
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: const Text('Technical details'),
@@ -192,7 +222,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                     Text('Session: ${state.sessionId}'),
                   if (caps != null) Text('Daemon defaults: ${caps.defaults}'),
                   const Text(
-                    'Saved safe-area preferences are retained but not applied by this backend.',
+                    'View Area is negotiated with the phone and cropped before native composition; Safe Area does not crop map pixels.',
                   ),
                   const Text(
                     'Source FPS is not physical screen refresh rate. Source DPI is not Flutter DPR or presentation scale.',
@@ -221,5 +251,60 @@ class ProjectionSettingsCard extends StatelessWidget {
         ),
       );
     },
+  );
+  String _describe(ProjectionInsets v) =>
+      'L/T/R/B ${v.left.toInt()}/${v.top.toInt()}/${v.right.toInt()}/${v.bottom.toInt()} px';
+  Widget _insets(
+    BuildContext context,
+    String title,
+    ProjectionInsets value,
+    bool enabled,
+    Future<void> Function(ProjectionInsets) save,
+  ) => ExpansionTile(
+    title: Text(title),
+    children: [
+      for (final edge in ['Left', 'Top', 'Right', 'Bottom'])
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: TextFormField(
+            key: ValueKey('$title-$edge-${_describe(value)}'),
+            initialValue:
+                '${switch (edge) {
+                  'Left' => value.left,
+                  'Top' => value.top,
+                  'Right' => value.right,
+                  _ => value.bottom,
+                }.toInt()}',
+            enabled: enabled,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: '$edge (pixels)',
+              helperText: '0–1000; press Enter to save',
+            ),
+            onFieldSubmitted: (text) async {
+              final number = int.tryParse(text);
+              if (number == null || number < 0 || number > 1000) return;
+              try {
+                await save(
+                  ProjectionInsets(
+                    left: edge == 'Left' ? number.toDouble() : value.left,
+                    top: edge == 'Top' ? number.toDouble() : value.top,
+                    right: edge == 'Right' ? number.toDouble() : value.right,
+                    bottom: edge == 'Bottom' ? number.toDouble() : value.bottom,
+                  ),
+                );
+              } on ArgumentError {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Insets must leave visible AA content.'),
+                    ),
+                  );
+                }
+              }
+            },
+          ),
+        ),
+    ],
   );
 }

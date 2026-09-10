@@ -136,7 +136,7 @@ async fn handle_client(
                 let messages = match decoder.push(&buffer[..count]) {
                     Ok(messages) => messages,
                     Err(error) => {
-                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v6 builds.");
+                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v7 builds.");
                         let _=send_error(&mut client,&detail).await;
                         crate::daemon_log!(Warn, "ipc-server", "{detail}");
                         return;
@@ -322,6 +322,8 @@ mod tests {
         assert!(control.configuration.borrow().identity.is_none());
         let mut display = crate::aa_channels::DisplayConfig {
             dpi: 180,
+            view_insets: [80, 2, 80, 2],
+            safe_insets: [5, 6, 7, 100],
             ..Default::default()
         };
         let reply = request(&mut client, 1, &display).await;
@@ -337,6 +339,8 @@ mod tests {
         let first = control.begin_session("first");
         assert_eq!(first.config.display, display);
         display.right_driver = true;
+        display.safe_insets[3] = 120;
+        display.view_insets[0] = 90;
         request(&mut client, 2, &display).await;
         assert_eq!(
             control.configuration.borrow().active.as_ref().unwrap().1,
