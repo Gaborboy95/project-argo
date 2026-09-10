@@ -213,7 +213,7 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
             Proto::default()
                 .number(1, 1) // PCM
                 .nested(2, mic_config)
-                .number(3, 1), // available_while_in_call
+                .number(3, 0), // exclusive microphone; unavailable during HFP call
         ),
     );
     let touch = Proto::default()
@@ -257,6 +257,9 @@ pub enum Effect {
     Established,
     HostReturn,
     Audio(u8, bool),
+    Microphone(bool, u64),
+    MicrophoneAck(u64, u64),
+    MicrophoneStop,
     Media(u8, Vec<u8>),
     End,
     Metadata(crate::metadata::Update),
@@ -489,36 +492,19 @@ impl Channels {
 
                 // AV_INPUT_OPEN_REQUEST / MicrophoneRequest
                 0x8005 => {
-                    let open = number(1).unwrap_or(0) != 0;
-
-                    crate::daemon_log!(Debug, "aa-channels", "AA microphone open={open}");
-
-                    let mut effects = vec![reply(
-                        9,
-                        0x8006,
-                        Proto::default()
-                            .number(1, 0) // status OK
-                            .number(2, 1) // session id
-                            .finish(),
-                    )];
-
-                    if open {
-                        // HU is the sender on microphone/media-source channels.
-                        effects.push(reply(
-                            9,
-                            0x8001,
-                            Proto::default()
-                                .number(1, 1) // session id
-                                .number(2, 0) // config index
-                                .finish(),
-                        ));
+                    if !self.setup.contains(&9) {
+                        return Err("Microphone opened before setup".into());
                     }
-
-                    effects
+                    vec![Effect::Microphone(
+                        number(1).unwrap_or(0) != 0,
+                        number(4).unwrap_or(1),
+                    )]
                 }
-
-                // STOP_INDICATION / ACK — nothing required yet.
-                0x8002 | 0x8004 => vec![],
+                0x8002 => vec![Effect::MicrophoneStop],
+                0x8004 => vec![Effect::MicrophoneAck(
+                    number(1).unwrap_or(0),
+                    number(2).unwrap_or(0),
+                )],
 
                 _ => vec![],
             });

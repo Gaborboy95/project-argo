@@ -1,3 +1,5 @@
+import '../core/lifecycle/application_exit_service.dart';
+import '../core/connectivity/connectivity_service.dart';
 import '../core/media/media_session_service.dart';
 import '../core/projection/projection_service.dart';
 
@@ -247,6 +249,15 @@ Future<Widget> bootstrapArgoApplication({
         await simulation.startScenario(configuredScenario);
       }
     }
+    services.register(
+      ApplicationExitService(
+        lifecycle: lifecycle,
+        exitProcess: () => exit(0),
+        connectivity: services.contains<ConnectivityService>()
+            ? services.get<ConnectivityService>()
+            : null,
+      ),
+    );
     final moduleRegistry = AppModuleRegistry();
     registerBuiltInAppModules(moduleRegistry);
     final environment = ArgoEnvironment(

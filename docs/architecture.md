@@ -382,3 +382,32 @@ explicit Disconnect terminates connection intent, including during backoff.
 
 [Wireless runbook](wireless.md) specifies framing, security assumptions, reference
 revisions, AP ownership, retry policy and security limitations.
+
+
+## Calls, capture and explicit application exit
+
+`connectivity/calls.rs` adapts PipeWire's installed telephony D-Bus service;
+`voice.rs` owns source discovery, the selected input, mute and one capture lease.
+Call signaling and SCO codecs remain with PipeWire/WirePlumber. Object lifetime
+revisions and current ObjectManager membership protect call-command targets.
+The Flutter Calls page consumes the existing ConnectivityService, while
+BluetoothCallAudio takes communication focus through AudioService. Call audio is
+not an entertainment MediaSession provider and does not alter projection visibility.
+
+AA channel effects request native microphone capture only after channel setup.
+SessionMedia owns capture through cancellation and teardown. Complete PCM frames
+are sent by the existing AA engine with bounded acknowledgement credit. The
+capture reader retains partial bytes across select cancellation and is polled
+alongside buffered packet draining, so video cannot starve input. No PCM, keys or
+identity material enters JSON IPC. Optional `calls`, `voice` and `stopped` fields
+and the new connectivity actions extend IPC v6 without altering its framing.
+Always stage and launch matching app/daemon builds.
+
+Settings → Application → Quit Argo requests `stopAll` with an operation ID.
+The daemon rejects new connection work, cancels discovery/setup/retry, stops call
+and entertainment audio, and waits for the shared USB/Wi-Fi session lease after
+media/AP cleanup. It disconnects only phones used by those Argo features.
+A matching completion snapshot permits application service shutdown, settings
+flush and process exit. A cleanup failure leaves the app open with an error;
+cleanup progress does not mean resources have already stopped. The foreground
+daemon remains available until separately stopped with SIGTERM/Ctrl+C.

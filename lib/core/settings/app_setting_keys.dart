@@ -16,6 +16,7 @@ abstract final class AppSettingKeys {
   static final connectivityInterface = _connectivityReference(
     'projectionInterface',
   );
+  static final microphoneInput = _connectivityReference('microphoneInput');
   static final connectivityPhone = _connectivityReference('projectionPhone');
   static final connectivityBand = SettingKey<String>(
     id: 'connectivity.projectionBand',
@@ -149,6 +150,7 @@ abstract final class AppSettingKeys {
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)
+    ..register(microphoneInput)
     ..register(connectivityBand)
     ..register(appearanceThemeMode)
     ..register(appearanceSeedColor)

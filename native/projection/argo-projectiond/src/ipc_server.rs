@@ -90,13 +90,20 @@ async fn handle_client(
     mut state: watch::Receiver<ProjectionRuntimeSnapshot>,
     control: HostControl,
 ) {
-    struct ClientCleanup(crate::connectivity::Control);
+    struct ClientCleanup(HostControl);
     impl Drop for ClientCleanup {
         fn drop(&mut self) {
+            self.0.projection_enabled.send_replace(false);
             self.0
+                .connectivity
+                .calls_cancel
+                .send_modify(|generation| *generation += 1);
+            self.0
+                .connectivity
                 .music_cancel
                 .send_modify(|generation| *generation += 1);
             self.0
+                .connectivity
                 .client_closed
                 .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
@@ -164,7 +171,7 @@ async fn handle_client(
                     }
                     if lease.is_none() {
                         match control.client_lease.clone().try_acquire_owned(){
-                            Ok(permit)=> { lease=Some(permit); _cleanup=Some(ClientCleanup(control.connectivity.clone())); },
+                            Ok(permit)=> { control.connectivity.stopping.store(false,std::sync::atomic::Ordering::SeqCst);control.connectivity.state.send_modify(|s|s.stopped=None);lease=Some(permit); _cleanup=Some(ClientCleanup(control.clone())); },
                             Err(_)=>{let _=send_error(&mut client,"Another Argo control client owns projection configuration; close it first").await;return;}
                         }
                     }

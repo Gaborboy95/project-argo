@@ -1,7 +1,7 @@
 # Project Argo
 
 Argo is a vehicle-agnostic Flutter infotainment application with Android Auto
-projection, Bluetooth music, native Now Playing, persistent settings and Lua vehicle integrations.
+projection, Bluetooth music and calling, native Now Playing, persistent settings and Lua vehicle integrations.
 External vehicle bundles supply identity, capability metadata, decoding and policy;
 the built-in `generic` profile runs without a vehicle bundle.
 
@@ -20,6 +20,8 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
   entertainment-source selection.
 - Home projection and Media/Now Playing with session-preserving AA Exit and resume.
 - Album artwork from AA and optional BlueZ BIP thumbnails, with a shared Media cache.
+- HFP call control through PipeWire telephony, shared USB ADC/mixed microphone input
+  for Android Auto and Bluetooth calls, and acknowledged Quit cleanup.
 - Focused Settings sections, host volume/mute, Material 3 appearance and persistent preferences.
 - Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
   explicitly enabled host power integration.
@@ -31,8 +33,8 @@ Wired projection and native rendering have also been exercised on Linux. Wireles
 admission is development-only and does not cryptographically bind TCP identity to
 Bluetooth identity. Full compatibility, endurance and lifecycle hardware validation
 remain limited. Bluetooth music hardware interoperability remains unverified;
-full calling support,
-wallpaper/shaders and microphone capture are not implemented.
+HFP duplex audio and AA microphone capture require ADC/phone acceptance.
+Contacts, phonebook and wallpaper/shaders are not implemented.
 
 ## Documentation
 

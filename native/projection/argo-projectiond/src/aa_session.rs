@@ -9,6 +9,7 @@ use crate::{
     native_playback::{AudioPlayback, SessionMedia, VideoFeed},
     session::AndroidAutoTransport,
 };
+use futures_util::FutureExt;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 
@@ -221,6 +222,8 @@ async fn run_engine(
     let clock = Instant::now();
     let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
 
+    let mut microphone = crate::voice::Credits::default();
+    let mut microphone_frame = None;
     let mut awaiting_video = false;
     let mut streaming = false;
     let mut ping_enabled = false;
@@ -233,6 +236,39 @@ async fn run_engine(
             let payload = liveness.request();
             send_plain(transport, 0, 0x000b, &payload).await?;
             next_ping = tokio::time::Instant::now() + Duration::from_millis(1500);
+        }
+        // A continuously buffered video stream must not starve microphone capture.
+        if microphone_frame.is_none()
+            && let Some(capture) = media.microphone.as_mut()
+        {
+            microphone_frame = capture.frame().now_or_never();
+        }
+        if let Some(frame) = microphone_frame.take() {
+            let frame = if microphone.expired() {
+                Err("Microphone acknowledgements stalled for five seconds".into())
+            } else {
+                frame
+            };
+            match frame {
+                Ok(bytes) if microphone.ready() => {
+                    send(transport, &mut tls, Reply::new(9, 1, bytes)).await?;
+                    microphone.sent();
+                }
+                Ok(_) => {} // Bounded live capture: discard while phone has no credit.
+                Err(error) => {
+                    microphone.stop();
+                    if let Some(capture) = media.microphone.as_mut() {
+                        capture.close().await.map_err(Failure::configuration)?;
+                    }
+                    media.microphone = None;
+                    control
+                        .voice
+                        .state
+                        .send_modify(|s| s.detail = error.clone());
+                    crate::daemon_log!(Warn, "microphone", "{error}");
+                    send(transport, &mut tls, Reply::new(9, 0x8002, vec![])).await?;
+                }
+            }
         }
         if let Some(packet) = decoder.packet()? {
             let encrypted = packet.flags & 8 != 0;
@@ -318,11 +354,96 @@ async fn run_engine(
             let effects = channels.handle(packet.channel, message_id, &body[2..])?;
             // Unknown/ignored and rejected optional messages have no validated
             // effect. Neither they nor incomplete TLS/AA frames renew the timer.
-            if !effects.is_empty() {
+            if effects
+                .iter()
+                .any(|e| !matches!(e, Effect::MicrophoneAck(_, _)))
+            {
                 liveness.valid();
             }
             for effect in effects {
                 match effect {
+                    Effect::Microphone(open, limit) => {
+                        microphone_frame = None;
+                        microphone.stop();
+                        if let Some(mut capture) = media.microphone.take() {
+                            capture.close().await.map_err(Failure::configuration)?;
+                        }
+                        let mut status = 0;
+                        if open {
+                            match crate::voice::Capture::open(&control.voice).await {
+                                Ok(capture) => {
+                                    media.microphone = Some(capture);
+                                    match media.microphone.as_mut().unwrap().frame().await {
+                                        Ok(frame) => {
+                                            microphone_frame = Some(Ok(frame));
+                                            microphone.start(limit);
+                                        }
+                                        Err(error) => {
+                                            status = 1;
+                                            control.voice.state.send_modify(|s| s.detail = error);
+                                            media
+                                                .microphone
+                                                .as_mut()
+                                                .unwrap()
+                                                .close()
+                                                .await
+                                                .map_err(Failure::configuration)?;
+                                            media.microphone = None;
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    status = 1;
+                                    control
+                                        .voice
+                                        .state
+                                        .send_modify(|s| s.detail = error.clone());
+                                    crate::daemon_log!(Warn, "microphone", "{error}");
+                                }
+                            }
+                        }
+                        send(
+                            transport,
+                            &mut tls,
+                            Reply::new(
+                                9,
+                                0x8006,
+                                Proto::default()
+                                    .number(1, status)
+                                    .number(2, microphone.session as u64)
+                                    .finish(),
+                            ),
+                        )
+                        .await?;
+                        if open && status == 0 {
+                            send(
+                                transport,
+                                &mut tls,
+                                Reply::new(
+                                    9,
+                                    0x8001,
+                                    Proto::default()
+                                        .number(1, microphone.session as u64)
+                                        .number(2, 0)
+                                        .finish(),
+                                ),
+                            )
+                            .await?;
+                        }
+                    }
+                    Effect::MicrophoneStop => {
+                        microphone.stop();
+                        microphone_frame = None;
+                        if let Some(capture) = media.microphone.as_mut() {
+                            capture.close().await.map_err(Failure::configuration)?;
+                        }
+                        media.microphone = None;
+                    }
+                    Effect::MicrophoneAck(session, count) => {
+                        if microphone.ack(session, count) {
+                            liveness.valid();
+                        }
+                    }
                     Effect::Reply(reply) => send(transport, &mut tls, reply).await?,
                     Effect::End => return Ok(()),
                     Effect::Metadata(update) => {
@@ -419,6 +540,7 @@ async fn run_engine(
             continue;
         }
         tokio::select! {
+            frame = async {media.microphone.as_mut().expect("capture guarded").frame().await}, if media.microphone.is_some() => {microphone_frame=Some(frame);},
             _ = entertainment.changed() => {
                 let (generation, audible) = *entertainment.borrow_and_update();
                 if let Some(playback) = media.audio.get(&4) { playback.gain(if audible {media_gain} else {0.0})?; }

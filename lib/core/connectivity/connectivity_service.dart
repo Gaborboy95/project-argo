@@ -39,6 +39,7 @@ final class PairingPrompt {
 final class ConnectivitySnapshot {
   const ConnectivitySnapshot({
     this.available = false,
+    this.daemonConnected = false,
     this.adapters = const [],
     this.networks = const [],
     this.devices = const [],
@@ -55,8 +56,12 @@ final class ConnectivitySnapshot {
     this.band,
     this.apFrequencyMhz,
     this.music,
+    this.calls,
+    this.voice,
+    this.stopped,
     this.wirelessAvailable,
   });
+  final bool daemonConnected;
   final bool? wirelessAvailable;
   final bool available, enabled, discovering, wifiConnected;
   final List<ConnectivityRadio> adapters, networks;
@@ -68,7 +73,8 @@ final class ConnectivitySnapshot {
   /// Null means the daemon predates selectable AP bands.
   final String? band;
   final int? apFrequencyMhz;
-  final Map<String, dynamic>? music;
+  final Map<String, dynamic>? music, calls, voice;
+  final int? stopped;
   factory ConnectivitySnapshot.fromJson(Map<String, dynamic> j) {
     List<ConnectivityRadio> radios(String key) => (j[key] as List)
         .map(
@@ -83,7 +89,11 @@ final class ConnectivitySnapshot {
         .toList(growable: false);
     final p = j['prompt'];
     return ConnectivitySnapshot(
+      daemonConnected: true,
       music: j['music'] as Map<String, dynamic>?,
+      calls: j['calls'] as Map<String, dynamic>?,
+      voice: j['voice'] as Map<String, dynamic>?,
+      stopped: j['stopped'] as int?,
       wirelessAvailable: j['wireless_available'] as bool?,
       available: j['phase'] != 'unavailable',
       adapters: radios('adapters'),

@@ -23,6 +23,7 @@ pub enum Command {
 }
 #[derive(Clone)]
 pub struct HostControl {
+    pub voice: crate::voice::Voice,
     pub configuration: watch::Sender<SessionConfig>,
     pub commands: broadcast::Sender<Command>,
     pub client_lease: Arc<Semaphore>,
@@ -39,6 +40,7 @@ impl Default for HostControl {
         let (configuration, _) = watch::channel(SessionConfig::default());
         let (commands, _) = broadcast::channel(64);
         Self {
+            voice: Default::default(),
             configuration,
             commands,
             client_lease: Arc::new(Semaphore::new(1)),

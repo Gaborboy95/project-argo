@@ -109,6 +109,7 @@ pub async fn run(
         ),
     }
 
+    let mut enabled = control.projection_enabled.subscribe();
     let mut cleanup_tick = tokio::time::interval(Duration::from_millis(250));
     let result = loop {
         let deadline = match lifecycle.state() {
@@ -118,6 +119,14 @@ pub async fn run(
         tokio::select! {
             biased;
             _ = shutdown.changed() => break Ok(()),
+            _ = enabled.changed() => {
+                if *enabled.borrow_and_update(){continue;}
+                if let Some(session)=active_session.take(){session.stop().await;}
+                if let Some((_,handle))=probe.take(){handle.abort();}
+                probes.abort_all();while probes.join_next().await.is_some(){}
+                while let Ok(result)=work_rx.try_recv(){handle_work_result(result,&mut lifecycle,&state_tx);}
+                owner.take();
+            },
             _ = cleanup_tick.tick() => {
                 if active_session.as_ref().is_some_and(|s: &ActiveSession| s.task.is_finished()) {
                     if let Some(session) = active_session.take() { let _ = session.task.await; }

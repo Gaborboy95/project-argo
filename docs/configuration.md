@@ -247,3 +247,16 @@ music admission use that same adapter. Settings and Media list its devices only;
 other adapters and bonds remain available to the desktop. A missing preferred
 adapter does not authorize a fallback. Change adapters while discovery, pairing,
 wireless projection and music are idle.
+
+
+## Microphone selection
+
+`connectivity.microphoneInput` stores a PipeWire source `node.name` (empty by
+default, maximum 256 characters). The shared input is selected in Settings → Sound
+or Calls. Its absence prevents capture rather than selecting a different input.
+Selection changes take effect only without a capture owner. Microphone mute and
+Connect calls are runtime actions, not boot-time capture/connect preferences.
+The daemon requires `pw-dump`, `pw-cat`, `pw-loopback` and `setpriv` on PATH
+(`setpriv` is invoked at `/usr/bin/setpriv`). No microphone environment variable,
+AA identity in Flutter, root execution or additional Bluetooth profile is needed.
+See [voice routing and limitations](media.md#shared-microphone-and-usb-adc).

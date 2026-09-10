@@ -135,11 +135,17 @@ fn nal_type(bytes: &[u8]) -> Option<u8> {
 /// feed cleanup before a replacement USB session starts.
 #[derive(Default)]
 pub struct SessionMedia {
+    pub microphone: Option<crate::voice::Capture>,
     pub video: Option<VideoFeed>,
     pub audio: std::collections::BTreeMap<u8, AudioPlayback>,
 }
 impl SessionMedia {
     pub async fn close(&mut self) {
+        if let Some(mut mic) = self.microphone.take()
+            && let Err(e) = mic.close().await
+        {
+            crate::daemon_log!(Warn, "microphone", "Capture cleanup: {e}");
+        }
         let had_audio = !self.audio.is_empty();
         if had_audio {
             crate::daemon_log!(Info, "media", "stopping session audio streams");

@@ -39,3 +39,5 @@ pub mod failure;
 pub mod readiness;
 
 pub(crate) mod liveness;
+
+pub mod voice;

@@ -1,4 +1,4 @@
-# Media sources and Bluetooth music
+# Media, Bluetooth calls and voice input
 
 Media displays projection and Bluetooth providers in one Now Playing page. Select
 an entertainment source independently of Home/video visibility. AA Exit returns to
@@ -167,7 +167,7 @@ and Lua, all supported playback controls, switching between Bluetooth and AA wit
 overlap, navigation ducking, disconnect/reconnect, and routine wireless cleanup
 after authorization caches expire. Phone AVRCP/A2DP interoperability and long-run
 routing behavior are not established by the virtual-node tests. AA covers/duration and
-Bluetooth BIP transfers still require phone verification. Local-file playback, hands-free calls, contacts and phonebook remain unsupported.
+Bluetooth BIP transfers still require phone verification. Local-file playback, contacts and phonebook remain unsupported. HFP and microphone acceptance limits are described below.
 
 ## Rollback
 
@@ -186,3 +186,85 @@ NM profiles, audio drivers or system services are removed.
 
 References: [BlueZ MediaPlayer1](https://bluez.readthedocs.io/en/latest/media-api/#mediaplayer1-hierarchy)
 and [WirePlumber Bluetooth configuration](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html).
+
+
+## Bluetooth calls
+
+The Calls page uses the shared paired-device list and selected Bluetooth adapter.
+Press **Connect calls** for the chosen paired phone, then use **Call**, **Answer**
+or **Hang up / reject**. Call controls wait for the native operation result;
+unsupported phone commands remain errors. Dial/answer/hangup are never retried
+automatically. There is no contacts database, phonebook download, call history,
+conference management or emergency-calling assurance.
+
+The native controller uses the session-bus service `org.pipewire.Telephony`,
+provided by WirePlumber's PipeWire Bluetooth backend. `AudioGateway1`, `Call1` and
+`AudioGatewayTransport1` supply dialing, call state, answer/hangup and SCO
+activation. This API is available in the inspected PipeWire 1.4.2/WirePlumber 0.5.8
+installation. Argo does not run oFono, register a competing HFP profile, or change
+system Bluetooth roles. Pairing and calling do not need AA identity or a live
+projection session. NetworkManager is outside the call path.
+
+HFP connection setup/recovery permits at most three profile requests per explicit
+Connect, with increasing five-second backoff. Disconnect, Forget and app closure
+revoke that request. A new Connect resets the budget. An unavailable phone does
+not retain live caller state. Calls are scoped to the selected adapter/device,
+PipeWire service owner and an object lifetime revision; ambiguous links through
+another adapter are rejected. ObjectManager removals invalidate old call targets.
+
+Argo activates the existing SCO transport and creates two owned `pw-loopback`
+processes: phone receive → default host output, selected microphone → phone
+transmit. PipeWire's audio-gateway profile can expose A2DP and SCO together; Argo
+does not force profile changes. Existing SCO links owned by another audio client
+are a visible conflict, not permission to add duplicate playback. Route readiness
+requires observed PipeWire links. Route setup has three attempts; **Retry call
+audio** is available after correcting a missing input or route conflict.
+
+Calls acquire communication focus in the existing AudioService. This applies the
+normal ducking policy without selecting Bluetooth entertainment, disconnecting AA
+or rebuilding its view. The wpctl backend currently uses the desktop default
+output; change that output through desktop audio settings. Stream processes are
+terminated and reaped before releasing microphone ownership. Uncertain microphone
+cleanup fails closed until daemon restart.
+
+## Shared microphone and USB ADC
+
+Attach the USB ADC and select its source, or its prepared mix source, under
+**Settings → Sound → Voice input** or on **Calls**. The preferred PipeWire
+`node.name` is saved as `connectivity.microphoneInput`. A missing preferred input
+never silently falls back to another microphone. With no saved selection, a sole
+available non-Bluetooth input can be selected automatically. Microphone mute is
+session-local and applies to both providers. Input changes require capture to stop.
+
+A single native lease prevents simultaneous AA/HFP capture. For multichannel ADCs,
+PipeWire performs mono conversion for the selected source. Choose a dedicated mix
+node when channel weights, AUX channel mapping or pre-processing are needed;
+Argo does not configure the ADC or infer its wiring. Verify the intended channels
+on the real ADC before use. Argo does not add acoustic echo cancellation, noise
+suppression or beamforming. A prepared PipeWire input may provide that processing.
+
+AA uses channel 9, 16 kHz mono signed 16-bit PCM and 20 ms frames. An open request
+succeeds only after capture produces a complete frame. The native session sends
+OPEN response/START and encrypted audio through the existing serialized AA
+transport. A bounded credit window follows the phone's acknowledgements, drops
+live capture frames when no credit exists, and closes stalled capture after five
+seconds without acknowledgements. Partial reads survive cancellation; missing PCM
+has a separate two-second bound. STOP closes capture, without ending projection.
+Mute sends silence. USB and wireless use the same path; media is never carried in
+control IPC or exposed to Lua. The microphone is advertised as unavailable while
+an HFP call owns it.
+
+For HFP, mute removes the owned microphone transmit route; receive audio remains
+available after routing updates. Disconnect/Forget, phone/player disappearance
+and Quit stop owned capture. Neither AA Exit nor hiding video is a microphone
+or call disconnect command.
+
+Physical ADC capture, channel mix, echo behavior, HFP codec interoperability and
+full-duplex audio need hardware acceptance. The inspected Mu had no input source
+attached. Automated PCM and private D-Bus tests do not establish microphone levels,
+phone speech recognition or actual call audio.
+
+Protocol references: PipeWire [telephony implementation](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/telephony.c)
+and [audio-gateway nodes](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/bluez5-device.c),
+revision `1.4.2`; LIVI microphone channel/protobuf definitions at revision
+`b8651d795e5f84871d7454ce25e6ff6fb79e03d5`. Implementations and credentials are not vendored.

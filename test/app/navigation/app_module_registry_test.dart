@@ -47,6 +47,7 @@ void main() {
         'parking',
         'media',
         'settings',
+        'calls',
       ]),
     );
   });

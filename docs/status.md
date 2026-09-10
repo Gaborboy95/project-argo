@@ -5,6 +5,7 @@
 | Area | Current behavior |
 |---|---|
 | Application | Retained module navigation, typed persistent settings, diagnostics and lifecycle cleanup. |
+| Voice/calls | PipeWire HFP call control and owned duplex routes; shared selected microphone, mute and AA PCM capture. Physical ADC/phone acceptance pending. |
 | Appearance | Material 3 light/dark/system modes and seed color; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
@@ -69,14 +70,15 @@ the stock Flutter GTK runner lacks the IHS platform-view contract.
 
 ## Unsupported features
 
-- Full HFP calls, contacts and phonebook.
-- CarPlay, microphone capture and a general local-media player.
+- Contacts, phonebook, conference control and call history.
+- CarPlay and a general local-media player.
 - Wallpaper/shaders and automatic vehicle day/night appearance policy.
 - Argo-rendered Lua UI extension registries; host-state reads do not create UI.
 - Portable PipeWire balance/fader/EQ/output-routing mutations in the wpctl backend.
 - Vehicle-specific protocols, production power policy, boot-time wireless
   auto-connect or an unlimited connection supervisor.
 
-Microphone protocol signaling does not provide microphone audio. Declared vehicle
+AA microphone capture is implemented; physical ADC mixing and HFP duplex audio are
+not yet hardware-verified. See [voice input](media.md#shared-microphone-and-usb-adc). Declared vehicle
 capabilities do not install hardware backends. CAN reception cannot continue while
 host suspend quiesces its transport; physical wake is a platform responsibility.

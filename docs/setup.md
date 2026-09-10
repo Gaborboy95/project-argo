@@ -106,7 +106,10 @@ normal and accessory modes. The launcher and session engine are otherwise shared
 
 ## Shutdown and rollback
 
-Close the app normally and stop the owned foreground daemon with Ctrl+C/SIGTERM.
+Use **Settings → Application → Quit Argo** and wait for connection cleanup,
+then stop the foreground daemon with Ctrl+C/SIGTERM. Quit saves settings and
+disconnects Argo-owned projection/music/call resources before process exit.
+A cleanup error leaves the app open; correct the reported cause before retrying.
 Wireless cancellation waits for media/AP cleanup; do not interpret a pending cleanup
 message as completed shutdown. An async timeout cannot interrupt synchronous native
 FFI. Forced termination cannot guarantee settings flush or graceful resource release.

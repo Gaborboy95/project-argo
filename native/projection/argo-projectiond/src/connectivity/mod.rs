@@ -1,5 +1,6 @@
 //! Shared, protocol-neutral connectivity state. BlueZ and NM retain secrets.
 pub mod bluetooth;
+pub mod calls;
 mod cover;
 pub mod music;
 pub mod network;
@@ -39,6 +40,12 @@ pub struct Snapshot {
     pub wireless_disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub music: Option<music::Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<calls::Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<crate::voice::Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<u64>,
     pub adapters: Vec<Radio>,
     pub networks: Vec<Radio>,
     pub devices: Vec<Device>,
@@ -113,6 +120,8 @@ pub struct Request {
 #[derive(Clone)]
 pub struct Control {
     pub music_cancel: watch::Sender<u64>,
+    pub calls_cancel: watch::Sender<u64>,
+    pub stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub client_closed: watch::Sender<u64>,
     pub state: watch::Sender<Snapshot>,
     pub requests: mpsc::Sender<Request>,
@@ -128,6 +137,8 @@ impl Control {
         (
             Self {
                 music_cancel: watch::channel(0).0,
+                calls_cancel: watch::channel(0).0,
+                stopping: Default::default(),
                 state,
                 requests,
                 client_closed: watch::channel(0).0,
@@ -147,6 +158,13 @@ impl Control {
         }
         let mut r: Request =
             serde_json::from_slice(bytes).map_err(|_| "Malformed connectivity request")?;
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) && r.action != "stopAll" {
+            return Err("Application shutdown is stopping connections".into());
+        }
+        if r.action == "stopAll" {
+            self.stopping
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if r.action == "clientClosed" {
             return Err("Reserved connectivity action".into());
         }
@@ -164,7 +182,17 @@ impl Control {
         {
             self.music_cancel.send_modify(|generation| *generation += 1);
         }
-        r.generation = *self.music_cancel.borrow();
+        if r.action == "callsDisconnect" || r.action == "stopAll" || r.action == "forget" {
+            self.calls_cancel.send_modify(|g| *g += 1);
+        }
+        if r.action == "stopAll" {
+            self.music_cancel.send_modify(|g| *g += 1);
+        }
+        r.generation = if r.action.starts_with("calls") {
+            *self.calls_cancel.borrow()
+        } else {
+            *self.music_cancel.borrow()
+        };
         self.requests
             .try_send(r)
             .map_err(|_| "Connectivity is busy or unavailable".into())

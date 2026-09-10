@@ -14,7 +14,17 @@ final class ConnectivityPreferences implements ConnectivityService {
   final SettingsService settings;
   StreamSubscription<ConnectivitySnapshot>? _subscription;
   bool _restored = false;
+  bool _microphoneRestored = false;
   void _restore(ConnectivitySnapshot state) {
+    final input = settings.get(AppSettingKeys.microphoneInput);
+    if (!_microphoneRestored && input.isNotEmpty && state.voice != null) {
+      _microphoneRestored = true;
+      unawaited(
+        backend
+            .connectivityCommand('microphone', target: input)
+            .catchError((Object _) {}),
+      );
+    }
     if (_restored || !state.available || state.adapters.isEmpty) {
       return;
     }
@@ -86,6 +96,7 @@ final class ConnectivityPreferences implements ConnectivityService {
       'interface' => AppSettingKeys.connectivityInterface,
       'select' => AppSettingKeys.connectivityPhone,
       'band' => AppSettingKeys.connectivityBand,
+      'microphone' => AppSettingKeys.microphoneInput,
       _ => null,
     };
     if (key != null) {

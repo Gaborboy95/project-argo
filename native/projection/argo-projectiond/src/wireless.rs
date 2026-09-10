@@ -15,6 +15,7 @@ use tokio::{
 };
 const UUID: &str = "4de17a00-52cb-11e6-bdf4-0800200c9a66";
 struct Attempt {
+    peer: String,
     cancel: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
@@ -51,6 +52,13 @@ pub async fn run(
         music_rx,
         shutdown.clone(),
         music_cancelled,
+    ));
+    let (call_requests, call_rx) = mpsc::channel(16);
+    let call_task = tokio::spawn(crate::connectivity::calls::run(
+        bt.clone(),
+        host.clone(),
+        call_rx,
+        shutdown.clone(),
     ));
     let inventory = async {
         loop {
@@ -100,6 +108,9 @@ pub async fn run(
             _ = shutdown.changed() => break,
             _ = &mut inventory => {},
             _ = client_closed.changed() => {
+                host.projection_enabled.send_replace(false);
+                c.calls_cancel.send_modify(|g|*g+=1);
+                let _=call_requests.try_send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});
                 music_cancel.send_modify(|v|*v+=1);
                 let _ = music_requests.try_send(Request { generation:0, action:"musicDisconnect".into(), target:String::new(), accept:false, prompt:0 });
                 while requests.try_recv().is_ok() {}
@@ -127,6 +138,54 @@ pub async fn run(
                 if discovery.as_ref().is_some_and(|d| d.task.is_finished()) && let Some(d) = discovery.take() { let _ = d.task.await; }
             }
             Some(r) = requests.recv() => {
+                if c.stopping.load(std::sync::atomic::Ordering::SeqCst) && r.action!="stopAll" {continue;}
+
+                if r.action.starts_with("calls") {
+                    if call_requests.try_send(r).is_err() {c.state.send_modify(|s|s.detail="Call controller busy".into());}
+                    continue;
+                }
+                if r.action=="microphone" || r.action=="microphoneMute" {
+                    let result=if r.action=="microphone" {host.voice.select(&r.target)}else {host.voice.state.send_modify(|s|s.muted=r.accept);Ok(())};
+                    if let Err(e)=result {host.voice.state.send_modify(|s|s.detail=e);}
+                    c.state.send_modify(|s|s.voice=Some(host.voice.state.borrow().clone()));continue;
+                }
+                if r.action=="stopAll" {
+                    let mut owned_phones=vec![];
+                    if let Some(a)=&activity {owned_phones.push(a.peer.clone());}
+                    {let s=c.state.borrow();if let Some(m)=&s.music {owned_phones.push(m.device.clone());}
+                    if let Some(calls)=&s.calls {owned_phones.push(calls.device.clone());}}
+                    owned_phones.retain(|s|!s.is_empty());owned_phones.sort();owned_phones.dedup();
+                    host.projection_enabled.send_replace(false);
+                    c.state.send_modify(|s|{s.enabled=false;s.wireless_disabled=true;s.stopped=None;});
+                    c.progress("cleanup","Stopping projection, Bluetooth and audio before application exit");
+                    if let Some(a)=activity.take(){a.stop().await;}
+                    if let Some(d)=discovery.take(){d.stop().await;}
+                    if let Some(p)=pairing.take(){p.abort();let _=p.await;}
+                    bt.respond(c.state.borrow().prompt.as_ref().map_or(0,|p|p.id),false);
+                    let stop = async {
+                        music_requests.send(Request{generation:0,action:"musicDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Music controller unavailable")?;
+                        call_requests.send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Call controller unavailable")?;
+                        let mut changes=c.state.subscribe();
+                        loop {
+                            let snapshot=changes.borrow_and_update().clone();
+                            let music=snapshot.music.as_ref().filter(|m|m.operation==r.prompt);
+                            let calls=snapshot.calls.as_ref().filter(|m|m.operation==r.prompt);
+                            if let Some(error)=music.and_then(|m|m.error.as_ref()).or_else(||calls.and_then(|m|m.error.as_ref())) {return Err(error.clone());}
+                            if !snapshot.cleanup_error.is_empty(){return Err(snapshot.cleanup_error);}
+                            if music.is_some() && calls.is_some(){break;}
+                            changes.changed().await.map_err(|_|"Connectivity closed")?;
+                        }
+                        // USB releases this only after native media cleanup finishes.
+                        let lease=host.session_lease.acquire().await.map_err(|_|"Session owner unavailable")?;
+                        // Only phones used by Argo; unrelated keyboards/headsets retain their links.
+                        for id in owned_phones {let device=bt.device(&id)?;if device.is_connected().await.map_err(|e|e.to_string())? {device.disconnect().await.map_err(|e|e.to_string())?;}}
+                        drop(lease);Ok::<_,String>(())
+                    }.await;
+                    match stop {Ok(())=>{c.state.send_modify(|s|s.stopped=Some(r.prompt));c.progress("disabled","Connections stopped; application may exit");},Err(e)=>c.state.send_modify(|s|s.cleanup_error=e)}
+                    continue;
+                }
+                if r.action=="forget" {let _=call_requests.try_send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});}
+
                 if r.action.starts_with("music") {
                     if music_requests.try_send(r).is_err() { c.state.send_modify(|s|s.detail="Bluetooth music controller busy".into()); }
                     continue;
@@ -149,6 +208,8 @@ pub async fn run(
         p.abort();
         let _ = p.await;
     }
+    drop(call_requests);
+    let _ = call_task.await;
     drop(music_requests);
     music_cancel.send_modify(|v| *v += 1);
     let _ = music_task.await;
@@ -203,7 +264,12 @@ async fn process_request(
             {
                 return Ok(());
             }
-            if activity.is_some()
+            if c.state
+                .borrow()
+                .calls
+                .as_ref()
+                .is_some_and(|c| !c.device.is_empty())
+                || activity.is_some()
                 || discovery.is_some()
                 || pairing.is_some()
                 || c.state.borrow().music.as_ref().is_some_and(|m| {
@@ -283,7 +349,11 @@ async fn process_request(
                         ctl.progress("failed", e);
                     }
                 });
-                *discovery = Some(Attempt { cancel, task });
+                *discovery = Some(Attempt {
+                    peer: String::new(),
+                    cancel,
+                    task,
+                });
             }
         }
         "pair" => {
@@ -387,6 +457,7 @@ async fn process_request(
             let permit = host.session_lease.clone().try_acquire_owned().map_err(|_| "Another projection transport owns the session. Disconnect it explicitly first.")?;
             let (cancel, cancelled) = watch::channel(false);
             let (bt, host, state) = (bt.clone(), host.clone(), state.clone());
+            let peer = config.selected.clone();
             let task = tokio::spawn(async move {
                 // Hold across reconnect backoff; only this explicit attempt owns resources.
                 let _permit = permit;
@@ -401,7 +472,7 @@ async fn process_request(
                 )
                 .await;
             });
-            *activity = Some(Attempt { cancel, task });
+            *activity = Some(Attempt { peer, cancel, task });
         }
         _ => return Err("Unsupported connectivity action".into()),
     }

@@ -1,3 +1,5 @@
+import '../integrations/bluetooth/bluetooth_call_audio.dart';
+
 import 'dart:io';
 
 import '../integrations/projection/android_auto_projection_backend.dart';
@@ -96,6 +98,15 @@ Future<ProjectionService> registerProjectionServices({
   services.register<MediaSessionService>(media);
   lifecycle.registerShutdown(name: 'media.sessions', shutdown: media.close);
   if (connectivity != null) {
+    final callAudio = BluetoothCallAudio(
+      connectivity,
+      services.get<AudioService>(),
+    );
+    lifecycle.registerShutdown(
+      name: 'bluetooth.callAudio',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: callAudio.close,
+    );
     final bluetoothMedia = BluetoothMediaSource(
       connectivity,
       media,

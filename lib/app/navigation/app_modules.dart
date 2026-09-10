@@ -1,3 +1,5 @@
+import '../../core/lifecycle/application_exit_service.dart';
+import '../../features/calls/calls_page.dart';
 import '../../core/connectivity/connectivity_service.dart';
 import '../../core/settings/settings_service.dart';
 import '../../core/media/media_session_service.dart';
@@ -87,6 +89,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          exit: services.contains<ApplicationExitService>()
+              ? services.get<ApplicationExitService>()
+              : null,
           connectivity: services.contains<ConnectivityService>()
               ? services.get<ConnectivityService>()
               : null,
@@ -98,4 +103,16 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         ),
       ),
     );
+  registry.register(
+    AppModule(
+      id: 'calls',
+      label: 'Calls',
+      icon: Icons.phone_outlined,
+      builder: (_, services) => CallsPage(
+        service: services.contains<ConnectivityService>()
+            ? services.get<ConnectivityService>()
+            : null,
+      ),
+    ),
+  );
 }

@@ -168,8 +168,8 @@ replace wired projection. Explicit switching waits for old cleanup.
 
 The AP and interface-bound TCP listener must be ready before Bluetooth advertises
 connection details. The selected phone's Audio Gateway profile (`111f`) is requested
-through the existing desktop Hands-Free implementation (`111e`). HFP is a bootstrap
-trigger dependency, not a complete Argo calling feature. No competing HFP stack is
+through the existing desktop Hands-Free implementation (`111e`). The bootstrap trigger is separate from the [Calls page](media.md#bluetooth-calls),
+which also uses the installed PipeWire HFP implementation. No competing HFP stack is
 registered. UUID/channel conflicts are errors; bluetoothd is not restarted.
 
 Authenticated RFCOMM negotiates WPP version, delivers Wi-Fi credentials and receives

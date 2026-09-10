@@ -1,3 +1,7 @@
+import '../../core/lifecycle/application_exit_service.dart';
+import '../calls/calls_page.dart';
+import 'application_settings_card.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_service.dart';
@@ -15,8 +19,10 @@ class SettingsPage extends StatefulWidget {
     this.projectionSettings,
     this.settings,
     this.connectivity,
+    this.exit,
     super.key,
   });
+  final ApplicationExitService? exit;
   final AudioService audio;
   final ProjectionSettingsService? projectionSettings;
   final SettingsService? settings;
@@ -33,7 +39,13 @@ class _SettingsPageState extends State<SettingsPage> {
       (
         'Sound',
         Icons.volume_up_outlined,
-        AudioSettingsCard(audio: widget.audio),
+        Column(
+          children: [
+            AudioSettingsCard(audio: widget.audio),
+            if (widget.connectivity != null)
+              MicrophoneCard(service: widget.connectivity!),
+          ],
+        ),
       ),
       if (widget.connectivity != null)
         (
@@ -54,6 +66,13 @@ class _SettingsPageState extends State<SettingsPage> {
           AppearanceSettingsCard(settings: widget.settings!),
         ),
     ];
+    if (widget.exit != null) {
+      sections.add((
+        'Application',
+        Icons.power_settings_new,
+        ApplicationSettingsCard(exit: widget.exit!),
+      ));
+    }
     final index = selected.clamp(0, sections.length - 1);
     return Padding(
       padding: const EdgeInsets.all(24),

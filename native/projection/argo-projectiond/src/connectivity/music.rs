@@ -89,7 +89,7 @@ async fn command(program: &str, args: &[String]) -> Result<Vec<u8>, String> {
     }
     Ok(output.stdout)
 }
-async fn graph() -> Result<Vec<Value>, String> {
+pub(crate) async fn graph() -> Result<Vec<Value>, String> {
     serde_json::from_slice(&command("pw-dump", &[]).await?).map_err(|e| e.to_string())
 }
 fn props(v: &Value) -> &Value {
@@ -110,6 +110,22 @@ struct RoutePlan {
     replace: bool,
     links: Vec<(u64, u64)>,
 }
+pub(crate) fn default_output(graph: &[Value]) -> Result<String, String> {
+    graph
+        .iter()
+        .filter(|v| v["type"] == "PipeWire:Interface:Metadata")
+        .flat_map(|v| v["metadata"].as_array().into_iter().flatten())
+        .find(|v| v["key"] == "default.audio.sink")
+        .and_then(|v| {
+            if let Some(text) = v["value"].as_str() {
+                serde_json::from_str::<Value>(text).ok()
+            } else {
+                Some(v["value"].clone())
+            }
+        })
+        .and_then(|v| v["name"].as_str().map(str::to_owned))
+        .ok_or_else(|| "No selected host output".into())
+}
 fn route_plan(graph: &[Value], address: &str, owner: &str) -> Result<RoutePlan, String> {
     let sources: Vec<_> = graph.iter().filter(|n| receiver(n, address)).collect();
     if sources.len() != 1 {
@@ -123,20 +139,7 @@ fn route_plan(graph: &[Value], address: &str, owner: &str) -> Result<RoutePlan, 
         );
     }
     let source_id = numeric(&source["id"]).ok_or("Missing A2DP node identity")?;
-    let default = graph
-        .iter()
-        .filter(|v| v["type"] == "PipeWire:Interface:Metadata")
-        .flat_map(|v| v["metadata"].as_array().into_iter().flatten())
-        .find(|v| v["key"] == "default.audio.sink")
-        .and_then(|v| {
-            if let Some(text) = v["value"].as_str() {
-                serde_json::from_str::<Value>(text).ok()
-            } else {
-                Some(v["value"].clone())
-            }
-        })
-        .and_then(|v| v["name"].as_str().map(str::to_owned))
-        .ok_or("No selected host output")?;
+    let default = default_output(graph)?;
     let sink = graph
         .iter()
         .find(|n| props(n)["node.name"] == default && props(n)["media.class"] == "Audio/Sink")
