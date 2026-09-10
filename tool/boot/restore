@@ -1,0 +1,376 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: tool/boot/restore [--snapshot PATH_OR_ID] [--state-root DIR] [--yes]
+
+Revert a previously applied optimization snapshot.
+USAGE
+}
+
+STATE_ROOT="${ARGO_BOOT_STATE_ROOT:-$HOME/.local/state/argo-boot-optimization}"
+SNAP_ID="latest"
+AUTOYES=0
+EFI_DIR=""
+SNAP_DIR=""
+SUDO=()
+
+resolve_state_root_candidates() {
+  local home_candidate
+  local -a candidates
+
+  candidates=("$STATE_ROOT")
+
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    home_candidate="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+    if [[ -n "$home_candidate" ]]; then
+      candidates+=("$home_candidate/.local/state/argo-boot-optimization")
+    fi
+  fi
+
+  if [[ -n "${HOME:-}" ]]; then
+    candidates+=("$HOME/.local/state/argo-boot-optimization")
+  fi
+
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    :
+  else
+    candidates+=("/root/.local/state/argo-boot-optimization")
+  fi
+
+  printf '%s\n' "${candidates[@]}"
+}
+
+resolve_state_root() {
+  local c
+  while IFS= read -r c; do
+    [[ -z "$c" ]] && continue
+    if [[ -L "$c/latest" || -d "$c" ]]; then
+      echo "$c"
+      return
+    fi
+  done < <(resolve_state_root_candidates)
+  return 1
+}
+
+resolve_efi_dir() {
+  local cand found
+  for cand in /boot/efi /efi /boot/EFI /EFI; do
+    [[ -d "$cand" ]] && { echo "$cand"; return 0; }
+  done
+
+  if command -v findmnt >/dev/null 2>&1; then
+    found="$(findmnt -rn -o TARGET,FSTYPE | awk 'BEGIN{IGNORECASE=1} $2 ~ /^(vfat|fat|msdos)/ && tolower($1) ~ /\/efi($|\/)/ {print $1; exit}')"
+    if [[ -n "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  if command -v bootctl >/dev/null 2>&1; then
+    found="$(bootctl status --no-pager 2>/dev/null | awk '/^\\s*ESP:/ {for(i=1;i<=NF;i++) if ($i ~ /^\\//) {print $i; exit}}')"
+    if [[ -n "$found" && -d "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+require_efi_dir() {
+  if [[ -z "$EFI_DIR" ]]; then
+    EFI_DIR="$(resolve_efi_dir || true)"
+  fi
+  if [[ -z "$EFI_DIR" ]]; then
+    echo "Could not locate EFI system partition." >&2
+    echo "Checked common paths: /boot/efi, /efi, /boot/EFI, /EFI, mounted vfat /EFI trees, and bootctl status." >&2
+    return 1
+  fi
+  return 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --snapshot)
+      SNAP_ID=$2
+      shift 2
+      ;;
+    --state-root)
+      STATE_ROOT=$2
+      shift 2
+      ;;
+    --yes)
+      AUTOYES=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$SNAP_ID" == "latest" ]]; then
+  STATE_ROOT="$(resolve_state_root || true)"
+  if [[ -z "$STATE_ROOT" ]]; then
+    if [[ -z "${SUDO_USER:-}" ]]; then
+      echo "No latest snapshot found." >&2
+      exit 1
+    fi
+    echo "No latest snapshot found for current user context." >&2
+    echo "If you audited as another user, pass --snapshot <full-path-to-snapshot>." >&2
+    exit 1
+  fi
+  if [[ ! -L "$STATE_ROOT/latest" ]]; then
+    echo "No latest snapshot found." >&2
+    exit 1
+  fi
+  SNAP_DIR="$(readlink -f "$STATE_ROOT/latest")"
+elif [[ -d "$SNAP_ID" ]]; then
+  SNAP_DIR="$(readlink -f "$SNAP_ID")"
+  STATE_ROOT="$(dirname "$SNAP_DIR")"
+else
+  SNAP_DIR="$STATE_ROOT/$SNAP_ID"
+  STATE_ROOT="$(dirname "$SNAP_DIR")"
+fi
+
+if [[ ! -d "$SNAP_DIR" ]]; then
+  echo "Snapshot not found: $SNAP_DIR" >&2
+  exit 1
+fi
+
+prompt() {
+  local text=$1
+  if (( AUTOYES )); then
+    return 0
+  fi
+  read -r -p "$text [y/N] " answer
+  case "$answer" in
+    y|Y|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+require_root() {
+  if ((EUID != 0)); then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "sudo required but not installed." >&2
+      exit 1
+    fi
+    SUDO=(sudo)
+  else
+    SUDO=()
+  fi
+}
+
+read_action() {
+  local key=$1
+  local file=$2
+  [[ -f "$file" ]] || return 1
+  awk -v k="$key" -F'=' '$1==k {print $2; exit}' "$file"
+}
+
+restore_bootloader() {
+  local action_file="$SNAP_DIR/actions/bootloader.txt"
+  [[ -f "$action_file" ]] || return 0
+
+  local before_order after_order backup_file rollback_cmd missing_before snapshot_bootorder
+  before_order=$(read_action "efi_bootorder_before" "$action_file" || true)
+  after_order=$(read_action "efi_bootorder_after" "$action_file" || true)
+  backup_file="$SNAP_DIR/bootloader/loader.conf.before"
+  rollback_cmd=$(read_action "grub_rollback_cmd" "$action_file" || true)
+  missing_before=$(read_action "loader_conf_missing_before" "$action_file" || true)
+  snapshot_bootorder=$(read_action "efi_bootorder_before_snapshot" "$action_file" || true)
+
+  if [[ -z "$before_order" && -z "$after_order" && -z "$snapshot_bootorder" && -z "$missing_before" && ! -f "$SNAP_DIR/bootloader/loader.conf.before" ]]; then
+    return 0
+  fi
+
+  if ! require_efi_dir; then
+    return 0
+  fi
+
+  echo "Restore bootloader changes from snapshot $SNAP_DIR"
+  if [[ -n "$missing_before" ]]; then
+    echo "  - Remove $EFI_DIR/loader/loader.conf because it was absent before optimization"
+  else
+    echo "  - Restore $EFI_DIR/loader/loader.conf from backup"
+  fi
+  if [[ -z "$before_order" ]]; then
+    before_order="$snapshot_bootorder"
+  fi
+  echo "  - Restore EFI BootOrder to: ${before_order:-same as before}"
+
+  if ! prompt "Restore bootloader now?"; then
+    echo "Skipping bootloader restore."
+    return 0
+  fi
+
+  require_root
+
+  if [[ -n "$missing_before" ]]; then
+    "${SUDO[@]}" rm -f "$EFI_DIR/loader/loader.conf"
+  elif [[ -f "$backup_file" ]]; then
+    "${SUDO[@]}" cp "$backup_file" "$EFI_DIR/loader/loader.conf"
+  fi
+
+  if [[ -n "$before_order" ]]; then
+    "${SUDO[@]}" efibootmgr -o "$before_order"
+  fi
+
+  if [[ -n "$rollback_cmd" ]]; then
+    echo "Recorded rollback command: $rollback_cmd"
+  elif [[ -n "$after_order" ]]; then
+    echo "To restore EFI order to previous: sudo efibootmgr -o $after_order"
+  fi
+}
+
+restore_startup() {
+  local action_file="$SNAP_DIR/actions/startup.txt"
+  if [[ ! -f "$action_file" ]]; then
+    return 0
+  fi
+
+  local user_units="$HOME/.config/systemd/user"
+  local changed=0
+
+  echo "Restore startup unit files from snapshot."
+  for unit in argo.target argo-projectiond.service argo-app.service; do
+    local backup="$SNAP_DIR/units/before.$unit"
+    local installed="$user_units/$unit"
+    if [[ -f "$backup" ]]; then
+      if [[ -s "$backup" ]]; then
+        echo "  - Restore $installed"
+        cp "$backup" "$installed"
+      else
+        echo "  - Remove $installed (no pre-existing baseline in snapshot)"
+        rm -f "$installed"
+      fi
+      changed=1
+    fi
+  done
+
+  if (( changed == 0 )); then
+    return
+  fi
+
+  if ! prompt "Reload and restart argo.target now?"; then
+    echo "Skipped user-systemd reload/restart for startup restore."
+    return 0
+  fi
+
+  systemctl --user daemon-reload
+  if systemctl --user is-active argo.target >/dev/null 2>&1; then
+    systemctl --user restart argo.target || true
+  fi
+}
+
+restore_cleanup() {
+  local action_file="$SNAP_DIR/actions/cleanup.txt"
+  if [[ ! -f "$action_file" ]]; then
+    return 0
+  fi
+
+  echo "Restore optional cleanup state from snapshot."
+
+  # track if privileged actions exist before prompting
+  local need_root=0
+  while IFS=':' read -r scope unit state; do
+    [[ -z "$scope" ]] && continue
+    [[ "$scope" != "system" && "$scope" != "user" && "$scope" != "autostart" ]] && continue
+    case "$scope" in
+      system)
+        need_root=1
+        ;;
+    esac
+  done < "$action_file"
+
+  if (( need_root == 1 )); then
+    require_root
+  fi
+
+  local had=0
+  while IFS=':' read -r scope unit state; do
+    [[ -z "$scope" ]] && continue
+    [[ "$scope" != "system" && "$scope" != "user" && "$scope" != "autostart" ]] && continue
+    had=1
+    case "$scope" in
+      system)
+        # state is previous is-enabled value
+        case "$state" in
+          enabled|enabled-runtime)
+            echo "Enable $unit"
+            "${SUDO[@]}" systemctl enable "$unit"
+            ;;
+          masked)
+            echo "Unmask and restore $unit"
+            "${SUDO[@]}" systemctl unmask "$unit"
+            ;;
+          *)
+            echo "Keep $unit disabled/absent"
+            "${SUDO[@]}" systemctl disable "$unit" || true
+            ;;
+        esac
+        ;;
+      user)
+        case "$state" in
+          enabled|enabled-runtime)
+            echo "Enable user $unit"
+            systemctl --user enable "$unit" || true
+            ;;
+          *)
+            echo "Keep user $unit disabled/absent"
+            systemctl --user disable "$unit" || true
+            ;;
+        esac
+        ;;
+      autostart)
+        # format: autostart:<new-path>:<snapshot-backup>
+        local target backup
+        target="$unit"
+        backup="$state"
+        if [[ -f "$backup" ]]; then
+          echo "Restore autostart file $backup -> $target"
+          mkdir -p "$(dirname "$target")"
+          mv "$backup" "$target"
+        else
+          if [[ -f "${target}" ]]; then
+            echo "Autostart restore cleanup for ${target} not possible (backup missing)"
+          fi
+        fi
+        ;;
+      *)
+        :
+        ;;
+    esac
+  done < "$action_file"
+
+  if (( had == 0 )); then
+    return
+  fi
+
+  if prompt "Reload argo.target user units after cleanup restore?"; then
+    systemctl --user daemon-reload
+    if systemctl --user is-active argo.target >/dev/null 2>&1; then
+      systemctl --user restart argo.target || true
+    fi
+    return 0
+  fi
+}
+
+restore_bootloader
+restore_startup
+restore_cleanup
+
+echo "Restore completed for snapshot $SNAP_DIR"

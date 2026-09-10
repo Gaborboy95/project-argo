@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: tool/boot/audit [--state-root DIR] [--snapshot-id ID]
+
+Collect reversible boot/session/service state before applying optimization.
+Writes a timestamped snapshot under --state-root (default:
+$HOME/.local/state/argo-boot-optimization).
+USAGE
+}
+
+STATE_ROOT="${ARGO_BOOT_STATE_ROOT:-$HOME/.local/state/argo-boot-optimization}"
+SNAP_ID="$(date +%Y%m%d_%H%M%S)"
+EFI_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --state-root)
+      STATE_ROOT=$2
+      shift 2
+      ;;
+    --snapshot-id)
+      SNAP_ID=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+resolve_efi_dir() {
+  local cand found
+  for cand in /boot/efi /efi /boot/EFI /EFI; do
+    [[ -d "$cand" ]] && { echo "$cand"; return 0; }
+  done
+
+  if command -v findmnt >/dev/null 2>&1; then
+    found="$(findmnt -rn -o TARGET,FSTYPE | awk 'BEGIN{IGNORECASE=1} $2 ~ /^(vfat|fat|msdos)/ && tolower($1) ~ /\/efi($|\/)/ {print $1; exit}')"
+    if [[ -n "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  if command -v bootctl >/dev/null 2>&1; then
+    found="$(bootctl status --no-pager 2>/dev/null | awk '/^\\s*ESP:/ {for(i=1;i<=NF;i++) if ($i ~ /^\\//) {print $i; exit}}')"
+    if [[ -n "$found" && -d "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+SNAP_DIR="$STATE_ROOT/$SNAP_ID"
+mkdir -p "$SNAP_DIR"/{bootloader,services,units,network,analysis,actions}
+ln -sfn "$SNAP_DIR" "$STATE_ROOT/latest"
+
+manifest="$SNAP_DIR/manifest.env"
+{
+  echo "SNAP_ID=$SNAP_ID"
+  echo "SNAP_CREATED_AT=$(date -Iseconds)"
+  echo "SNAP_ROOT=$SNAP_DIR"
+  echo "SNAP_USER=$USER"
+  echo "SNAP_HOST=$(hostname)"
+} > "$manifest"
+
+append_manifest() {
+  printf '%s=%s\n' "$1" "$2" >> "$manifest"
+}
+
+has_real_interfaces_config() {
+  local has_config=0
+  shopt -s nullglob
+  local files=(/etc/network/interfaces.d/*)
+  shopt -u nullglob
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo 0
+    return
+  fi
+
+  local file line
+  for file in "${files[@]}"; do
+    [[ -f "$file" ]] || continue
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$line" ]] && continue
+      case "$line" in
+        auto*|allow-hotplug*|iface*|mapping*|source*)
+          echo 1
+          return
+          ;;
+      esac
+    done < "$file"
+  done
+
+  echo "$has_config"
+}
+
+user_bus_available() {
+  systemctl --user list-units --no-legend >/dev/null 2>&1
+}
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  systemd-analyze time | tee "$SNAP_DIR/analysis/systemd-analyze.txt"
+  append_manifest "SYSTEMD_ANALYZE_TIME" "$(tr '\n' ';' < "$SNAP_DIR/analysis/systemd-analyze.txt")"
+fi
+EFI_DIR="$(resolve_efi_dir || true)"
+if [[ -n "$EFI_DIR" ]]; then
+  append_manifest "EFI_DIR_DETECTED" "$EFI_DIR"
+else
+  append_manifest "EFI_DIR_DETECTED" ""
+fi
+
+has_real_config=$(has_real_interfaces_config)
+append_manifest "INTERFACES_D_HAS_REAL_CONFIG" "$has_real_config"
+if [[ -d /etc/network/interfaces.d ]]; then
+  ls -1 /etc/network/interfaces.d > "$SNAP_DIR/network/interfaces.d.list"
+  for file in /etc/network/interfaces.d/*; do
+    [[ -f "$file" ]] || continue
+    cp "$file" "$SNAP_DIR/network/$(basename "$file").txt"
+  done
+fi
+
+# bootloader state
+if [[ -f /etc/default/grub ]]; then
+  cp /etc/default/grub "$SNAP_DIR/bootloader/etc-default-grub.backup"
+  append_manifest "GRUB_TIMEOUT_CFG" "$(awk -F= '/^GRUB_TIMEOUT=/{print $2}' /etc/default/grub | tr -d '[:space:]')"
+fi
+
+if [[ -n "$EFI_DIR" && -f "$EFI_DIR/loader/loader.conf" ]]; then
+  cp "$EFI_DIR/loader/loader.conf" "$SNAP_DIR/bootloader/loader.conf.backup"
+fi
+
+if command -v bootctl >/dev/null 2>&1; then
+  bootctl status --no-pager > "$SNAP_DIR/bootloader/bootctl-status.txt" 2>&1 || true
+  bootctl list --no-pager > "$SNAP_DIR/bootloader/bootctl-list.txt" 2>&1 || true
+fi
+
+if command -v efibootmgr >/dev/null 2>&1; then
+  if ((EUID != 0)); then
+    efibootmgr > "$SNAP_DIR/bootloader/efibootmgr.txt" 2>&1 || true
+  else
+    efibootmgr > "$SNAP_DIR/bootloader/efibootmgr.txt" || true
+  fi
+  boot_order=$(awk -F: '/^BootOrder/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$SNAP_DIR/bootloader/efibootmgr.txt")
+  append_manifest "EFI_BOOTORDER_BEFORE" "${boot_order}"
+
+  grub_entry=$(awk '/^Boot[0-9A-Fa-f]+/ && /GRUB|grub|grubx64\.efi|shimx64\.efi/ {print $1; exit}' "$SNAP_DIR/bootloader/efibootmgr.txt")
+  systemd_entry=$(awk '/^Boot[0-9A-Fa-f]+/ && /systemd|systemd-boot|systemd-bootx64\.efi|BOOTX64\.EFI/ {print $1; exit}' "$SNAP_DIR/bootloader/efibootmgr.txt")
+  append_manifest "EFI_GRUB_ENTRY" "${grub_entry}"
+  append_manifest "EFI_SYSTEMD_ENTRY" "${systemd_entry}"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  {
+    echo -e "scope\tunit\tenabled\tactive"
+    for unit in cups.service cups-browsed.service avahi-daemon.service ModemManager.service networking.service; do
+      if systemctl list-unit-files "$unit" --no-legend >/dev/null 2>&1; then
+        printf 'system\t%s\t%s\t%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || echo unknown)" "$(systemctl is-active "$unit" 2>/dev/null || echo inactive)"
+      else
+        printf 'system\t%s\tabsent\tabsent\n' "$unit"
+      fi
+    done
+  } > "$SNAP_DIR/services/system-before.txt"
+
+  if user_bus_available; then
+    {
+      echo -e "scope\tunit\tenabled\tactive"
+      for unit in kdeconnectd.service discovernotifier.service baloofilestartup.service kup.service solaar.service xwaylandvideobridge.service; do
+        if systemctl --user list-unit-files "$unit" --no-legend >/dev/null 2>&1; then
+          printf 'user\t%s\t%s\t%s\n' "$unit" "$(systemctl --user is-enabled "$unit" 2>/dev/null || echo unknown)" "$(systemctl --user is-active "$unit" 2>/dev/null || echo inactive)"
+        else
+          printf 'user\t%s\tabsent\tabsent\n' "$unit"
+        fi
+      done
+    } > "$SNAP_DIR/services/user-before.txt"
+  else
+    printf 'user\tlookup\tunavailable\tunavailable\n' > "$SNAP_DIR/services/user-before.txt"
+  fi
+fi
+
+{
+  : > "$SNAP_DIR/services/autostart-before.txt"
+  for hint in kdeconnect discover kalendar kup solaar baloo xwaylandvideobridge; do
+    if [[ -d "${XDG_CONFIG_HOME:-$HOME/.config}/autostart" ]]; then
+      find "${XDG_CONFIG_HOME:-$HOME/.config}/autostart" -maxdepth 1 -type f -name "*${hint}*.desktop" -print >> "$SNAP_DIR/services/autostart-before.txt"
+    fi
+    if [[ -d /etc/xdg/autostart ]]; then
+      find /etc/xdg/autostart -maxdepth 1 -type f -name "*${hint}*.desktop" -print >> "$SNAP_DIR/services/autostart-before.txt"
+    fi
+    if [[ -d /usr/share/applications ]]; then
+      find /usr/share/applications -maxdepth 1 -type f -name "*${hint}*.desktop" -print >> "$SNAP_DIR/services/autostart-before.txt"
+    fi
+  done
+  sort -u "$SNAP_DIR/services/autostart-before.txt" -o "$SNAP_DIR/services/autostart-before.txt" 2>/dev/null || true
+}
+
+if command -v systemctl >/dev/null 2>&1 && user_bus_available; then
+  append_manifest "ARGO_APP_ACTIVE_ENTER_NS" "$(systemctl --user show argo-app.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || true)"
+  append_manifest "ARGO_DAEMON_ACTIVE_ENTER_NS" "$(systemctl --user show argo-projectiond.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || true)"
+  append_manifest "ARGO_TARGET_ACTIVE_ENTER_NS" "$(systemctl --user show argo.target -p ActiveEnterTimestampMonotonic --value 2>/dev/null || true)"
+else
+  append_manifest "ARGO_APP_ACTIVE_ENTER_NS" ""
+  append_manifest "ARGO_DAEMON_ACTIVE_ENTER_NS" ""
+  append_manifest "ARGO_TARGET_ACTIVE_ENTER_NS" ""
+fi
+
+{
+  for file in argo.target argo-projectiond.service argo-app.service; do
+    if [[ -f "$HOME/.config/systemd/user/$file" ]]; then
+      cp "$HOME/.config/systemd/user/$file" "$SNAP_DIR/units/installed.$file"
+    fi
+  done
+  ls -1 "$HOME/.config/systemd/user"/argo.target "$HOME/.config/systemd/user"/argo-projectiond.service "$HOME/.config/systemd/user"/argo-app.service 2>/dev/null > "$SNAP_DIR/units/installed-list.txt" || true
+}
+
+echo "Snapshot created: $SNAP_DIR"
+echo "Systemd analyze: $SNAP_DIR/analysis/systemd-analyze.txt"
+echo "Bootloader state: $SNAP_DIR/bootloader"
+echo "Services before: $SNAP_DIR/services"
+echo "Units before: $SNAP_DIR/units"

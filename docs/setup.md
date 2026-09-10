@@ -83,6 +83,45 @@ KDE must have imported `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and
 logged-in desktop; do not source the build workspace's `setup_env.sh` at runtime.
 The target requires an already active `graphical-session.target`.
 
+### Debian 13 boot and startup optimization (LattePanda Mu)
+
+The current deployment includes a reversible workflow under `tool/boot/`:
+
+```bash
+tool/boot/audit
+tool/boot/apply --cleanup-services  # optional
+tool/boot/compare --before <before-snap> --after <after-snap>
+tool/boot/restore
+```
+
+Workflow rules:
+
+* `audit` records systemd boot timings, EFI state, service/autostart state, and
+  Argo first-ready markers before any change.
+* `apply` prints every proposed change, asks for confirmation, and writes
+  rollback metadata into the same snapshot.
+* Bootloader optimization keeps GRUB EFI files and packages intact, sets
+  `/boot/efi/loader/loader.conf` `timeout=1`, and reorders EFI `BootOrder` only
+  as an explicit step.
+* `apply --cleanup-services` is opt-in and only touches services listed in the
+  optimization script (cups, cups-browsed, avahi, ModemManager, legacy
+  `networking.service` when `interfaces.d` has no real config, plus user
+  autostart/service candidates).
+* `restore` reads the snapshot action log and reverts startup units, cleanup, and
+  bootloader settings.
+
+For EFI rollback, the bootstrap output prints a command similar to:
+
+```bash
+sudo efibootmgr -o <previous-order>
+```
+
+You can also switch back to GRUB with:
+
+```bash
+sudo efibootmgr -o <value from EFI_BOOTORDER_BEFORE>
+```
+
 Select an existing **managed-compatible IPC7 bundle** with `argo-release.json`:
 
 ```bash

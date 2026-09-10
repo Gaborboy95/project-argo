@@ -1,0 +1,608 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: tool/boot/apply [options]
+
+  --snapshot PATH_OR_ID   Audit snapshot to base changes on (defaults to latest)
+  --state-root DIR        Snapshot root (default: $HOME/.local/state/argo-boot-optimization)
+  --no-bootloader        Skip bootloader migration tasks
+  --no-startup           Skip Argo startup dependency optimization
+  --cleanup-services      Apply optional service cleanup disables (requires snapshot audit)
+  --yes                  Apply all prompts without interactive confirmation
+  --restart-argo         Restart argo.target after startup unit changes
+USAGE
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_UNITS="$SCRIPT_DIR/../deployment/units"
+
+STATE_ROOT="${ARGO_BOOT_STATE_ROOT:-$HOME/.local/state/argo-boot-optimization}"
+SNAP_ID="latest"
+RUN_BOOTLOADER=1
+RUN_STARTUP=1
+RUN_CLEANUP=0
+AUTOYES=0
+RESTART_ARGO=0
+EFI_DIR=""
+SNAP_DIR=""
+
+resolve_state_root_candidates() {
+  local candidate_home
+  local -a candidates
+
+  candidates=("$STATE_ROOT")
+
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    candidate_home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+    if [[ -n "$candidate_home" ]]; then
+      candidates+=("$candidate_home/.local/state/argo-boot-optimization")
+    fi
+  fi
+
+  if [[ -n "${HOME:-}" ]]; then
+    candidates+=("$HOME/.local/state/argo-boot-optimization")
+  fi
+
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    :
+  else
+    candidates+=("/root/.local/state/argo-boot-optimization")
+  fi
+
+  printf '%s\n' "${candidates[@]}"
+}
+
+resolve_state_root() {
+  local cand
+  local -a seen
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    if [[ -L "$cand/latest" || -d "$cand" ]]; then
+      if [[ -z "${seen[*]:-}" || "${seen[*]:-}" != *"$cand"* ]]; then
+        echo "$cand"
+        return 0
+      fi
+    fi
+  done < <(resolve_state_root_candidates)
+  return 1
+}
+
+resolve_esp_dir() {
+  local cand candidate found
+  for cand in /boot/efi /efi /boot/EFI /EFI; do
+    [[ -d "$cand" ]] && { echo "$cand"; return 0; }
+  done
+
+  if command -v findmnt >/dev/null 2>&1; then
+    found="$(findmnt -rn -o TARGET,FSTYPE | awk 'BEGIN{IGNORECASE=1} $2 ~ /^(vfat|fat|msdos)/ && tolower($1) ~ /\/efi($|\/)/ {print $1; exit}')"
+    if [[ -n "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  if command -v bootctl >/dev/null 2>&1; then
+    found="$(bootctl status --no-pager 2>/dev/null | awk '/^\\s*ESP:/ {for(i=1;i<=NF;i++) if ($i ~ /^\\//) {print $i; exit}}')"
+    if [[ -n "$found" && -d "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --snapshot)
+      SNAP_ID=$2
+      shift 2
+      ;;
+    --state-root)
+      STATE_ROOT=$2
+      shift 2
+      ;;
+    --no-bootloader)
+      RUN_BOOTLOADER=0
+      shift
+      ;;
+    --no-startup)
+      RUN_STARTUP=0
+      shift
+      ;;
+    --cleanup-services)
+      RUN_CLEANUP=1
+      shift
+      ;;
+    --restart-argo)
+      RESTART_ARGO=1
+      shift
+      ;;
+    --yes)
+      AUTOYES=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+ done
+
+if [[ "$SNAP_ID" == "latest" ]]; then
+  STATE_ROOT="$(resolve_state_root || true)"
+  if [[ -z "$STATE_ROOT" ]]; then
+    if [[ -z "${SUDO_USER:-}" ]]; then
+      echo "No latest snapshot found. Run tool/boot/audit first." >&2
+      exit 1
+    fi
+    echo "No latest snapshot found for current user context." >&2
+    echo "If you audited as another user, pass --snapshot <full-path-to-snapshot>." >&2
+    exit 1
+  fi
+  if [[ ! -L "$STATE_ROOT/latest" ]]; then
+    echo "No latest snapshot found. Run tool/boot/audit first." >&2
+    if [[ -n "${SUDO_USER:-}" ]]; then
+      echo "Audit likely ran as normal user. Use --snapshot with the full snapshot path or --state-root /home/<user>/.local/state/argo-boot-optimization." >&2
+    fi
+    exit 1
+  fi
+  SNAP_DIR="$(readlink -f "$STATE_ROOT/latest")"
+elif [[ -d "$SNAP_ID" ]]; then
+  SNAP_DIR="$(readlink -f "$SNAP_ID")"
+  STATE_ROOT="$(dirname "$SNAP_DIR")"
+else
+  SNAP_DIR="$STATE_ROOT/$SNAP_ID"
+  STATE_ROOT="$(dirname "$SNAP_DIR")"
+fi
+
+if [[ ! -d "$SNAP_DIR" ]]; then
+  echo "Snapshot not found: $SNAP_DIR" >&2
+  exit 1
+fi
+if [[ ! -f "$SNAP_DIR/manifest.env" ]]; then
+  echo "Snapshot missing manifest: $SNAP_DIR/manifest.env" >&2
+  exit 1
+fi
+if [[ -z "$EFI_DIR" ]]; then
+  EFI_DIR="$(resolve_esp_dir || true)"
+fi
+if [[ -z "$EFI_DIR" ]]; then
+  echo "Could not locate EFI system partition." >&2
+  echo "Checked common paths: /boot/efi, /efi, /boot/EFI, /EFI, mounted vfat /EFI trees, and bootctl status." >&2
+  exit 1
+fi
+SUDO=()
+
+ask() {
+  local text=$1
+  if (( AUTOYES )); then
+    return 0
+  fi
+  read -r -p "$text [y/N] " answer
+  case "$answer" in
+    y|Y|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+require_root() {
+  if (( EUID == 0 )); then
+    SUDO=()
+    return
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required for this step but is not installed." >&2
+    exit 1
+  fi
+  SUDO=(sudo)
+}
+
+record_action() {
+  local file="$SNAP_DIR/actions/$1"
+  mkdir -p "$SNAP_DIR/actions"
+  printf '%s\n' "$2" >> "$file"
+}
+
+read_snapshot_value() {
+  local key=$1
+  awk -F= -v k="$key" '$1==k {print $2; exit}' "$SNAP_DIR/manifest.env"
+}
+
+read_service_state() {
+  local scope=$1
+  local unit=$2
+  local file="$SNAP_DIR/services/${scope}-before.txt"
+  if [[ ! -f "$file" ]]; then
+    echo unknown
+    return
+  fi
+  awk -F'\t' -v u="$unit" '$2==u {print $3; exit}' "$file"
+}
+
+service_is_enabled_like() {
+  local state=$1
+  [[ "$state" == "enabled" || "$state" == "enabled-runtime" ]]
+}
+
+reorder_bootorder() {
+  local order=$1
+  local first=$2
+  local -a entries
+  IFS=',' read -r -a entries <<< "$order"
+  local out=""
+  for entry in "${entries[@]}"; do
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" == "$first" ]]; then
+      continue
+    fi
+    if [[ -z "$out" ]]; then
+      out="$entry"
+    else
+      out="$out,$entry"
+    fi
+  done
+  if [[ -z "$out" ]]; then
+    echo "$first"
+  else
+    echo "$first,$out"
+  fi
+}
+
+run_bootloader_optimization() {
+  if (( RUN_BOOTLOADER == 0 )); then
+    return
+  fi
+
+  echo "Bootloader plan:"
+  echo "  - Run bootctl install --esp-path $EFI_DIR"
+  echo "  - Set $EFI_DIR/loader/loader.conf timeout=1"
+  echo "  - Reorder EFI BootOrder to try systemd-boot first"
+  echo "  - Preserve GRUB EFI files and metadata"
+
+  local pre_bootorder pre_grub pre_systemd
+  pre_bootorder="$(read_snapshot_value EFI_BOOTORDER_BEFORE)"
+  pre_grub="$(read_snapshot_value EFI_GRUB_ENTRY)"
+  pre_systemd="$(read_snapshot_value EFI_SYSTEMD_ENTRY)"
+  echo "  - Snapshot EFI BootOrder: ${pre_bootorder:-unknown}"
+  echo "  - Snapshot GRUB EFI entry: ${pre_grub:-not detected}"
+  echo "  - Snapshot systemd EFI entry: ${pre_systemd:-not detected}"
+
+  if ! ask "Apply bootloader changes now?"; then
+    echo "Skipping bootloader optimization."
+    return
+  fi
+
+  if ! command -v bootctl >/dev/null 2>&1; then
+    echo "bootctl not installed." >&2
+    return 1
+  fi
+  if ! command -v efibootmgr >/dev/null 2>&1; then
+    echo "efibootmgr not installed." >&2
+    return 1
+  fi
+  if [[ ! -d "$EFI_DIR" ]]; then
+    echo "$EFI_DIR is not mounted." >&2
+    return 1
+  fi
+
+  require_root
+
+  echo "Proposed: bootctl install --esp-path $EFI_DIR"
+  "${SUDO[@]}" bootctl install --esp-path "$EFI_DIR"
+  record_action bootloader.txt "bootctl_install=1"
+
+  if [[ -f "$EFI_DIR/loader/loader.conf" ]]; then
+    mkdir -p "$SNAP_DIR/bootloader"
+    cp "$EFI_DIR/loader/loader.conf" "$SNAP_DIR/bootloader/loader.conf.before"
+    awk 'BEGIN{seen=0}
+      /^timeout[[:space:]]*=/{print "timeout 1"; seen=1; next}
+      {print}
+      END{if(!seen){print "timeout 1"}}
+    ' "$EFI_DIR/loader/loader.conf" > "$SNAP_DIR/bootloader/loader.conf.updated"
+    "${SUDO[@]}" cp "$SNAP_DIR/bootloader/loader.conf.updated" "$EFI_DIR/loader/loader.conf"
+    record_action bootloader.txt "loader_timeout_set=1"
+  else
+    require_root
+    "${SUDO[@]}" mkdir -p "$EFI_DIR/loader"
+    echo -e "default arch\ntimeout 1" > "$SNAP_DIR/bootloader/loader.conf.updated"
+    "${SUDO[@]}" cp "$SNAP_DIR/bootloader/loader.conf.updated" "$EFI_DIR/loader/loader.conf"
+    record_action bootloader.txt "loader_timeout_set=1"
+  fi
+
+  # lightweight bootability guard for current kernel/initrd entries
+  local kernel_path="/boot/vmlinuz-$(uname -r)"
+  local initrd_path=""
+  for candidate in "/boot/initrd.img-$(uname -r)" "/boot/initramfs-$(uname -r).img"; do
+    if [[ -f "$candidate" ]]; then
+      initrd_path="$candidate"
+      break
+    fi
+  done
+
+  if [[ ! -f "$kernel_path" || -z "$initrd_path" ]]; then
+    echo "Could not verify kernel/initrd pair for running kernel; checking still allowed but you should confirm /boot entries before changing BootOrder." >&2
+    if ! ask "Continue with bootloader reordering anyway?"; then
+      return 1
+    fi
+  elif [[ -d /boot/loader/entries ]]; then
+    local found_entry=0 entry_file
+    for entry_file in /boot/loader/entries/*.conf; do
+      [[ -f "$entry_file" ]] || continue
+      if grep -qF "linux $kernel_path" "$entry_file" && grep -qF "initrd $initrd_path" "$entry_file"; then
+        found_entry=1
+        break
+      fi
+    done
+
+    if (( found_entry == 0 )); then
+      echo "Did not find an entry file for $kernel_path in /boot/loader/entries." >&2
+      if ! ask "Continue with bootloader reordering anyway?"; then
+        return 1
+      fi
+    fi
+  fi
+
+  "${SUDO[@]}" efibootmgr > "$SNAP_DIR/bootloader/efibootmgr.after.txt"
+  local post_bootorder grub_entry systemd_entry
+  post_bootorder="$(awk -F: '/^BootOrder/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$SNAP_DIR/bootloader/efibootmgr.after.txt")"
+  grub_entry="$(awk '/^Boot[0-9A-Fa-f]+/ && /GRUB|grub|grubx64\\.efi|shimx64\\.efi/ {print $1; exit}' "$SNAP_DIR/bootloader/efibootmgr.after.txt")"
+  systemd_entry="$(awk '/^Boot[0-9A-Fa-f]+/ && /systemd|systemd-boot|systemd-bootx64\\.efi|BOOTX64\\.EFI/ {print $1; exit}' "$SNAP_DIR/bootloader/efibootmgr.after.txt")"
+
+  echo "Detected EFI entries:"
+  echo "  GRUB    = ${grub_entry:-not detected}"
+  echo "  systemd = ${systemd_entry:-not detected}"
+  echo "  order   = ${post_bootorder:-not detected}"
+
+  if [[ -n "$systemd_entry" && -z "${post_bootorder}" ]]; then
+    echo "BootOrder not reported; skipping reorder"
+  elif [[ -n "$systemd_entry" ]]; then
+    local systemd_id
+    systemd_id="$(echo "$systemd_entry" | sed -E 's/^Boot([0-9A-Fa-f]+).*/\1/')"
+    if [[ -n "$systemd_id" ]]; then
+      local reordered
+      reordered="$(reorder_bootorder "$post_bootorder" "$systemd_id")"
+      if [[ "$reordered" != "$post_bootorder" ]]; then
+        echo "Proposed: ${SUDO[0]:-sudo} efibootmgr -o $reordered"
+        "${SUDO[@]}" efibootmgr -o "$reordered"
+        record_action bootloader.txt "efi_bootorder_before=${post_bootorder}"
+        record_action bootloader.txt "efi_bootorder_after=${reordered}"
+      fi
+    else
+      echo "Could not parse a stable systemd EFI entry id; BootOrder not changed."
+    fi
+  else
+    echo "Could not identify a systemd EFI entry; BootOrder not changed."
+  fi
+
+  if [[ -n "$systemd_entry" ]]; then
+    record_action bootloader.txt "efi_systemd_entry=$systemd_entry"
+  fi
+  if [[ -n "$grub_entry" ]]; then
+    record_action bootloader.txt "efi_grub_entry=$grub_entry"
+  fi
+  if [[ -n "$(read_snapshot_value EFI_BOOTORDER_BEFORE)" ]]; then
+    record_action bootloader.txt "efi_bootorder_before_snapshot=$(read_snapshot_value EFI_BOOTORDER_BEFORE)"
+  fi
+
+  if [[ -f "$EFI_DIR/loader/loader.conf" ]]; then
+    if [[ ! -f "$SNAP_DIR/bootloader/loader.conf.before" ]]; then
+      record_action bootloader.txt "loader_conf_missing_before=1"
+    fi
+    cp "$EFI_DIR/loader/loader.conf" "$SNAP_DIR/bootloader/loader.conf.before"
+    record_action bootloader.txt "loader_conf_backup=$SNAP_DIR/bootloader/loader.conf.before"
+  fi
+  if [[ -n "$pre_bootorder" ]]; then
+    echo "Rollback command to GRUB order: sudo efibootmgr -o $pre_bootorder"
+    record_action bootloader.txt "grub_rollback_cmd=sudo efibootmgr -o $pre_bootorder"
+  fi
+
+  echo "Bootloader changes recorded in $SNAP_DIR/actions/bootloader.txt"
+}
+
+run_startup_optimization() {
+  if (( RUN_STARTUP == 0 )); then
+    return
+  fi
+
+  if [[ ! -d "$REPO_UNITS" ]]; then
+    echo "Repository units directory not found: $REPO_UNITS" >&2
+    return 1
+  fi
+
+  echo "Startup optimization plan:"
+  echo "  - Copy checked-in user units into $HOME/.config/systemd/user"
+  echo "  - Keep argo.target stop behavior and rollback semantics"
+
+  if ! ask "Install startup unit updates now?"; then
+    echo "Skipping startup optimization."
+    return
+  fi
+
+  local user_units="$HOME/.config/systemd/user"
+  mkdir -p "$user_units"
+  local changed=0
+  for unit in argo.target argo-projectiond.service argo-app.service; do
+    local src="$REPO_UNITS/$unit"
+    local dst="$user_units/$unit"
+    local backup="$SNAP_DIR/units/before.$unit"
+    if [[ ! -f "$src" ]]; then
+      echo "Missing source unit: $src"
+      continue
+    fi
+    if [[ -f "$dst" ]]; then
+      cp "$dst" "$backup"
+    else
+      rm -f "$backup"
+      : > "$backup"
+    fi
+    echo "Proposed: cp $src -> $dst"
+    cp "$src" "$dst"
+    record_action startup.txt "unit:$unit:updated"
+    changed=1
+  done
+
+  if (( changed == 0 )); then
+    echo "No startup units changed."
+    return
+  fi
+
+  systemctl --user daemon-reload
+  if (( RESTART_ARGO == 1 )); then
+    echo "Restart requested for argo.target (if active)."
+    systemctl --user restart argo.target || systemctl --user start argo.target || true
+  fi
+}
+
+run_cleanup() {
+  if (( RUN_CLEANUP == 0 )); then
+    return
+  fi
+
+  echo
+  echo "Optional cleanup plan:"
+  echo "  - Disable only snapshot-visible services if enabled"
+  echo "  - Skip Bluetooth, NetworkManager, PipeWire, WirePlumber, polkit, D-Bus, SDDM/KWin"
+
+  local system_candidates=(cups.service cups-browsed.service avahi-daemon.service ModemManager.service)
+  local user_candidates=(kdeconnectd.service discovernotifier.service baloofilestartup.service kup.service solaar.service xwaylandvideobridge.service)
+  local interfaces_real user_bus
+  interfaces_real="$(read_snapshot_value INTERFACES_D_HAS_REAL_CONFIG || echo 0)"
+  user_bus=0
+
+  if [[ -f "$SNAP_DIR/services/user-before.txt" ]] && ! grep -q "unavailable" "$SNAP_DIR/services/user-before.txt"; then
+    user_bus=1
+  fi
+
+  echo "System candidate services (snapshot):"
+  for unit in "${system_candidates[@]}"; do
+    local state
+    state="$(read_service_state system "$unit")"
+    echo "  - $unit: ${state:-unknown}"
+  done
+
+  if [[ "$interfaces_real" == "0" ]]; then
+    local net_state
+    net_state="$(read_service_state system networking.service)"
+    echo "  - networking.service: ${net_state:-unknown} (no real interfaces.d config)"
+  fi
+
+  echo "User candidate services (snapshot):"
+  if (( user_bus )); then
+    for unit in "${user_candidates[@]}"; do
+      local state
+      state="$(read_service_state user "$unit")"
+      echo "  - $unit: ${state:-unknown}"
+    done
+  else
+    echo "  - user bus unavailable in snapshot; user service disables skipped"
+  fi
+
+  echo "Autostart candidates (snapshot):"
+  if [[ -s "$SNAP_DIR/services/autostart-before.txt" ]]; then
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      echo "  - $path"
+    done < "$SNAP_DIR/services/autostart-before.txt"
+  else
+    echo "  - none"
+  fi
+
+  if ! ask "Apply optional cleanup now?"; then
+    echo "Skipping optional cleanup."
+    return
+  fi
+
+  local changed=0
+
+  if [[ "$interfaces_real" == "0" ]]; then
+    local net_state
+    net_state="$(read_service_state system networking.service)"
+    if service_is_enabled_like "$net_state"; then
+      echo "Proposed system disable: systemctl disable --now networking.service"
+      if ask "Disable networking.service now?"; then
+        require_root
+        "${SUDO[@]}" systemctl disable --now networking.service || true
+        record_action cleanup.txt "system:networking.service:$net_state"
+        changed=1
+      fi
+    fi
+  fi
+
+  for unit in "${system_candidates[@]}"; do
+    local state
+    state="$(read_service_state system "$unit")"
+    if service_is_enabled_like "$state"; then
+      echo "Proposed system disable: systemctl disable --now $unit"
+      if ask "Disable system service $unit now?"; then
+        require_root
+        "${SUDO[@]}" systemctl disable --now "$unit" || true
+        record_action cleanup.txt "system:$unit:$state"
+        changed=1
+      fi
+    fi
+  done
+
+  if (( user_bus == 1 )); then
+    for unit in "${user_candidates[@]}"; do
+      local state
+      state="$(read_service_state user "$unit")"
+      if service_is_enabled_like "$state"; then
+        echo "Proposed user disable: systemctl --user disable --now $unit"
+        if ask "Disable user service $unit now?"; then
+          systemctl --user disable --now "$unit" || true
+          record_action cleanup.txt "user:$unit:$state"
+          changed=1
+        fi
+      fi
+    done
+  fi
+
+  if [[ -s "$SNAP_DIR/services/autostart-before.txt" ]]; then
+    local backup_dir="$SNAP_DIR/services/autostart-backup"
+    mkdir -p "$backup_dir"
+    while IFS= read -r file; do
+      [[ -z "$file" ]] && continue
+      [[ -f "$file" ]] || continue
+      local base backup
+      base="$(basename "$file")"
+      backup="$backup_dir/$base"
+      echo "Proposed autostart disable: mv $file ${file}.disabled.argo"
+      if ask "Disable autostart entry $base now?"; then
+        cp "$file" "$backup"
+        mv "$file" "${file}.disabled.argo"
+        record_action cleanup.txt "autostart:${file}.disabled.argo:$backup"
+        changed=1
+      fi
+    done < "$SNAP_DIR/services/autostart-before.txt"
+  fi
+
+  if (( changed == 1 )); then
+    record_action cleanup.txt "cleanup_applied=1"
+  fi
+}
+
+run_bootloader_optimization
+run_startup_optimization
+run_cleanup
+
+cat <<REPORT
+
+Done. Applied actions are recorded under:
+  $SNAP_DIR/actions
+
+Rollback pointers:
+- bootloader: tool/boot/restore --snapshot "$SNAP_ID"
+- units/cleanup: tool/boot/restore --snapshot "$SNAP_ID"
+REPORT

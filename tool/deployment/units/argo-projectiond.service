@@ -1,7 +1,8 @@
 [Unit]
 Description=Argo projection and connectivity daemon
-PartOf=argo.target graphical-session.target
-After=graphical-session.target
+PartOf=argo.target
+Wants=pipewire.service pipewire.socket wireplumber.service dbus.socket
+After=pipewire.service pipewire.socket wireplumber.service dbus.socket
 StartLimitIntervalSec=90
 StartLimitBurst=3
 

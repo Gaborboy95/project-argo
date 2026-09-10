@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: tool/boot/compare [--state-root DIR] [--before SNAP_ID] [--after SNAP_ID]
+
+Compare two snapshots and show boot and Argo first-ready timing changes.
+USAGE
+}
+
+STATE_ROOT="${ARGO_BOOT_STATE_ROOT:-$HOME/.local/state/argo-boot-optimization}"
+BEFORE=""
+AFTER=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --state-root)
+      STATE_ROOT=$2
+      shift 2
+      ;;
+    --before)
+      BEFORE=$2
+      shift 2
+      ;;
+    --after)
+      AFTER=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+resolve_snapshot() {
+  local id=$1
+  if [[ -d "$id" ]]; then
+    echo "$id"
+    return
+  fi
+  if [[ "$id" == "latest" ]]; then
+    if [[ -L "$STATE_ROOT/latest" ]]; then
+      readlink -f "$STATE_ROOT/latest"
+      return
+    fi
+  fi
+  if [[ -d "$STATE_ROOT/$id" ]]; then
+    echo "$STATE_ROOT/$id"
+    return
+  fi
+  echo ""
+}
+
+if [[ -z "$BEFORE" || -z "$AFTER" ]]; then
+  mapfile -t snapshots < <(find "$STATE_ROOT" -maxdepth 1 -type d -name '20*' | sort)
+  if (( ${#snapshots[@]} < 2 )); then
+    echo "Not enough snapshots in $STATE_ROOT for automatic compare." >&2
+    echo "Run tool/boot/audit, then rerun after apply/restore." >&2
+    exit 1
+  fi
+  BEFORE="${snapshots[-2]}"
+  AFTER="${snapshots[-1]}"
+else
+  BEFORE=$(resolve_snapshot "$BEFORE")
+  AFTER=$(resolve_snapshot "$AFTER")
+fi
+
+if [[ -z "$BEFORE" || -z "$AFTER" ]]; then
+  echo "Could not resolve one or both snapshots." >&2
+  exit 1
+fi
+if [[ ! -f "$BEFORE/manifest.env" || ! -f "$AFTER/manifest.env" ]]; then
+  echo "Both snapshots must include manifest.env" >&2
+  exit 1
+fi
+
+read_manifest() {
+  local file=$1
+  local key=$2
+  awk -F= -v k="$key" '$1==k {print $2; exit}' "$file"
+}
+
+read_action() {
+  local file=$1
+  local key=$2
+  [[ -f "$file" ]] || return 1
+  awk -F= -v k="$key" '$1==k {print $2; exit}' "$file"
+}
+
+parse_time_sec() {
+  local text=$1
+  local key=$2
+  echo "$text" | grep -oE "[0-9]+(\.[0-9]+)?s \($key\)" | head -n 1 | tr -d 's()' | awk '{print $1}'
+}
+
+ns_to_ms() {
+  local ns=$1
+  if [[ -z "$ns" ]]; then
+    echo ""
+    return
+  fi
+  awk -v n="$ns" 'BEGIN { printf "%.3f", n/1000000 }'
+}
+
+delta() {
+  local before=$1
+  local after=$2
+  if [[ -z "$before" || -z "$after" ]]; then
+    echo "n/a"
+    return
+  fi
+  awk -v b="$before" -v a="$after" 'BEGIN { printf "%.3f", b-a }'
+}
+
+before_text=$(read_manifest "$BEFORE/manifest.env" SYSTEMD_ANALYZE_TIME)
+after_text=$(read_manifest "$AFTER/manifest.env" SYSTEMD_ANALYZE_TIME)
+
+before_fw=$(parse_time_sec "$before_text" firmware)
+after_fw=$(parse_time_sec "$after_text" firmware)
+before_ld=$(parse_time_sec "$before_text" loader)
+after_ld=$(parse_time_sec "$after_text" loader)
+before_k=$(parse_time_sec "$before_text" kernel)
+after_k=$(parse_time_sec "$after_text" kernel)
+before_u=$(parse_time_sec "$before_text" userspace)
+after_u=$(parse_time_sec "$after_text" userspace)
+
+before_app_ns=$(read_manifest "$BEFORE/manifest.env" ARGO_APP_ACTIVE_ENTER_NS)
+after_app_ns=$(read_manifest "$AFTER/manifest.env" ARGO_APP_ACTIVE_ENTER_NS)
+before_daemon_ns=$(read_manifest "$BEFORE/manifest.env" ARGO_DAEMON_ACTIVE_ENTER_NS)
+after_daemon_ns=$(read_manifest "$AFTER/manifest.env" ARGO_DAEMON_ACTIVE_ENTER_NS)
+before_target_ns=$(read_manifest "$BEFORE/manifest.env" ARGO_TARGET_ACTIVE_ENTER_NS)
+after_target_ns=$(read_manifest "$AFTER/manifest.env" ARGO_TARGET_ACTIVE_ENTER_NS)
+
+before_app_ms=$(ns_to_ms "$before_app_ns")
+after_app_ms=$(ns_to_ms "$after_app_ns")
+before_daemon_ms=$(ns_to_ms "$before_daemon_ns")
+after_daemon_ms=$(ns_to_ms "$after_daemon_ns")
+before_target_ms=$(ns_to_ms "$before_target_ns")
+after_target_ms=$(ns_to_ms "$after_target_ns")
+
+before_bootorder=$(read_manifest "$BEFORE/manifest.env" EFI_BOOTORDER_BEFORE)
+if [[ -z "$before_bootorder" ]]; then
+  before_bootorder="$(read_action "$BEFORE/actions/bootloader.txt" efi_bootorder_before_snapshot || true)"
+fi
+after_bootorder=$(read_manifest "$AFTER/manifest.env" EFI_BOOTORDER_BEFORE)
+if [[ -z "$after_bootorder" ]]; then
+  after_bootorder="$(read_action "$AFTER/actions/bootloader.txt" efi_bootorder_after || true)"
+fi
+if [[ -z "$after_bootorder" ]]; then
+  after_bootorder="$(read_action "$AFTER/actions/bootloader.txt" efi_bootorder_before_snapshot || true)"
+fi
+
+printf "Compare snapshots\n"
+printf "Before: %s\n" "$BEFORE"
+printf "After : %s\n\n" "$AFTER"
+
+echo "Systemd-analyze time" 
+echo "  before: ${before_text:-n/a}"
+echo "  after : ${after_text:-n/a}"
+
+echo
+printf '%-12s %-12s %-12s %-12s\n' "component" "before(s)" "after(s)" "saved(s)"
+printf '%-12s %-12s %-12s %-12s\n' "firmware" "${before_fw:-n/a}" "${after_fw:-n/a}" "$(delta "$before_fw" "$after_fw")"
+printf '%-12s %-12s %-12s %-12s\n' "loader" "${before_ld:-n/a}" "${after_ld:-n/a}" "$(delta "$before_ld" "$after_ld")"
+printf '%-12s %-12s %-12s %-12s\n' "kernel" "${before_k:-n/a}" "${after_k:-n/a}" "$(delta "$before_k" "$after_k")"
+printf '%-12s %-12s %-12s %-12s\n' "userspace" "${before_u:-n/a}" "${after_u:-n/a}" "$(delta "$before_u" "$after_u")"
+
+echo
+printf '%-14s %-16s %-16s %-16s\n' "path" "before(ms)" "after(ms)" "saved(ms)"
+printf '%-14s %-16s %-16s %-16s\n' "argo-app" "${before_app_ms:-n/a}" "${after_app_ms:-n/a}" "$(delta "$before_app_ms" "$after_app_ms")"
+printf '%-14s %-16s %-16s %-16s\n' "argo-daemon" "${before_daemon_ms:-n/a}" "${after_daemon_ms:-n/a}" "$(delta "$before_daemon_ms" "$after_daemon_ms")"
+printf '%-14s %-16s %-16s %-16s\n' "argo-target" "${before_target_ms:-n/a}" "${after_target_ms:-n/a}" "$(delta "$before_target_ms" "$after_target_ms")"
+
+echo
+echo "EFI BootOrder" 
+echo "  before: ${before_bootorder:-n/a}"
+echo "  after : ${after_bootorder:-n/a}"
+
+echo
+if [[ -n "$before_bootorder" && -n "$after_bootorder" && "$before_bootorder" != "$after_bootorder" ]]; then
+  echo "BootOrder changed: use restore or explicit BIOS setting to return to previous entry order."
+fi
+
+if [[ -f "$AFTER/actions/bootloader.txt" ]]; then
+  echo "Recorded rollback commands for after-snapshot:" 
+  grep -E '^grub_rollback_cmd=' "$AFTER/actions/bootloader.txt" || true
+fi

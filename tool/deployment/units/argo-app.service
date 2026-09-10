@@ -1,7 +1,7 @@
 [Unit]
 Description=Argo Wayland application
 Wants=argo-projectiond.service
-After=argo-projectiond.service graphical-session.target
+After=argo-projectiond.service plasma-kwin_wayland.service
 PartOf=argo.target graphical-session.target argo-projectiond.service
 StartLimitIntervalSec=90
 StartLimitBurst=3
