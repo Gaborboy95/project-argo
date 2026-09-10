@@ -38,10 +38,11 @@ class DashboardDock extends StatelessWidget {
       builder: (context, c) => SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: SizedBox(
-          width: math.max(c.maxWidth, 700 * scale),
+          width: math.max(c.maxWidth, 740 * scale),
           height: c.maxHeight,
           child: Row(
             children: [
+              SizedBox(width: 20 * scale),
               _button('Settings', Icons.settings_outlined, onSettings),
               Expanded(child: _temperature('Left', left, onLeft)),
               const VerticalDivider(width: 1, indent: 22, endIndent: 22),
@@ -65,6 +66,7 @@ class DashboardDock extends StatelessWidget {
                   onIndicator: onVolume,
                 ),
               ),
+              SizedBox(width: 20 * scale),
             ],
           ),
         ),

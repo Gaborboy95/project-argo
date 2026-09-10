@@ -1,6 +1,6 @@
 import 'dashboard_geometry.dart';
 import 'dashboard_dock.dart';
-import 'dashboard_media_strip.dart';
+import 'dashboard_floating_media.dart';
 import 'dashboard_climate.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/media/media_session_service.dart';
@@ -205,23 +205,6 @@ class _AppShellState extends State<AppShell> {
                       height: geometry.primaryHeight,
                       child: _buildContent(modules),
                     ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: geometry.primaryHeight,
-                      height: geometry.mediaHeight,
-                      child: Visibility(
-                        visible: _mediaVisible,
-                        maintainState: true,
-                        child: DashboardMediaStrip(
-                          onOpen: () => setState(() => _panel = 'media'),
-                          scale: scale,
-                          media: services.contains<MediaSessionService>()
-                              ? services.get<MediaSessionService>()
-                              : null,
-                        ),
-                      ),
-                    ),
                     if (_modal)
                       Positioned(
                         left: 0,
@@ -234,7 +217,7 @@ class _AppShellState extends State<AppShell> {
                           onDismiss: _dismissPanel,
                         ),
                       ),
-                    if (_panel != null)
+                    if (_panel != null && _panel != 'media')
                       Positioned(
                         left: 0,
                         right: 0,
@@ -248,14 +231,6 @@ class _AppShellState extends State<AppShell> {
                             if (_panel == panel) _dismissPanel();
                           },
                           child: switch (_panel) {
-                            'media' => DashboardMediaStrip(
-                              scale: scale,
-                              expanded: true,
-                              onDismiss: _dismissPanel,
-                              media: services.contains<MediaSessionService>()
-                                  ? services.get<MediaSessionService>()
-                                  : null,
-                            ),
                             'climate' => DashboardClimate(
                               onDismiss: _dismissPanel,
                               left: _left,
@@ -268,6 +243,36 @@ class _AppShellState extends State<AppShell> {
                         ),
                       ),
                     Positioned(
+                      key: const ValueKey('floating-media-slot'),
+                      left: constraints.maxWidth * .025,
+                      right: constraints.maxWidth * .025,
+                      bottom: geometry.dockHeight + 4,
+                      child: Visibility(
+                        visible:
+                            _mediaVisible &&
+                            (_panel == null || _panel == 'media'),
+                        maintainState: true,
+                        child: DashboardFloatingMedia(
+                          collapsedHeight:
+                              (geometry.dockTop - geometry.primaryHeight - 8)
+                                  .clamp(1, double.infinity),
+                          expandedHeight: sheetHeight,
+                          open: _panel == 'media',
+                          onOpen: () => setState(() => _panel = 'media'),
+                          onClose: () {
+                            if (_panel == 'media') {
+                              _dismissPanel();
+                            }
+                          },
+                          media: services.contains<MediaSessionService>()
+                              ? services.get<MediaSessionService>()
+                              : null,
+                          scale: scale,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      key: const ValueKey('fixed-dashboard-dock'),
                       left: 0,
                       right: 0,
                       bottom: 0,
@@ -281,8 +286,12 @@ class _AppShellState extends State<AppShell> {
                           _dismissPanel();
                           _selectId('home');
                         },
-                        onMedia: () =>
-                            setState(() => _mediaVisible = !_mediaVisible),
+                        onMedia: () => setState(() {
+                          _mediaVisible = !_mediaVisible;
+                          if (!_mediaVisible && _panel == 'media') {
+                            _panel = null;
+                          }
+                        }),
                         onApps: () => _togglePanel('apps'),
                         onSettings: () {
                           _dismissPanel();

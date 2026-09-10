@@ -13,12 +13,13 @@ class DashboardMediaStrip extends StatefulWidget {
     required this.media,
     required this.scale,
     this.expanded = false,
+    this.dragEnabled = true,
     this.onOpen,
     this.onDismiss,
   });
   final MediaSessionService? media;
   final double scale;
-  final bool expanded;
+  final bool expanded, dragEnabled;
   final VoidCallback? onOpen, onDismiss;
   @override
   State<DashboardMediaStrip> createState() => _DashboardMediaStripState();
@@ -198,56 +199,58 @@ class _DashboardMediaStripState extends State<DashboardMediaStrip> {
           ),
         );
       }
+      final compact = LayoutBuilder(
+        builder: (context, c) {
+          final extent = math.min(c.maxHeight, 88 * widget.scale);
+          final side = math.max(0.0, (c.maxWidth - extent * 3) / 2);
+          final textScale = MediaQuery.textScalerOf(context).scale(1);
+          return Row(
+            children: [
+              SizedBox(
+                width: side,
+                child: Row(
+                  children: [
+                    MediaArtwork(
+                      path: details?.artworkPath,
+                      size: math.min(c.maxHeight, side * .4),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _titles(
+                        details,
+                        math.min(
+                          19 * widget.scale,
+                          c.maxHeight / (2.2 * textScale),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _controls(source, extent),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: IconButton(
+                    tooltip: 'Expand media',
+                    onPressed: widget.onOpen,
+                    icon: const Icon(Icons.keyboard_arrow_up),
+                    iconSize: 32,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+      if (!widget.dragEnabled) return compact;
       return PanelDragRegion(
         onStart: () => _drag = 0,
         onUpdate: (delta) => _drag += delta,
         onEnd: (velocity) {
           if (_drag < -32 || velocity < -500) widget.onOpen?.call();
         },
-        child: LayoutBuilder(
-          builder: (context, c) {
-            final extent = math.min(c.maxHeight, 64 * widget.scale);
-            final side = math.max(0.0, (c.maxWidth - extent * 3) / 2);
-            final textScale = MediaQuery.textScalerOf(context).scale(1);
-            return Row(
-              children: [
-                SizedBox(
-                  width: side,
-                  child: Row(
-                    children: [
-                      MediaArtwork(
-                        path: details?.artworkPath,
-                        size: math.min(c.maxHeight, side * .4),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _titles(
-                          details,
-                          math.min(
-                            19 * widget.scale,
-                            c.maxHeight / (2.2 * textScale),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                _controls(source, extent),
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: IconButton(
-                      tooltip: 'Expand media',
-                      onPressed: widget.onOpen,
-                      icon: const Icon(Icons.keyboard_arrow_up),
-                      iconSize: 32,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
+        child: compact,
       );
     },
   );

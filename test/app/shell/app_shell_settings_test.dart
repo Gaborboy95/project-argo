@@ -157,11 +157,20 @@ void main() {
   ) async {
     final harness = await _createHarness();
     await tester.pumpWidget(harness.widget);
-    await tester.fling(
-      find.byTooltip('Expand media'),
-      const Offset(0, -80),
-      700,
+    final floating = find.byKey(const ValueKey('floating-media-surface'));
+    final element = tester.element(floating);
+    final collapsed = tester.getSize(floating).height;
+    final drag = await tester.startGesture(
+      tester.getCenter(find.byTooltip('Expand media')),
     );
+    await drag.moveBy(const Offset(0, -60));
+    await tester.pump();
+    expect(tester.element(floating), same(element));
+    expect(tester.getSize(floating).height, closeTo(collapsed + 60, .001));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.getSize(floating).height, closeTo(collapsed + 60, .001));
+    await drag.moveBy(const Offset(0, -240));
+    await drag.up();
     await tester.pumpAndSettle();
     expect(find.byTooltip('Close media'), findsOneWidget);
     await tester.tap(find.byTooltip('Apps'));

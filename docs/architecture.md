@@ -63,10 +63,14 @@ Dock Home resumes projection; Media toggles only the reserved strip directly
 below projection. Pulling up on that strip opens Media with larger artwork,
 metadata, supported transport commands and source selection. Apps opens a centered
 labelled grid of registered destinations; Settings stays directly accessible.
-Camera is unavailable.
+Camera is unavailable. Settings and volume have symmetric edge insets; a persistent
+volume meter accompanies the speaker.
 
-Media, Climate and Apps share one modal DashboardPanel above the stationary dock.
-Opening another replaces the current panel. Its single vertical recognizer lets
+Media retains one DashboardFloatingMedia surface between the primary region and
+dock. Its collapsed height uses the full available slot; expansion changes only the
+overlay height. Climate and Apps use DashboardPanel. All three share the
+PanelDragRegion vertical recognizer and modal input ownership above the fixed dock.
+Opening another replaces the current panel. The single vertical recognizer lets
 small movements remain child taps; intentional vertical movement cancels the tap.
 Downward movement anywhere pulls the panel, with distance and release velocity
 choosing dismissal or snap-back. Upward movement scrolls longer panel content.

@@ -344,6 +344,17 @@ void main() {
         expect(rectangle.width * metrics.$2, closeTo(metrics.$1.width, .001));
         expect(rectangle.height / rectangle.width, closeTo(9 / 16, .00001));
         final dock = tester.getRect(find.byType(DashboardDock));
+        if (find.byTooltip('Expand media').evaluate().isEmpty) {
+          await tester.tap(find.byTooltip('Media strip'));
+          await tester.pumpAndSettle();
+        }
+        final floating = tester.getRect(
+          find.byKey(const ValueKey('floating-media-surface')),
+        );
+        expect(floating.left, closeTo(rectangle.width * .025, .001));
+        expect(floating.top, closeTo(rectangle.bottom + 4, .001));
+        expect(floating.bottom, closeTo(dock.top - 4, .001));
+
         for (final size in [1.0, 1.15, 1.3]) {
           await settings.set(AppSettingKeys.appearanceControlSize, size);
           await tester.pumpAndSettle();

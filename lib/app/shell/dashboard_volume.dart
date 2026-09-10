@@ -172,14 +172,40 @@ class _DashboardVolumeState extends State<DashboardVolume>
           onPointerCancel: (e) {
             if (e.pointer == _pointer) _finish(cancel: true);
           },
-          child: Center(
-            child: Icon(
-              state?.muted == true
-                  ? Icons.volume_off_outlined
-                  : Icons.volume_up_outlined,
-              size: 28 * widget.scale,
-              color: enabled ? null : Theme.of(context).disabledColor,
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                state?.muted == true
+                    ? Icons.volume_off_outlined
+                    : Icons.volume_up_outlined,
+                size: 28 * widget.scale,
+                color: enabled ? null : Theme.of(context).disabledColor,
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 4,
+                height: 42 * widget.scale,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: ColoredBox(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: FractionallySizedBox(
+                        widthFactor: 1,
+                        heightFactor: enabled && state.muted != true
+                            ? state.masterVolume.clamp(0, 1)
+                            : 0,
+                        child: ColoredBox(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );
