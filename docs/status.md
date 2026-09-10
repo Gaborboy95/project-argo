@@ -77,10 +77,22 @@ the stock Flutter GTK runner lacks the IHS platform-view contract.
 - Wallpaper/shaders and automatic vehicle day/night appearance policy.
 - Argo-rendered Lua UI extension registries; host-state reads do not create UI.
 - Portable PipeWire balance/fader/EQ/output-routing mutations in the wpctl backend.
-- Vehicle-specific protocols, production power policy, boot-time wireless
-  auto-connect or an unlimited connection supervisor.
+- Vehicle-specific protocols, production power policy, unattended pre-login startup or an unlimited connection supervisor.
 
 AA microphone capture is implemented; physical ADC mixing and HFP duplex audio are
 not yet hardware-verified. See [voice input](media.md#shared-microphone-and-usb-adc). Declared vehicle
 capabilities do not install hardware backends. CAN reception cannot continue while
 host suspend quiesces its transport; physical wake is a platform responsibility.
+
+## Graphical deployment
+
+Systemd user units, readiness/Quit integration, versioned releases and atomic
+selection are implemented for KDE Wayland. Startup phone connections are saved,
+independent and off by default. They use existing selected-device controllers and
+bounded retries; they do not add a Bluetooth stack or change AA presentation.
+Local KDE service readiness, idle shutdown, active release switching/rollback and
+bounded idle crash recovery have been checked. Login/logout with active phone
+audio, crash recovery with an active AP, and
+phone-profile startup interoperability require hardware acceptance. A retained
+firewall ownership record deliberately blocks replacement after uncertain cleanup.
+See [setup](setup.md#graphical-session-deployment) for controls and recovery.

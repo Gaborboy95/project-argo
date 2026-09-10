@@ -40,6 +40,9 @@ struct Outcome {
     cleanup: Option<String>,
 }
 impl Book {
+    pub fn cleanup_uncertain(&self) -> bool {
+        self.blocked
+    }
     pub async fn clear(&mut self) -> Result<(), String> {
         self.state = Default::default();
         if let Some(job) = self.job.as_mut() {

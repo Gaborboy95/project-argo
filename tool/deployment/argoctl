@@ -1,0 +1,486 @@
+#!/usr/bin/python3 -I
+"""Unprivileged Argo deployment; no source checkout required after installation."""
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+UNITS = ('argo-app.service', 'argo-projectiond.service')
+REQUIRED = ('bin/argo-projectiond', 'lib/libapp.so', 'lib/libargo_projection_view.so',
+            'lib/libveloce_lua_native.so', 'lib/libflutter_engine.so', 'lib/libsqlite3.so', 'data/icudtl.dat',
+            'data/flutter_assets/AssetManifest.bin')
+IHS_FILES = ('bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_view.h')
+# Explicit common whitelist. Identity is read only in the daemon exec branch.
+COMMON = {'ARGO_AUDIO_BACKEND', 'ARGO_PROJECTION_BACKEND', 'ARGO_PROJECTION_LOG_LEVEL',
+          'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE'}
+DAEMON = {'ARGO_ANDROID_AUTO_CERT_FILE', 'ARGO_ANDROID_AUTO_KEY_FILE',
+          'ARGO_ANDROID_AUTO_HEVC', 'ARGO_ANDROID_AUTO_PROTOCOL_VERSION'}
+
+
+def digest(path):
+    with open(path, 'rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def program_pids(name):
+    result = set()
+    for item in Path('/proc').glob('[0-9]*/exe'):
+        try:
+            # /proc/PID owns the process; the executable may be installed by root.
+            if item.parent.stat().st_uid == os.getuid() and item.resolve().name == name:
+                result.add(int(item.parent.name))
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            pass
+    return result
+
+
+def atomic(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+        stream.write(content.encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(tmp, path)
+
+
+def save(path, value):
+    atomic(path, json.dumps(value, indent=2) + '\n')
+
+
+def read(path):
+    return json.loads(path.read_text())
+
+
+class Deployment:
+    def __init__(self, home=None):
+        self.home = home or Path.home()
+        self.config = self.home / '.config/project-argo'
+        self.data = self.home / '.local/share/project-argo'
+        self.state = self.home / '.local/state/project-argo'
+        self.releases = self.data / 'releases'
+        self.current = self.config / 'current-release'
+
+    @contextlib.contextmanager
+    def lock(self, name='operation'):
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (self.state / (name + '.lock')).open('a') as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    def settings(self):
+        value = read(self.config / 'deployment.json')
+        if set(value.get('environment', {})) - COMMON:
+            raise ValueError('Unknown common environment option; identity belongs in daemon.json')
+        if any(not isinstance(v, str) for v in value.get('environment', {}).values()):
+            raise ValueError('Environment values must be strings')
+        auto = value.get('connect', {})
+        if set(auto) - {'wireless', 'music', 'calls'} or any(type(v) is not bool for v in auto.values()):
+            raise ValueError('Connect options must be wireless/music/calls booleans')
+        return value
+
+    def ihs(self):
+        prefix = Path(self.settings()['ihs_prefix'])
+        if not prefix.is_absolute():
+            raise ValueError('IHS prefix must be absolute')
+        for file in IHS_FILES:
+            if not (prefix / file).is_file():
+                raise ValueError('Missing IHS file: ' + file)
+        return prefix, {file: digest(prefix / file) for file in IHS_FILES}
+
+    def validate(self, bundle):
+        manifest = read(bundle / 'argo-release.json')
+        if manifest.get('schema') != 1 or manifest.get('ipc') != 6 or manifest.get('managed_control') != 1:
+            raise ValueError('Release requires IPC6 and managed application control v1')
+        _, ihs = self.ihs()
+        if manifest.get('ihs_sha256') != ihs:
+            raise ValueError('Installed IHS differs from the recorded matched build')
+        hashes = manifest['sha256']
+        actual = {str(f.relative_to(bundle)) for f in bundle.rglob('*') if f.is_file() and f.name != 'argo-release.json'}
+        if actual != set(hashes):
+            raise ValueError('Release contains unrecorded or missing files')
+        for required in REQUIRED:
+            if required not in hashes:
+                raise ValueError('Release omits required file: ' + required)
+        for relative, expected in hashes.items():
+            file = bundle / relative
+            if file.suffix.lower() in {'.pem', '.key', '.crt', '.p12'}:
+                raise ValueError('Identity files do not belong in a release')
+            if Path(relative).is_absolute() or '..' in Path(relative).parts or file.is_symlink():
+                raise ValueError('Unsafe release entry')
+            if not file.is_file() or digest(file) != expected:
+                raise ValueError('Release hash mismatch: ' + relative)
+        if not os.access(bundle / 'bin/argo-projectiond', os.X_OK):
+            raise ValueError('Daemon is not executable')
+        return manifest
+
+    def stage(self, source, name, daemon=None):
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,95}', name):
+            raise ValueError('Use a simple unique release name')
+        source = source.resolve(strict=True)
+        self.validate(source)
+        self.releases.mkdir(parents=True, exist_ok=True)
+        target = self.releases / name
+        if target.exists():
+            raise ValueError('Release already exists; loaded files are never overwritten')
+        temporary = Path(tempfile.mkdtemp(prefix='.stage-', dir=self.releases))
+        try:
+            shutil.copytree(source, temporary, dirs_exist_ok=True, symlinks=False)
+            if daemon:
+                # Replacement metadata must come from the daemon build, not a guessed IPC.
+                build = read(Path(str(daemon) + '.json'))
+                if build.get('ipc') != 6 or build.get('sha256') != digest(daemon):
+                    raise ValueError('Replacement daemon build record/hash/IPC mismatch')
+                shutil.copy2(daemon, temporary / 'bin/argo-projectiond')
+                m = read(temporary / 'argo-release.json')
+                m['sha256']['bin/argo-projectiond'] = digest(daemon)
+                m['daemon_build'] = build
+                legacy = temporary / 'BUILD-MANIFEST.txt'
+                if legacy.exists():
+                    legacy.write_text('Daemon-only update; current hashes and build provenance: argo-release.json\n')
+                    m['sha256']['BUILD-MANIFEST.txt'] = digest(legacy)
+                save(temporary / 'argo-release.json', m)
+            self.validate(temporary)
+            os.rename(temporary, target)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+        print(target)
+        return target
+
+    def systemctl(self, *args, check=True):
+        return subprocess.run(['systemctl', '--user', *args], check=check,
+                              text=True, capture_output=True, timeout=125)
+
+    def status(self, unit):
+        result = self.systemctl('show', unit, '--property=LoadState,ActiveState,SubState,Result,MainPID', check=False)
+        return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+
+    def active(self):
+        return [unit for unit in UNITS if self.status(unit).get('ActiveState') not in ('inactive', 'failed')]
+
+    def select_link(self, release):
+        temporary = self.config / '.current-release.new'
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(release)
+        os.replace(temporary, self.current)
+
+    def confirmed_stop(self):
+        present = [unit for unit in ('argo.target', *UNITS) if self.status(unit).get('LoadState') != 'not-found']
+        if present:
+            self.systemctl('stop', *present)
+        if self.active():
+            raise RuntimeError('Services have not stopped; selection unchanged')
+        if (self.state / 'firewall-owned.json').exists():
+            raise RuntimeError('Owned firewall cleanup remains unconfirmed; selection unchanged')
+        for unit, role in zip(UNITS, ('app', 'daemon')):
+            status = self.status(unit)
+            if status.get('Result') not in (None, '', 'success'):
+                raise RuntimeError(unit + ' failed cleanup; inspect journal before selecting another release')
+            marker = self.state / (role + '.json')
+            if marker.exists() and read(marker).get('result') != 'clean':
+                raise RuntimeError(role + ' cleanup is unconfirmed; selection unchanged')
+
+    def select(self, release):
+        release = release.resolve(strict=True)
+        if release.parent != self.releases.resolve():
+            raise ValueError('Stage this bundle before selection')
+        self.validate(release)
+        for unit, program in zip(UNITS, ('homescreen', 'argo-projectiond')):
+            managed_pid = int(self.status(unit).get('MainPID', '0'))
+            if program_pids(program) - {managed_pid}:
+                raise RuntimeError('Stop foreground ' + program + ' before selecting a release')
+        previous = self.current.resolve() if self.current.exists() else None
+        was_active = self.active()
+        target_active = self.status('argo.target').get('ActiveState') == 'active'
+        restart = ['argo.target'] if target_active and set(was_active) == set(UNITS) else was_active
+        self.confirmed_stop()
+        with self.lock('selection'):
+            if self.active():
+                raise RuntimeError('Concurrent service start; selection unchanged')
+            self.select_link(release)
+        try:
+            if was_active:
+                self.systemctl('reset-failed', *UNITS, check=False)
+                self.systemctl('start', *restart)
+                # Starting target alone does not wait for its Wants jobs.
+                for unit in was_active:
+                    self.systemctl('start', unit)
+                if any(self.status(unit).get('ActiveState') != 'active' for unit in was_active):
+                    raise RuntimeError('New release did not become ready')
+        except (RuntimeError, subprocess.SubprocessError) as error:
+            print('New release startup failed; stopping services before rollback: ' + str(error), file=sys.stderr)
+            # Restore the selector even if startup cleanup fails, but never launch
+            # replacement resources until both services confirm clean shutdown.
+            clean = True
+            try:
+                self.confirmed_stop()
+            except (RuntimeError, subprocess.SubprocessError):
+                clean = False
+            if previous:
+                with self.lock('selection'):
+                    if self.active():
+                        raise RuntimeError('Startup failed; live process prevents rollback selection') from error
+                    self.select_link(previous)
+                if clean:
+                    self.systemctl('reset-failed', *UNITS, check=False)
+                    self.systemctl('start', *restart)
+                    for unit in was_active:
+                        self.systemctl('start', unit)
+            raise RuntimeError('New release failed; previous selection restored. ' +
+                               ('Previous services restarted.' if clean and previous else
+                                'Services remain stopped; inspect cleanup in the journal.')) from error
+        if previous and previous != release:
+            save(self.config / 'previous-release.json', str(previous))
+        print('Selected ' + str(release) + (' (started)' if was_active else ' (stopped)'))
+
+    def runtime(self):
+        root = Path(os.environ['XDG_RUNTIME_DIR']) / 'project-argo'
+        root.mkdir(mode=0o700, exist_ok=True)
+        if root.stat().st_uid != os.getuid() or root.stat().st_mode & 0o077:
+            raise ValueError('Deployment runtime directory must be private and owned by this account')
+        return root
+
+    def marker(self, role):
+        return self.state / (role + '.json')
+
+    def launch(self, role, managed=True):
+        if not os.environ.get('WAYLAND_DISPLAY') or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
+            raise ValueError('Run in KDE Wayland; graphical login must import its environment into systemd --user')
+        if managed and self.status('graphical-session.target').get('ActiveState') != 'active':
+            raise ValueError('No active graphical session')
+        if (self.state / 'firewall-owned.json').exists():
+            raise RuntimeError('Prior projection guard cleanup is unconfirmed; see setup recovery instructions')
+        with self.lock('selection'):
+            bundle = self.current.resolve(strict=True)
+            self.validate(bundle)
+            # Refuse an independent foreground instance on another socket/release.
+            executable = 'argo-projectiond' if role == 'daemon' else 'homescreen'
+            if program_pids(executable):
+                raise RuntimeError('An existing ' + executable + ' must finish cleanup first')
+            if managed:
+                save(self.marker(role), {'result': 'running', 'invocation': os.environ['INVOCATION_ID'],
+                                         'release': str(bundle)})
+        configuration = self.settings()
+        # No ambient ARGO/loader options or daemon identity can leak into the app.
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('ARGO_', 'VELOCE_', 'LD_'))}
+        env.update({'ARGO_MODE': 'production', 'ARGO_PROJECTION_BACKEND': 'android-auto',
+                    'ARGO_AUDIO_BACKEND': 'pipewire', 'ARGO_HOST_POWER_BACKEND': 'disabled'})
+        env.update(configuration.get('environment', {}))
+        runtime = self.runtime()
+        env['ARGO_PROJECTION_SOCKET'] = str(runtime / 'projection.sock')
+        env['ARGO_PROJECTION_MEDIA_SOCKET'] = str(runtime / 'video.sock')
+        env['ARGO_WIRELESS_BUNDLE'] = str(bundle)
+        if managed:
+            env['ARGO_MANAGED_RESULT'] = str(self.marker(role))
+        if role == 'daemon':
+            daemon = read(self.config / 'daemon.json')
+            if set(daemon) - DAEMON or any(not isinstance(v, str) for v in daemon.values()):
+                raise ValueError('Unknown daemon configuration option')
+            env.update(daemon)
+            # Only our private control socket; never unlink a live listener.
+            endpoint = runtime / 'projection.sock'
+            if endpoint.exists():
+                try:
+                    with socket.socket(socket.AF_UNIX) as probe:
+                        probe.connect(str(endpoint))
+                except ConnectionRefusedError:
+                    endpoint.unlink()
+                else:
+                    raise RuntimeError('Projection socket still has a live owner')
+            command = [str(bundle / 'bin/argo-projectiond')]
+        else:
+            prefix, _ = self.ihs()
+            env['LD_LIBRARY_PATH'] = str(prefix / 'lib') + ':' + str(bundle / 'lib')
+            env['ARGO_PROJECTION_VIEW_LIBRARY'] = str(bundle / 'lib/libargo_projection_view.so')
+            env['VELOCE_LUA_LIBRARY'] = str(bundle / 'lib/libveloce_lua_native.so')
+            env['ARGO_STARTUP_CONNECTIONS'] = ','.join(k for k, v in configuration.get('connect', {}).items() if v)
+            if managed:
+                env['ARGO_MANAGED_SOCKET'] = str(runtime / 'application.sock')
+            command = [str(prefix / 'bin/homescreen'), '-b', str(bundle), '--backend', 'wayland-egl',
+                       '--width=1280', '--height=720']
+        os.execve(command[0], command, env)
+
+    def app_request(self, action):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(32 if action in ('quit', 'quit-target') else 1)
+            client.connect(str(self.runtime() / 'application.sock'))
+            client.sendall((action + '\n').encode())
+            result = b''
+            while b'\n' not in result:
+                chunk = client.recv(4096 - len(result))
+                if not chunk:
+                    break
+                result += chunk
+                if len(result) == 4096:
+                    raise ValueError('Application administration reply too large')
+            if not result:
+                return None
+            return json.loads(result)
+
+    def ready(self, role):
+        deadline = time.monotonic() + (20 if role == 'daemon' else 30)
+        while time.monotonic() < deadline:
+            try:
+                if role == 'app':
+                    reply = self.app_request('status')
+                    if reply and reply.get('ready') and reply.get('invocation') == os.environ.get('INVOCATION_ID'):
+                        return
+                else:
+                    with socket.socket(socket.AF_UNIX) as client:
+                        client.settimeout(1)
+                        client.connect(str(self.runtime() / 'projection.sock'))
+                        # Non-Hello request proves the IPC loop responds without
+                        # acquiring the app's exclusive client/session lease.
+                        client.sendall(struct.pack('>IHHI', 0x4152474f, 6, 65535, 0))
+                        header = b''
+                        while len(header) < 12:
+                            chunk = client.recv(12 - len(header))
+                            if not chunk:
+                                raise ValueError('Readiness probe EOF')
+                            header += chunk
+                        magic, version, kind, size = struct.unpack('>IHHI', header)
+                        if magic == 0x4152474f and version == 6 and kind == 6 and 0 < size <= 4096:
+                            payload = b''
+                            while len(payload) < size:
+                                chunk = client.recv(size - len(payload))
+                                if not chunk:
+                                    raise ValueError('Incomplete readiness response')
+                                payload += chunk
+                            return
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.1)  # bounded probe cadence, never used as readiness evidence
+        raise RuntimeError(role + ' did not answer its readiness probe before the deadline')
+
+    def stop_app(self):
+        marker = self.marker('app')
+        if marker.exists() and read(marker).get('result') == 'clean':
+            return
+        try:
+            reply = self.app_request('quit')
+            if reply and reply.get('error'):
+                raise RuntimeError('Application cleanup: ' + reply['error'])
+        except (ConnectionRefusedError, FileNotFoundError):
+            raise RuntimeError('Application unavailable; graceful cleanup is unconfirmed') from None
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if marker.exists() and read(marker).get('result') == 'clean':
+                return
+            time.sleep(0.05)
+        raise RuntimeError('Application did not acknowledge completed cleanup')
+
+    def stopped(self, role):
+        marker = self.marker(role)
+        result = read(marker) if marker.exists() else {}
+        if result.get('invocation') == os.environ.get('INVOCATION_ID') and result.get('result') == 'clean':
+            return
+        save(marker, {**result, 'result': 'unconfirmed'})
+        raise RuntimeError(role + ' exited without confirmed cleanup; inspect journal (a crash/forced kill is not a clean stop)')
+
+
+def install(deployment, ihs):
+    source = Path(__file__).resolve().parent
+    if not (source / 'units').is_dir():
+        raise ValueError('Install/update units using the installer from tool/deployment in the checkout')
+    for name in ('argoctl',):
+        target = deployment.home / '.local/bin' / name
+        atomic(target, (source / name).read_text())
+        target.chmod(0o755)
+    unitdir = deployment.home / '.config/systemd/user'
+    for source_unit in (source / 'units').glob('*'):
+        atomic(unitdir / source_unit.name, source_unit.read_text())
+    configuration = deployment.config / 'deployment.json'
+    if not configuration.exists():
+        save(configuration, {'ihs_prefix': str(ihs.resolve()), 'environment': {},
+                             'connect': {'wireless': False, 'music': False, 'calls': False}})
+    if not (deployment.config / 'daemon.json').exists():
+        save(deployment.config / 'daemon.json', {})
+    deployment.ihs()
+    deployment.systemctl('daemon-reload')
+    print('Installed user units. Enablement and running processes unchanged; new installation is disabled.')
+
+
+def main():
+    if os.geteuid() == 0:
+        raise ValueError('Run as the desktop account, never root')
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('install'); p.add_argument('--ihs-prefix', type=Path, required=True)
+    sub.add_parser('uninstall')
+    p = sub.add_parser('identity'); p.add_argument('--certificate', type=Path, required=True); p.add_argument('--key', type=Path, required=True)
+    p = sub.add_parser('stage'); p.add_argument('bundle', type=Path); p.add_argument('--name', required=True); p.add_argument('--daemon', type=Path)
+    p = sub.add_parser('select'); p.add_argument('name')
+    sub.add_parser('rollback'); sub.add_parser('list')
+    p = sub.add_parser('autoconnect'); p.add_argument('source', choices=['wireless', 'music', 'calls']); p.add_argument('value', choices=['on', 'off'])
+    for verb in ('foreground', '_run', '_ready', '_stopped'):
+        p = sub.add_parser(verb); p.add_argument('role', choices=['app', 'daemon'])
+    sub.add_parser('_stop-app')
+    sub.add_parser('quit')
+    args = parser.parse_args()
+    d = Deployment()
+    if args.command.startswith('_') or args.command == 'foreground':
+        if args.command in ('foreground', '_run'):
+            d.launch(args.role, args.command == '_run')
+        elif args.command == '_ready': d.ready(args.role)
+        elif args.command == '_stopped': d.stopped(args.role)
+        else: d.stop_app()
+        return
+    with d.lock():
+        if args.command == 'install': install(d, args.ihs_prefix)
+        elif args.command == 'uninstall':
+            d.confirmed_stop()
+            d.systemctl('disable', 'argo.target', check=False)
+            for name in (*UNITS, 'argo.target'):
+                (d.home / '.config/systemd/user' / name).unlink(missing_ok=True)
+            (d.home / '.local/bin/argoctl').unlink(missing_ok=True)
+            d.systemctl('daemon-reload')
+            print('Removed deployment tools/units; releases, settings, identity and permission grants retained.')
+        elif args.command == 'identity':
+            config = read(d.config / 'daemon.json')
+            for key, file in [('ARGO_ANDROID_AUTO_CERT_FILE', args.certificate), ('ARGO_ANDROID_AUTO_KEY_FILE', args.key)]:
+                file = file.resolve(strict=True)
+                if not file.is_file() or not os.access(file, os.R_OK):
+                    raise ValueError('Identity files must be readable by the daemon account')
+                if d.releases in file.parents:
+                    raise ValueError('Keep identity outside release directories')
+                config[key] = str(file)
+            save(d.config / 'daemon.json', config)
+            print('Saved daemon-only identity references; takes effect on next daemon start.')
+        elif args.command == 'stage': d.stage(args.bundle, args.name, args.daemon)
+        elif args.command == 'select': d.select(d.releases / args.name)
+        elif args.command == 'rollback': d.select(Path(read(d.config / 'previous-release.json')))
+        elif args.command == 'quit':
+            reply = d.app_request('quit-target')
+            if reply and reply.get('error'):
+                raise RuntimeError(reply['error'])
+            print('Application Quit completed; target stop requested. Check service status for daemon cleanup.')
+        elif args.command == 'list':
+            for release in sorted(d.releases.glob('*')):
+                if not release.name.startswith('.'):
+                    print(('* ' if d.current.exists() and release == d.current.resolve() else '  ') + release.name)
+        elif args.command == 'autoconnect':
+            settings = d.settings()
+            settings.setdefault('connect', {})[args.source] = args.value == 'on'
+            save(d.config / 'deployment.json', settings)
+            print('Saved for next application start; current connections unchanged.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        # Called-process output may contain launch arguments; never dump environments.
+        print('argoctl: ' + str(error), file=sys.stderr)
+        sys.exit(78 if len(sys.argv) > 1 and sys.argv[1] == '_run' else 1)

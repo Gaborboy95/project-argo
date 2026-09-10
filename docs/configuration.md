@@ -257,8 +257,59 @@ wireless projection and music are idle.
 default, maximum 256 characters). The shared input is selected in Settings → Sound
 or Calls. Its absence prevents capture rather than selecting a different input.
 Selection changes take effect only without a capture owner. Microphone mute and
-Connect calls are runtime actions, not boot-time capture/connect preferences.
+Connect calls are runtime actions. The separate deployment startup preference may request the call profile at graphical application startup; it does not initiate a call or capture.
 The daemon requires `pw-dump`, `pw-cat`, `pw-loopback` and `setpriv` on PATH
 (`setpriv` is invoked at `/usr/bin/setpriv`). No microphone environment variable,
 AA identity in Flutter, root execution or additional Bluetooth profile is needed.
 See [voice routing and limitations](media.md#shared-microphone-and-usb-adc).
+
+## Deployment configuration
+
+Managed deployment uses `$HOME/.config/project-argo/`:
+
+- `current-release`: the atomic shared release symlink; change it with `argoctl select`.
+- `previous-release.json`: the previous managed selection used by `argoctl rollback`.
+- `deployment.json`: absolute `ihs_prefix`, common `environment` map and default-off
+  `connect` booleans (`wireless`, `music`, `calls`).
+- `daemon.json`: daemon-only identity paths and optional AA wire/codec opt-ins.
+- `settings.json`: existing application preferences; release switches never replace it.
+
+`deployment.json` accepts these common environment keys: `ARGO_AUDIO_BACKEND`,
+`ARGO_PROJECTION_BACKEND`, `ARGO_PROJECTION_LOG_LEVEL`, `ARGO_HOST_POWER_BACKEND`,
+`ARGO_MODE`, `ARGO_VEHICLE_PROFILE`. Defaults are production mode, Android Auto,
+PipeWire and disabled host power. Use the option values documented above.
+Unknown keys are rejected. The launcher strips ambient ARGO, Veloce and dynamic
+loader overrides, then supplies matched view/Lua libraries and private runtime
+sockets below `$XDG_RUNTIME_DIR/project-argo`. It preserves the graphical-session
+Wayland/bus environment and ordinary XDG preference locations.
+
+`daemon.json` accepts `ARGO_ANDROID_AUTO_CERT_FILE`, `ARGO_ANDROID_AUTO_KEY_FILE`,
+`ARGO_ANDROID_AUTO_HEVC` and `ARGO_ANDROID_AUTO_PROTOCOL_VERSION`. It starts empty;
+AA requires configured external identity, while Bluetooth does not. The `identity`
+command writes only external paths into this private file. Never add identity to
+common environment settings, the user manager environment, bundles or application
+preferences. `daemon.json` is loaded exclusively when executing the daemon.
+
+All deployment option changes take effect on the next corresponding process start;
+they do not mutate a live session. The installed CLI saves opt-in connection choices:
+
+```bash
+"$HOME/.local/bin/argoctl" autoconnect wireless on
+"$HOME/.local/bin/argoctl" autoconnect music on
+"$HOME/.local/bin/argoctl" autoconnect calls on
+# Each can be independently disabled:
+"$HOME/.local/bin/argoctl" autoconnect wireless off
+```
+
+At application startup Argo restores the existing selected adapter/phone, then
+waits up to 30 seconds for inventory and the corresponding controller. It sends
+at most one initial request per enabled option; native controllers retain their
+existing bounded retry policy. Wireless additionally requires enabled projection,
+a viable selected Wi-Fi interface and wireless availability. This is not a persistent
+reconnect supervisor. Explicit Connect consumes that pending startup request;
+Disconnect/Disable suppress the corresponding pending request, and Forget,
+selection changes or Quit cancel all pending requests for that application run.
+A later application start creates a fresh startup window. AA Exit only hides
+presentation. Connecting music does not override entertainment-source selection
+or start playback automatically; choose the desired source in Media. Calls use
+the existing shared microphone/audio ownership.

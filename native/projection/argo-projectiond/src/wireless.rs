@@ -209,10 +209,16 @@ pub async fn run(
         let _ = p.await;
     }
     drop(call_requests);
-    let _ = call_task.await;
+    if call_task.await.is_err() {
+        c.state
+            .send_modify(|s| s.cleanup_error = "Call worker failed; cleanup unconfirmed".into());
+    }
     drop(music_requests);
     music_cancel.send_modify(|v| *v += 1);
-    let _ = music_task.await;
+    if music_task.await.is_err() {
+        c.state
+            .send_modify(|s| s.cleanup_error = "Music worker failed; cleanup unconfirmed".into());
+    }
     bt.respond(c.state.borrow().prompt.as_ref().map_or(0, |p| p.id), false);
 }
 

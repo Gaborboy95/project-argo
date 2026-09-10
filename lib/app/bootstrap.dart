@@ -1,3 +1,4 @@
+import '../core/lifecycle/managed_application.dart';
 import '../core/lifecycle/application_exit_service.dart';
 import '../core/connectivity/connectivity_service.dart';
 import '../core/media/media_session_service.dart';
@@ -249,14 +250,24 @@ Future<Widget> bootstrapArgoApplication({
         await simulation.startScenario(configuredScenario);
       }
     }
-    services.register(
-      ApplicationExitService(
-        lifecycle: lifecycle,
-        exitProcess: () => exit(0),
-        connectivity: services.contains<ConnectivityService>()
-            ? services.get<ConnectivityService>()
-            : null,
-      ),
+    final connectivity = services.contains<ConnectivityService>()
+        ? services.get<ConnectivityService>()
+        : null;
+    final managed = ManagedApplication(processEnvironment, connectivity);
+    final exitService = ApplicationExitService(
+      lifecycle: lifecycle,
+      exitProcess: () => exit(0),
+      connectivity: connectivity,
+      onCleanExit: managed.completed,
+    );
+    services.register(exitService);
+    await managed.start(exitService);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => managed.rendered = true,
+    );
+    lifecycle.registerShutdown(
+      name: 'deployment.control',
+      shutdown: managed.close,
     );
     final moduleRegistry = AppModuleRegistry();
     registerBuiltInAppModules(moduleRegistry);

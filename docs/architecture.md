@@ -411,3 +411,28 @@ A matching completion snapshot permits application service shutdown, settings
 flush and process exit. A cleanup failure leaves the app open with an error;
 cleanup progress does not mean resources have already stopped. The foreground
 daemon remains available until separately stopped with SIGTERM/Ctrl+C.
+
+## Managed graphical deployment
+
+The user manager owns `argo.target`, the projection daemon and the IHS application.
+The target is part of KDE's graphical session. Daemon IPC readiness precedes app
+startup; app readiness requires the existing IPC handshake and its first rendered
+frame. A private, bounded same-account administration socket supplies readiness
+and invokes `ApplicationExitService`; it carries neither media nor identity and
+does not compete for the projection IPC client lease. Projection IPC remains v6.
+
+The app orders after and is part of the daemon service, so daemon stop/restart
+stops the app first. Quit acknowledges native `stopAll`, runs the application
+lifecycle and requests a nonblocking target stop. A systemd-initiated Quit does
+not enqueue a second target stop that could cancel an update/restart job.
+Invocation-specific clean markers are written after cleanup, not after merely
+requesting it. Failed owned worker cleanup prevents an automatic replacement;
+service timeouts and cgroup killing remain visible as unconfirmed cleanup.
+
+`argoctl` stages immutable-by-convention copies, validates content and recorded
+IHS/IPC contracts, and atomically selects one release for both services. An
+operation lock serializes CLI transactions; a separate selection lock protects
+service launch against selector changes. Update startup failure restores the
+prior selector, with replacement startup conditional on completed cleanup.
+Application settings, daemon identity and administrator grants remain outside
+releases. See [deployment and recovery](setup.md#graphical-session-deployment).

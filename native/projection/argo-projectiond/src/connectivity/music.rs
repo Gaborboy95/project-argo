@@ -824,6 +824,11 @@ pub async fn run(
     music.intent = false;
     if let Err(e) = music.silence().await {
         crate::daemon_log!(Warn, "bluetooth-music", "Owned route cleanup: {e}");
+        music
+            .host
+            .connectivity
+            .state
+            .send_modify(|s| s.cleanup_error = format!("Owned route cleanup: {e}"));
     }
     music
         .host

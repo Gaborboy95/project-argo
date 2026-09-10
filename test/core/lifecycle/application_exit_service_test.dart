@@ -45,6 +45,7 @@ void main() {
         lifecycle: lifecycle,
         connectivity: connection,
         exitProcess: () => order.add('exit'),
+        onCleanExit: () async => order.add('managed stop'),
       );
       final first = service.quit(), second = service.quit();
       await Future<void>.delayed(Duration.zero);
@@ -64,7 +65,7 @@ void main() {
       expect(order, ['persist']);
       release.complete();
       await Future.wait([first, second]);
-      expect(order, ['persist', 'exit']);
+      expect(order, ['persist', 'managed stop', 'exit']);
       await connection.updates.close();
     },
   );

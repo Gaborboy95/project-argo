@@ -100,7 +100,7 @@ Verify unchanged application/native asset hashes against the source bundle. Repl
 the **new directory's** copied build manifest with the source revision, IPC version,
 toolchain/features, dependency/asset hashes and validation scope for this build.
 Keep the previous bundle as rollback. Stop the previous processes before selecting
-the new bundle through the [shared launch workflow](../../docs/setup.md#projection-launch).
+the new bundle through the [shared launch workflow](../../docs/setup.md#graphical-session-deployment).
 No Engine, IHS, Flutter application or native-view rebuild is needed for this path.
 
 For application/IPC changes, build a new application with `emb` and copy only

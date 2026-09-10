@@ -9,10 +9,12 @@ final class ApplicationExitService {
     required this.lifecycle,
     required this.exitProcess,
     this.connectivity,
+    this.onCleanExit,
   });
   final AppLifecycleCoordinator lifecycle;
   final ConnectivityService? connectivity;
   final void Function() exitProcess;
+  final Future<void> Function()? onCleanExit;
   Future<void>? _pending;
   Future<void> quit() =>
       _pending ??= _quit().whenComplete(() => _pending = null);
@@ -48,6 +50,7 @@ final class ApplicationExitService {
       }
     }
     await lifecycle.shutdown();
+    await onCleanExit?.call();
     exitProcess();
   }
 }

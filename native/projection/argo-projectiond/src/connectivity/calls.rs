@@ -759,8 +759,17 @@ pub async fn run(
     if let Err(e) = c.book.clear().await {
         crate::daemon_log!(Warn, "phonebook", "{e}");
     }
+    if c.book.cleanup_uncertain() {
+        c.host.connectivity.state.send_modify(|s| {
+            s.cleanup_error = "Phonebook worker cleanup unconfirmed".into();
+        });
+    }
     if let Err(e) = c.silence().await {
         crate::daemon_log!(Warn, "calls", "HFP cleanup: {e}");
+        c.host
+            .connectivity
+            .state
+            .send_modify(|s| s.cleanup_error = format!("HFP cleanup: {e}"));
     }
 }
 #[cfg(test)]

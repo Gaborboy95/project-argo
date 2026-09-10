@@ -20,7 +20,7 @@ class Store implements SettingsStore {
 class Backend implements ConnectivityService {
   Backend(this.connectivity);
   @override
-  final ConnectivitySnapshot connectivity;
+  ConnectivitySnapshot connectivity;
   final events = StreamController<ConnectivitySnapshot>.broadcast();
   final requests = <(String, String)>[];
   @override
@@ -36,7 +36,120 @@ class Backend implements ConnectivityService {
   }
 }
 
+class Deadline implements Timer {
+  Deadline(Duration _, this.callback);
+  final void Function() callback;
+  @override
+  bool isActive = true;
+  @override
+  int get tick => isActive ? 0 : 1;
+  @override
+  void cancel() => isActive = false;
+  void fire() {
+    if (isActive) {
+      cancel();
+      callback();
+    }
+  }
+}
+
 void main() {
+  test('startup uses selected phone once and explicit stops suppress pending requests', () async {
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: Store(),
+    );
+    const phone = 'hci0/00:11:22:33:44:55';
+    await settings.set(AppSettingKeys.connectivityPhone, phone);
+    final backend = Backend(const ConnectivitySnapshot());
+    final preferences = ConnectivityPreferences(
+      backend,
+      settings,
+      startupConnections: {'wireless', 'music', 'calls'},
+      deadlineTimer: Deadline.new,
+    );
+    await preferences.connectivityCommand('disconnect');
+    await preferences.connectivityCommand('callsDisconnect');
+    const ready = ConnectivitySnapshot(
+      available: true,
+      daemonConnected: true,
+      adapters: [ConnectivityRadio('hci0', 'radio')],
+      devices: [ConnectivityDevice(phone, 'phone', true, false)],
+      selected: phone,
+      enabled: true,
+      wirelessAvailable: true,
+      music: {},
+      calls: {'available': true},
+    );
+    backend.connectivity = ready;
+    backend.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'musicConnect').toList(), [
+      ('musicConnect', phone),
+    ]);
+    expect(
+      backend.requests.any((r) => r.$1 == 'connect' || r.$1 == 'callsConnect'),
+      isFalse,
+    );
+    backend.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    backend.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'musicConnect').length, 1);
+    await preferences.close();
+    final closing = backend.events.close();
+    await Future<void>.delayed(Duration.zero);
+    await closing;
+    await settings.close();
+  });
+
+  test('default off and expired startup window never connect later', () async {
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: Store(),
+    );
+    const phone = 'hci0/00:11:22:33:44:55';
+    await settings.set(AppSettingKeys.connectivityPhone, phone);
+    for (final choices in [
+      <String>{},
+      {'wireless', 'music', 'calls'},
+    ]) {
+      final backend = Backend(const ConnectivitySnapshot());
+      Deadline? deadline;
+      final preferences = ConnectivityPreferences(
+        backend,
+        settings,
+        startupConnections: choices,
+        deadlineTimer: (d, f) => deadline = Deadline(d, f),
+      );
+      deadline?.fire();
+      backend.connectivity = const ConnectivitySnapshot(
+        available: true,
+        daemonConnected: true,
+        adapters: [ConnectivityRadio('hci0', 'radio')],
+        selected: phone,
+        devices: [ConnectivityDevice(phone, 'phone', true, false)],
+        enabled: true,
+        wirelessAvailable: true,
+        music: {},
+        calls: {'available': true},
+      );
+      backend.events.add(backend.connectivity);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        backend.requests.any(
+          (r) => r.$1.endsWith('Connect') || r.$1 == 'connect',
+        ),
+        isFalse,
+      );
+      await preferences.close();
+      final closing = backend.events.close();
+      await Future<void>.delayed(Duration.zero);
+      await closing;
+    }
+    await settings.close();
+  });
+
   test('adapter choice survives enumeration changes and never selects another radio when absent', () async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),

@@ -1,0 +1,22 @@
+[Unit]
+Description=Argo projection and connectivity daemon
+PartOf=argo.target graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=90
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart="%h/.local/bin/argoctl" _run daemon
+ExecStartPost="%h/.local/bin/argoctl" _ready daemon
+ExecStopPost="%h/.local/bin/argoctl" _stopped daemon
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=78
+TimeoutStartSec=25
+TimeoutStopSec=50
+KillMode=mixed
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=argo-projectiond

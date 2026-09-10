@@ -1,0 +1,9 @@
+[Unit]
+Description=Project Argo graphical deployment
+Requisite=graphical-session.target
+After=graphical-session.target
+PartOf=graphical-session.target
+Wants=argo-projectiond.service argo-app.service
+
+[Install]
+WantedBy=graphical-session.target

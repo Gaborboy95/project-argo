@@ -747,6 +747,21 @@ async fn firewall(action: &str, interface: &str) -> Result<(), String> {
             "Projection firewall helper must be root-owned and not group/world writable".into(),
         );
     }
+    // A killed daemon cannot remove a root-owned guard. Retain an intent record
+    // before invoking the helper so a managed replacement cannot assume cleanup.
+    let record = std::env::var_os("ARGO_MANAGED_RESULT")
+        .map(|path| std::path::PathBuf::from(path).with_file_name("firewall-owned.json"));
+    if action == "start"
+        && let Some(record) = &record
+    {
+        let temporary = record.with_extension("json.new");
+        std::fs::write(
+            &temporary,
+            serde_json::json!({"interface": interface}).to_string(),
+        )
+        .map_err(|e| format!("Cannot record owned firewall intent: {e}"))?;
+        std::fs::rename(temporary, record).map_err(|e| e.to_string())?;
+    }
     let status = tokio::time::timeout(
         Duration::from_secs(45),
         tokio::process::Command::new("pkexec")
@@ -759,6 +774,19 @@ async fn firewall(action: &str, interface: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     if !status.success() {
         return Err("Projection firewall authorization/setup failed".into());
+    }
+    if action == "stop"
+        && let Some(record) = &record
+    {
+        match std::fs::remove_file(record) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Guard removed but ownership record cleanup failed: {e}"
+                ));
+            }
+        }
     }
     Ok(())
 }

@@ -381,6 +381,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_probe_does_not_acquire_or_cancel_the_application_lease() {
+        let control = HostControl::from_environment();
+        let held = control.client_lease.clone().try_acquire_owned().unwrap();
+        control.projection_enabled.send_replace(true);
+        let generation = *control.connectivity.client_closed.borrow();
+        let (_tx, snapshot) = watch::channel(ProjectionRuntimeSnapshot::default());
+        let (mut probe, server) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(handle_client(server, snapshot, control.clone()));
+        send(
+            &mut probe,
+            &Message {
+                kind: u16::MAX,
+                payload: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        receive_kind(&mut probe, IPC_ERROR).await;
+        task.await.unwrap();
+        assert!(*control.projection_enabled.borrow());
+        assert_eq!(*control.connectivity.client_closed.borrow(), generation);
+        assert!(control.client_lease.clone().try_acquire_owned().is_err());
+        drop(held);
+    }
+
+    #[tokio::test]
     async fn shutdown_closes_idle_clients_and_removes_owned_socket() {
         let path = test_path();
         let listener = bind(&path).unwrap();

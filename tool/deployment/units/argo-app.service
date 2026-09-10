@@ -1,0 +1,24 @@
+[Unit]
+Description=Argo Wayland application
+Wants=argo-projectiond.service
+After=argo-projectiond.service graphical-session.target
+PartOf=argo.target graphical-session.target argo-projectiond.service
+StartLimitIntervalSec=90
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart="%h/.local/bin/argoctl" _run app
+ExecStartPost="%h/.local/bin/argoctl" _ready app
+ExecStop="%h/.local/bin/argoctl" _stop-app
+ExecStopPost="%h/.local/bin/argoctl" _stopped app
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=78
+TimeoutStartSec=35
+TimeoutStopSec=45
+KillMode=mixed
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=argo-app

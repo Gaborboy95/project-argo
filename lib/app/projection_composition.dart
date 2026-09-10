@@ -73,6 +73,10 @@ Future<ProjectionService> registerProjectionServices({
     final configured = ConnectivityPreferences(
       connectivity,
       services.get<SettingsService>(),
+      startupConnections: (environment['ARGO_STARTUP_CONNECTIONS'] ?? '')
+          .split(',')
+          .where({'wireless', 'music', 'calls'}.contains)
+          .toSet(),
     );
     services.register<ConnectivityService>(configured);
     lifecycle.registerShutdown(
