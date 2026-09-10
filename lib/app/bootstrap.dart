@@ -77,6 +77,7 @@ Future<Widget> bootstrapArgoApplication({
     final vehicleProfiles = VehicleProfileRegistry();
     registerBuiltInVehicleProfiles(vehicleProfiles);
     final services = ServiceRegistry();
+    services.register<ArgoRuntimeMode>(runtimeMode);
     final activeProfile = registerVehicleProfileServices(
       services: services,
       profiles: vehicleProfiles,

@@ -22,12 +22,12 @@ subscriptions/controllers local to their presentation.
 
 [AppModuleRegistry](../lib/app/navigation/app_module_registry.dart) and
 [app_modules.dart](../lib/app/navigation/app_modules.dart) define Home, Vehicle,
-Climate, Parking, Media and Settings. The shell retains pages in an IndexedStack.
+Parking, Media, Calls and Settings. Climate is a dock sheet, not a destination. The shell retains pages in an IndexedStack.
 Navigation away is not disposal. ProjectionInputScope explicitly communicates
 input ownership; hiding projection, replacing a session/stream and changing
 presentation geometry cancel accepted gestures. Stable `home` composes
 [ProjectionPage](../lib/features/projection/projection_page.dart); `media` composes
-native Now Playing. AppShell removes its chrome only while Home has usable video and supplies small
+native Now Playing. AppShell retains the bottom dock on every destination and supplies small
 presentation callbacks, with no page/navigation concepts in ProjectionService,
 Rust or Veloce. Explicit Home actions request activation (including repeated Home);
 builds and metadata never do. Activation writes are coalesced while in flight.
@@ -37,11 +37,40 @@ while retaining the controller across host navigation; session/stream identity
 keys replace it on a true replacement. Media has no native consumer. ProjectionView
 cancels gestures on ownership loss but does not send focus commands from
 creation/update/disposal. Navigation owns hides, guarded against later Home actions
-and old session IDs. Active video uses an unobstructed, aspect-fitted viewport
-with black letterboxing. AA Exit returns to Media. Unavailable/waiting video has
-no PlatformViewLayer: Home shows centered connection status with normal shell
-navigation. The renderer diagnostic also has no floating controls; stop it from
-its launcher terminal.
+and old session IDs. Active video uses an aspect-fitted viewport with black letterboxing. Modal sheets
+overlay the existing PlatformViewLayer. They cancel accepted projection gestures and
+block new input without hiding, recreating or resizing that layer. AA Exit returns to Media. Unavailable/waiting video has
+no visible PlatformViewLayer: Home shows centered connection status above the dock.
+The renderer diagnostic uses the same dashboard and native composition path; stop
+it from its launcher terminal.
+
+## Dashboard geometry and controls
+
+[DashboardGeometry](../lib/app/shell/dashboard_geometry.dart) allocates logical
+rectangles from LayoutBuilder constraints inside the real safe area. On the 4:3
+dashboard, the primary region is full width with height `width × 9/16`. The dock
+has a viewport-derived height, capped at 160 logical pixels; the thin media slot
+is reserved even when hidden. Short landscape development windows reduce the
+primary allocation and aspect-fit video within it. Narrow docks scroll horizontally.
+There is no portrait dashboard, reference canvas or application scale transform.
+
+Appearance control size affects host fonts, icons and touch targets inside those
+rectangles. It cannot change stream negotiation, AA DPI or Flutter's DPR. Rendering
+and input continue to use the same ProjectionViewGeometry and ProjectionTouchMapper.
+Window metric changes update layout and cancel any active projection gesture.
+
+Dock Home resumes projection; Media toggles only the strip. Apps opens registered
+destinations, including the full Media page; Settings stays directly accessible.
+Camera is unavailable. Climate is presentation-only: normal controls are disabled,
+while `ARGO_MODE=simulation` labels local interactive values as a demo. The handle
+supports dragging between closed/expanded states. Neither sheet publishes vehicle
+feedback or sends CAN commands. The native session/view remains mounted beneath it.
+
+The volume gesture starts from AudioService's current level, applies relative
+vertical motion and keeps one in-flight write plus one replaceable target, with a
+40 ms coalescing cadence. Release commits the final level; cancellation/focus loss
+retains the last live change and clears the indicator. Tap mutes when supported.
+No audio controller, focus policy or projection-owned media pipeline is replaced.
 
 ## Three different kinds of state
 
@@ -302,7 +331,7 @@ published on the vehicle signal bus or exposed as CAN telemetry.
 ## Shared appearance and native-page background
 
 Appearance uses the existing SettingsService and lifecycle-owned persistence.
-The two typed preferences are plain strings in core; Flutter ThemeData creation
+The typed preferences are theme mode, seed color and host control size; Flutter ThemeData creation
 and mode resolution live in [ArgoTheme](../lib/app/theme/argo_theme.dart).
 [ArgoApp](../lib/app/app.dart) listens for appearance changes and updates
 MaterialApp's light theme, dark theme and ThemeMode. Its StreamBuilder owns its
@@ -318,7 +347,7 @@ turning every status indicator into the accent colour.
 background around normal shell content. Feature pages should avoid adding an
 opaque full-page background unless their content requires it. This is the future
 placement boundary for backgrounds, not an implemented wallpaper/shader system.
-Fullscreen projection bypasses this background and retains its own black paint.
+The projection region bypasses this background and retains its own black paint.
 The IndexedStack, shell and native surface are not keyed by appearance; theme
 updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
 System-mode resolution uses Flutter's host brightness only; a future normalized

@@ -43,7 +43,6 @@ void main() {
       orderedEquals([
         'home',
         'vehicle',
-        'climate',
         'parking',
         'media',
         'settings',

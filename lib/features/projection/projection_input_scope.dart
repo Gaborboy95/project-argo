@@ -5,9 +5,16 @@ class ProjectionInputScope extends InheritedWidget {
   const ProjectionInputScope({
     super.key,
     required this.active,
+    this.blocked = false,
     required super.child,
   });
   final bool active;
+  final bool blocked;
+  static bool blockedOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<ProjectionInputScope>()
+          ?.blocked ??
+      false;
 
   static bool activeOf(BuildContext context) =>
       context
@@ -17,5 +24,5 @@ class ProjectionInputScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(ProjectionInputScope oldWidget) =>
-      active != oldWidget.active;
+      active != oldWidget.active || blocked != oldWidget.blocked;
 }

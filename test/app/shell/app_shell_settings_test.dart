@@ -18,6 +18,36 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
+    'short landscape windows retain a scrollable dock and modal dismissal',
+    (tester) async {
+      final harness = await _createHarness();
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      for (final size in [
+        const Size(640, 360),
+        const Size(480, 320),
+        const Size(320, 240),
+      ]) {
+        tester.view.physicalSize = size;
+        await tester.pumpWidget(harness.widget);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('climate-handle')));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Vehicle climate controls unavailable'),
+          findsOneWidget,
+        );
+        await tester.tap(find.byTooltip('Close climate'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpWidget(const SizedBox());
+      await harness.settings.close();
+    },
+  );
+
+  testWidgets(
     'projection editor recovers saved pairs and persists pending requests without changing active',
     (tester) async {
       final store = _MemorySettingsStore(
@@ -126,13 +156,17 @@ void main() {
     await tester.pumpWidget(harness.widget);
 
     expect(harness.store.writeCount, 0);
-    await tester.tap(find.byType(InkWell).at(1));
+    await tester.tap(find.byTooltip('Apps'));
+    await tester.pump();
+    await tester.tap(find.text('climate'));
     await tester.pump();
     await harness.settings.flush();
 
     expect(harness.settings.get(AppSettingKeys.lastModule), 'climate');
     expect(harness.store.writeCount, 1);
-    await tester.tap(find.byType(InkWell).at(1));
+    await tester.tap(find.byTooltip('Apps'));
+    await tester.pump();
+    await tester.tap(find.text('climate'));
     await tester.pump();
     await harness.settings.flush();
     expect(harness.store.writeCount, 1);

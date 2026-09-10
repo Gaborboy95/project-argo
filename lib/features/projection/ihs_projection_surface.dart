@@ -151,8 +151,8 @@ class _IhsProjectionController extends PlatformViewController {
       if (_disposed) return;
       if (diagnostics) {
         debugPrint(
-          'Argo renderer test: IHS create acknowledged id=$viewId; '
-          'PlatformViewLayer composition, logical size=$size',
+          'Argo projection: IHS create acknowledged id=$viewId; '
+          'PlatformViewLayer composition, logical size=${size.width}x${size.height}',
         );
       }
       // IHS acknowledges the ID after factory dispatch, but this installed host

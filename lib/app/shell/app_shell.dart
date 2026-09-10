@@ -1,3 +1,10 @@
+import 'dashboard_geometry.dart';
+import 'dashboard_dock.dart';
+import 'dashboard_media_strip.dart';
+import 'dashboard_climate.dart';
+import '../../core/audio/audio_service.dart';
+import '../../core/media/media_session_service.dart';
+import '../../core/runtime/argo_runtime_mode.dart';
 import 'argo_background.dart';
 
 import 'dart:async';
@@ -8,7 +15,6 @@ import '../../core/settings/app_setting_keys.dart';
 import '../../core/projection/projection_service.dart';
 import '../../core/projection/projection_models.dart';
 import '../../core/projection/projection_types.dart';
-import '../../core/projection/projection_render_test.dart';
 import '../../features/projection/projection_page.dart';
 import '../../core/settings/settings_service.dart';
 import '../argo_environment.dart';
@@ -37,17 +43,10 @@ class _AppShellState extends State<AppShell> {
   int _navigationEpoch = 0;
   bool get _home =>
       widget.environment.moduleRegistry.modules[_selectedIndex].id == 'home';
-  bool get _fullscreen =>
-      _home &&
-      _projection != null &&
-      ((widget.environment.services.contains<ProjectionRenderTest>() &&
-              widget.environment.services
-                  .get<ProjectionRenderTest>()
-                  .enabled) ||
-          (_waitingSession == null &&
-              projectionVideoUsable(
-                selectedProjectionSession(_projection!.current),
-              )));
+  bool _mediaVisible = true, _apps = false;
+  double _climate = 0;
+  double? _volume;
+  bool get _modal => _apps || _climate > 0;
   final _contentKey = GlobalKey();
 
   SettingsService get _settings =>
@@ -179,44 +178,196 @@ class _AppShellState extends State<AppShell> {
       waiting: _waitingSession != null,
       error: _activationError,
       child: Scaffold(
-        body: _fullscreen
-            ? _buildContent(modules)
-            : ArgoBackground(
-                child: SafeArea(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final useSideNavigation = constraints.maxWidth >= 1000;
-
-                      return Column(
-                        children: [
-                          const _StatusBar(),
-                          Expanded(
-                            child: useSideNavigation
-                                ? Row(
-                                    children: [
-                                      _SideNavigation(
-                                        modules: modules,
-                                        selectedIndex: _selectedIndex,
-                                        onSelected: _selectModule,
-                                      ),
-                                      const VerticalDivider(width: 1),
-                                      Expanded(child: _buildContent(modules)),
-                                    ],
-                                  )
-                                : _buildContent(modules),
+        body: ArgoBackground(
+          child: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final geometry = DashboardGeometry(constraints.biggest);
+                final scale = _settings.get(
+                  AppSettingKeys.appearanceControlSize,
+                );
+                final services = widget.environment.services;
+                final sheetHeight = (geometry.dockTop * .65).clamp(0.0, 420.0);
+                return Stack(
+                  children: [
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      height: geometry.primaryHeight,
+                      child: _buildContent(modules),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: geometry.dockHeight,
+                      height: geometry.mediaHeight,
+                      child: Visibility(
+                        visible: _mediaVisible,
+                        maintainState: true,
+                        child: DashboardMediaStrip(
+                          scale: scale,
+                          media: services.contains<MediaSessionService>()
+                              ? services.get<MediaSessionService>()
+                              : null,
+                        ),
+                      ),
+                    ),
+                    if (_modal)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: 0,
+                        bottom: geometry.dockHeight,
+                        child: ModalBarrier(
+                          color: Colors.black45,
+                          dismissible: true,
+                          onDismiss: () => setState(() {
+                            _climate = 0;
+                            _apps = false;
+                          }),
+                        ),
+                      ),
+                    if (_apps)
+                      Positioned(
+                        left: 12,
+                        right: 12,
+                        bottom: geometry.dockHeight,
+                        height: sheetHeight,
+                        child: Material(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHigh,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(24),
                           ),
-                          if (!useSideNavigation)
-                            _BottomNavigation(
-                              modules: modules,
-                              selectedIndex: _selectedIndex,
-                              onSelected: _selectModule,
+                          child: SingleChildScrollView(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  for (var i = 0; i < modules.length; i++)
+                                    SizedBox(
+                                      width: 140 * scale,
+                                      child: ListTile(
+                                        leading: Icon(modules[i].icon),
+                                        title: Text(modules[i].label),
+                                        onTap: () {
+                                          setState(() => _apps = false);
+                                          _selectModule(i);
+                                        },
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-              ),
+                          ),
+                        ),
+                      ),
+                    if (_climate > 0)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: geometry.dockHeight,
+                        height: sheetHeight * _climate,
+                        child: DashboardClimate(
+                          demo:
+                              services.contains<ArgoRuntimeMode>() &&
+                              services.get<ArgoRuntimeMode>() ==
+                                  ArgoRuntimeMode.simulation,
+                          onDismiss: () => setState(() => _climate = 0),
+                        ),
+                      ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: geometry.dockHeight,
+                      child: DashboardDock(
+                        key: const ValueKey('dashboard-dock'),
+                        scale: scale,
+                        home: _home,
+                        mediaVisible: _mediaVisible,
+                        onHome: () {
+                          setState(() {
+                            _climate = 0;
+                            _apps = false;
+                          });
+                          _selectId('home');
+                        },
+                        onMedia: () =>
+                            setState(() => _mediaVisible = !_mediaVisible),
+                        onApps: () => setState(() {
+                          _apps = !_apps;
+                          _climate = 0;
+                        }),
+                        onSettings: () {
+                          setState(() {
+                            _apps = false;
+                            _climate = 0;
+                          });
+                          _selectId('settings');
+                        },
+                        onClimate: () => setState(() {
+                          _apps = false;
+                          _climate = _climate > 0 ? 0 : 1;
+                        }),
+                        onClimateDrag: (delta) => setState(() {
+                          _apps = false;
+                          _climate = (_climate - delta / sheetHeight).clamp(
+                            0.0,
+                            1.0,
+                          );
+                        }),
+                        onClimateEnd: () =>
+                            setState(() => _climate = _climate >= .2 ? 1 : 0),
+                        audio: services.contains<AudioService>()
+                            ? services.get<AudioService>()
+                            : null,
+                        onVolume: (v) => setState(() => _volume = v),
+                      ),
+                    ),
+                    if (_volume != null)
+                      Positioned(
+                        right: 16,
+                        bottom: geometry.dockHeight + 12,
+                        child: IgnorePointer(
+                          child: Material(
+                            elevation: 8,
+                            borderRadius: BorderRadius.circular(24),
+                            child: SizedBox(
+                              width: 64,
+                              height: 160,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text('${(_volume! * 100).round()}%'),
+                                  const SizedBox(height: 12),
+                                  SizedBox(
+                                    width: 8,
+                                    height: 90,
+                                    child: RotatedBox(
+                                      quarterTurns: 3,
+                                      child: LinearProgressIndicator(
+                                        value: _volume,
+                                        minHeight: 8,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -230,6 +381,7 @@ class _AppShellState extends State<AppShell> {
           ProjectionInputScope(
             key: ValueKey(module.id),
             active: module == modules[_selectedIndex],
+            blocked: _modal,
             child: Builder(
               builder: (context) =>
                   module.builder(context, widget.environment.services),
@@ -237,6 +389,13 @@ class _AppShellState extends State<AppShell> {
           ),
       ],
     );
+  }
+
+  void _selectId(String id) {
+    final index = widget.environment.moduleRegistry.modules.indexWhere(
+      (m) => m.id == id,
+    );
+    if (index >= 0) _selectModule(index);
   }
 
   void _selectModule(int index, {bool phoneRequested = false}) {
@@ -291,129 +450,6 @@ class _AppShellState extends State<AppShell> {
           ),
         );
       }),
-    );
-  }
-}
-
-class _StatusBar extends StatelessWidget {
-  const _StatusBar();
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Row(
-          children: [
-            Text('ARGO', style: Theme.of(context).textTheme.labelLarge),
-            const Spacer(),
-            const Icon(Icons.wifi, size: 17),
-            const SizedBox(width: 12),
-            const Icon(Icons.bluetooth, size: 17),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _BottomNavigation extends StatelessWidget {
-  const _BottomNavigation({
-    required this.modules,
-    required this.selectedIndex,
-    required this.onSelected,
-  });
-
-  final List<AppModule> modules;
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 58,
-      child: Row(
-        children: [
-          for (var index = 0; index < modules.length; index++)
-            Expanded(
-              child: _NavigationButton(
-                label: modules[index].label,
-                icon: modules[index].icon,
-                selected: index == selectedIndex,
-                onTap: () => onSelected(index),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _NavigationButton extends StatelessWidget {
-  const _NavigationButton({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    return InkWell(
-      onTap: onTap,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            icon,
-            size: 22,
-            color: selected ? colors.primary : colors.onSurfaceVariant,
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: selected ? colors.primary : colors.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SideNavigation extends StatelessWidget {
-  const _SideNavigation({
-    required this.modules,
-    required this.selectedIndex,
-    required this.onSelected,
-  });
-
-  final List<AppModule> modules;
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return NavigationRail(
-      selectedIndex: selectedIndex,
-      onDestinationSelected: onSelected,
-      labelType: NavigationRailLabelType.all,
-      destinations: [
-        for (final module in modules)
-          NavigationRailDestination(
-            icon: Icon(module.icon),
-            label: Text(module.label),
-          ),
-      ],
     );
   }
 }

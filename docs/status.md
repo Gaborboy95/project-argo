@@ -6,9 +6,10 @@
 |---|---|
 | Application | Retained module navigation, typed persistent settings, diagnostics and lifecycle cleanup. |
 | Voice/calls | PipeWire HFP call control and owned duplex routes; shared selected microphone, mute and AA PCM capture. Explicit PBAP contacts/recent-call import. Physical ADC and PBAP phone acceptance pending. |
-| Appearance | Material 3 light/dark/system modes and seed color; shared native-page background. |
+| Appearance | Material 3 light/dark/system modes, seed color and persisted host control size; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
+| Dashboard | Measured 4:3 layout, stationary dock/media slot, registered-app drawer, modal climate presentation/demo; Camera unavailable. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -32,6 +33,16 @@ The local Wayland-EGL IHS descriptor correction has bounded renderer stability
 coverage. Its exact source requirement is in the
 [build reference](../tool/projection/README.md#ihs-base-and-local-patch).
 A short renderer run is not long-term phone/media endurance validation.
+
+The dashboard has widget coverage at multiple 4:3 sizes (including 2000×1500),
+fractional DPRs, and short landscape windows. Native IDs and physical rectangles
+survive media toggles, modal sheets and control-size changes; modal gesture
+cancellation and AA Exit/resume have automated coverage. The real Mu renderer
+has produced a 2048×1152 projection region in a measured 2048×1536 IHS/Wayland
+buffer at 125% scaling. Phone touch alignment, modal occlusion during live AA,
+physical volume dragging and controlled 720p/1080p picture comparisons still need
+hardware acceptance. No zero-artifact or phone-endurance claim follows from these
+geometry tests.
 
 ## Experimental and untested behavior
 

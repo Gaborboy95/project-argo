@@ -1,4 +1,6 @@
 import 'package:argo/app/app.dart';
+import 'package:argo/app/shell/dashboard_dock.dart';
+import 'package:argo/app/shell/dashboard_climate.dart';
 import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/media/media_state.dart';
 import 'package:argo/integrations/projection/projection_media_source.dart';
@@ -292,7 +294,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(service.activations, ['session']);
-      expect(find.text('ARGO'), findsOneWidget);
+      expect(find.byTooltip('Home'), findsOneWidget);
       expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
       const metadata = ProjectionSessionMetadata(
         revision: 1,
@@ -316,7 +318,7 @@ void main() {
       expect(tester.layers.whereType<TextureLayer>(), isEmpty);
       final fitted = const ProjectionViewGeometry(
         width: 800,
-        height: 600,
+        height: 450,
         devicePixelRatio: 2,
       ).fit(1280, 720)!;
       expect(
@@ -326,6 +328,59 @@ void main() {
       expect(fitted.physicalWidth, 1600);
       final beforeRect = tester.getRect(find.byType(PlatformViewSurface));
       final beforeVisibility = List.of(service.visibility);
+      // Actual PlatformViewLayer, not just a calculated rectangle. Exercise
+      // metrics changes and all host-only dashboard state on the same session.
+      for (final metrics in [
+        (const Size(800, 600), 1.0),
+        (const Size(1024, 768), 1.25),
+        (const Size(2000, 1500), 1.25),
+        (const Size(2048, 1536), 1.25),
+        (const Size(1600, 1200), 2.0),
+      ]) {
+        tester.view.physicalSize = metrics.$1;
+        tester.view.devicePixelRatio = metrics.$2;
+        await tester.pumpAndSettle();
+        final rectangle = tester.getRect(find.byType(PlatformViewSurface));
+        expect(rectangle.width * metrics.$2, closeTo(metrics.$1.width, .001));
+        expect(rectangle.height / rectangle.width, closeTo(9 / 16, .00001));
+        final dock = tester.getRect(find.byType(DashboardDock));
+        for (final size in [1.0, 1.15, 1.3]) {
+          await settings.set(AppSettingKeys.appearanceControlSize, size);
+          await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('Media strip'));
+          await tester.tap(find.byKey(const ValueKey('climate-handle')));
+          await tester.pumpAndSettle();
+          expect(find.byType(DashboardClimate), findsOneWidget);
+          expect(tester.getRect(find.byType(PlatformViewSurface)), rectangle);
+          expect(tester.getRect(find.byType(DashboardDock)), dock);
+          expect(
+            tester.layers.whereType<PlatformViewLayer>().single.viewId,
+            nativeId,
+          );
+          await tester.tap(find.byTooltip('Close climate'));
+          await tester.pumpAndSettle();
+        }
+      }
+      await settings.set(AppSettingKeys.appearanceControlSize, 1.0);
+      await tester.pumpAndSettle();
+      final heldModal = await tester.startGesture(
+        const Offset(400, 200),
+        pointer: 50,
+      );
+      await tester.tap(find.byKey(const ValueKey('climate-handle')));
+      await tester.pumpAndSettle();
+      expect(backend.touches.last.phase, ProjectionTouchPhase.cancel);
+      final touchCount = backend.touches.length;
+      await tester.tapAt(
+        const Offset(400, 100),
+      ); // Barrier dismisses; no phone input.
+      await heldModal.up();
+      await tester.pumpAndSettle();
+      expect(backend.touches, hasLength(touchCount));
+      backend.touches.clear();
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      expect(calls.where((c) => c.method == 'dispose'), isEmpty);
+
       await settings.set(AppSettingKeys.appearanceThemeMode, 'light');
       await settings.set(AppSettingKeys.appearanceSeedColor, '#006A6A');
       await tester.pumpAndSettle();
@@ -376,7 +431,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('ARGO'), findsOneWidget);
+      expect(find.byTooltip('Home'), findsOneWidget);
       backend.emit(
         _liveSnapshot(
           stream: streamAt(1),
@@ -402,17 +457,17 @@ void main() {
       expect(calls.where((c) => c.method == 'create'), hasLength(1));
       expect(calls.where((c) => c.method == 'dispose'), isEmpty);
       service.activationHold = Completer<void>();
-      await tester.tap(find.text('Home'));
+      await tester.tap(find.byTooltip('Home'));
       await tester.pumpAndSettle();
       await tester.tap(
-        find.text('Home'),
+        find.byTooltip('Home'),
       ); // explicit repeated Home, coalesced while in flight
       await tester.pump();
       expect(service.activations, ['session', 'session']);
       service.activationHold!.complete();
       await tester.pump();
       await tester.tap(
-        find.text('Home'),
+        find.byTooltip('Home'),
       ); // already selected, request again after completion
       await tester.pump();
       expect(service.activations, ['session', 'session', 'session']);
@@ -431,10 +486,9 @@ void main() {
       expect(service.connections, isEmpty);
       tester.view.physicalSize = const Size(1000, 700);
       await tester.pumpAndSettle();
-      expect(
-        tester.getSize(find.byType(PlatformViewSurface)),
-        const Size(500, 281.25),
-      );
+      final smallSize = tester.getSize(find.byType(PlatformViewSurface));
+      expect(smallSize.width, closeTo(243 * 16 / 9, .00001));
+      expect(smallSize.height, closeTo(243, .00001));
       backend.emit(
         _liveSnapshot(
           stream: streamAt(2),
@@ -461,7 +515,7 @@ void main() {
       // rapid Exit/resume cycles must never get stuck on black/cached AA video.
       await tester.pump(const Duration(minutes: 4));
       for (var revision = 4; revision < 8; revision++) {
-        await tester.tap(find.text('Home'));
+        await tester.tap(find.byTooltip('Home'));
         await tester.pump();
         backend.emit(
           _liveSnapshot(
@@ -479,10 +533,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Synthetic track'), findsNothing);
       expect(calls.where((c) => c.method == 'dispose'), hasLength(1));
-      await tester.tap(find.text('Home'));
+      await tester.tap(find.byTooltip('Home'));
       await tester.pumpAndSettle();
       expect(find.text('Back to Argo'), findsNothing);
-      expect(find.text('ARGO'), findsOneWidget);
+      expect(find.byTooltip('Home'), findsOneWidget);
       expect(find.text('No device'), findsOneWidget);
       expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
       await tester.pumpWidget(const SizedBox());

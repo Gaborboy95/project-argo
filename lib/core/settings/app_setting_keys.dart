@@ -27,6 +27,18 @@ abstract final class AppSettingKeys {
       throw const FormatException('Expected 2.4ghz or 5ghz.');
     },
   );
+  static final appearanceControlSize = SettingKey<double>(
+    id: 'appearance.controlSize',
+    defaultValue: 1.0,
+    serialize: _serializeDouble,
+    deserialize: (value) {
+      if (value is num && [1.0, 1.15, 1.3].contains(value.toDouble())) {
+        return value.toDouble();
+      }
+      throw const FormatException('Expected control size 1.0, 1.15 or 1.3.');
+    },
+  );
+
   static final appearanceThemeMode = SettingKey<String>(
     id: 'appearance.themeMode',
     defaultValue: 'dark',
@@ -153,6 +165,7 @@ abstract final class AppSettingKeys {
     ..register(microphoneInput)
     ..register(connectivityBand)
     ..register(appearanceThemeMode)
+    ..register(appearanceControlSize)
     ..register(appearanceSeedColor)
     ..register(lastModule)
     ..register(audioMasterVolume)

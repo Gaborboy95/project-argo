@@ -4,8 +4,9 @@ import 'package:flutter/material.dart';
 
 /// Only daemon-owned cache references are readable; no phone URLs or arbitrary paths.
 class MediaArtwork extends StatelessWidget {
-  const MediaArtwork({super.key, this.path});
+  const MediaArtwork({super.key, this.path, this.size = 192});
   final String? path;
+  final double size;
   static bool allowed(String path) {
     final root = Platform.environment['XDG_RUNTIME_DIR'];
     if (root == null) return false;
@@ -21,7 +22,7 @@ class MediaArtwork extends StatelessWidget {
       child: Center(
         child: Icon(
           Icons.music_note_rounded,
-          size: 64,
+          size: size / 3,
           color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       ),
@@ -29,10 +30,10 @@ class MediaArtwork extends StatelessWidget {
     return Semantics(
       label: path == null ? 'Music artwork unavailable' : 'Album artwork',
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(size / 10),
         child: SizedBox(
-          width: 192,
-          height: 192,
+          width: size,
+          height: size,
           child: path != null && allowed(path!)
               ? Image.file(
                   File(path!),

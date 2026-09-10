@@ -350,3 +350,19 @@ wire version; the daemon logs the phone's returned major/minor. A higher protoco
 number does not itself add channels or UI features. Phone-app and AndroidX Car App
 SDK release numbers use separate version schemes. Wire versions beyond 1.7 are
 not implemented from unverified assumptions.
+
+## Dashboard strip and volume
+
+The dock's Media shortcut shows/hides a reserved thin strip containing the selected
+MediaSessionService source's artwork, title/artist and supported playback commands.
+Unsupported commands are omitted; unknown artwork/metadata stays unavailable. Use
+Apps → Media for source selection and the full Now Playing page. The strip toggle
+is independent of AA Exit, which navigates to Media while retaining the session.
+Selecting Home resumes that session; showing a strip or climate sheet does not
+change the selected entertainment source or projection focus.
+
+Tap the dock volume control to mute, or drag vertically from its current level for
+live relative adjustment. Its floating indicator disappears on release/cancel;
+changes already heard are retained. Accessibility increase/decrease adjusts five
+percentage points. AudioService and the selected host output own volume capability;
+the control is disabled when that backend is unavailable.

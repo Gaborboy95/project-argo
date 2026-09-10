@@ -13,7 +13,6 @@ import '../../core/projection/projection_settings_service.dart';
 import '../../core/projection/projection_presentation_options.dart';
 import '../../core/projection/projection_render_test.dart';
 import '../../core/vehicle/vehicle_data_service.dart';
-import '../../features/climate/climate_page.dart';
 import '../../features/projection/projection_page.dart';
 import '../../features/media/media_page.dart';
 import '../../features/parking/parking_page.dart';
@@ -49,14 +48,6 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
           vehicleData: services.get<VehicleDataService>(),
           power: services.get<HeadUnitPowerService>(),
         ),
-      ),
-    )
-    ..register(
-      AppModule(
-        id: 'climate',
-        label: 'Climate',
-        icon: Icons.air_outlined,
-        builder: (_, _) => const ClimatePage(),
       ),
     )
     ..register(

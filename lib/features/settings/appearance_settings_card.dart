@@ -44,6 +44,35 @@ class AppearanceSettingsCard extends StatelessWidget {
             children: [
               Text('Appearance', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 12),
+              DropdownButtonFormField<double>(
+                initialValue: settings.get(
+                  AppSettingKeys.appearanceControlSize,
+                ),
+                decoration: const InputDecoration(labelText: 'Control size'),
+                items: [
+                  for (final entry in [
+                    (1.0, 'Standard'),
+                    (1.15, 'Large'),
+                    (1.3, 'Extra large'),
+                  ])
+                    DropdownMenuItem(value: entry.$1, child: Text(entry.$2)),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    _save(
+                      context,
+                      () => settings.set(
+                        AppSettingKeys.appearanceControlSize,
+                        value,
+                      ),
+                    );
+                  }
+                },
+              ),
+              const Text(
+                'Host controls only. Projection area, AA DPI and stream resolution stay unchanged.',
+              ),
+              const SizedBox(height: 12),
               DropdownButtonFormField<String>(
                 key: ValueKey(('theme-mode', mode)),
                 initialValue: mode,
@@ -103,6 +132,7 @@ class AppearanceSettingsCard extends StatelessWidget {
               TextButton(
                 onPressed: () => _save(context, () async {
                   await settings.reset(AppSettingKeys.appearanceThemeMode);
+                  await settings.reset(AppSettingKeys.appearanceControlSize);
                   await settings.reset(AppSettingKeys.appearanceSeedColor);
                 }),
                 child: const Text('Reset appearance to defaults'),

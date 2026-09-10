@@ -75,7 +75,9 @@ class _ProjectionViewState extends State<ProjectionView>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _viewId = View.of(context).viewId;
-    final active = ProjectionInputScope.activeOf(context);
+    final active =
+        ProjectionInputScope.activeOf(context) &&
+        !ProjectionInputScope.blockedOf(context);
     if (!active) _cancelAll();
     _ownsInput = active;
   }
@@ -291,12 +293,16 @@ class _ProjectionViewState extends State<ProjectionView>
     if (!widget.geometryDiagnostics) return;
     final content = widget.stream?.contentInsets ?? const ProjectionInsets();
     final safe = widget.stream?.safeInsets ?? const ProjectionInsets();
+    final flutterView = View.of(context);
     final description =
         'source=${fitted.sourceWidth}x${fitted.sourceHeight} '
         'viewportLogical=${view.width}x${view.height} '
         'fittedLogical=${fitted.width}x${fitted.height} offset=${fitted.left},${fitted.top} '
         'dpr=${view.devicePixelRatio} destinationPhysical=${fitted.physicalWidth}x${fitted.physicalHeight} '
         'scale=${fitted.scaleX},${fitted.scaleY} '
+        'flutterPhysical=${flutterView.physicalSize.width}x${flutterView.physicalSize.height} '
+        'displayMetadata=${flutterView.platformDispatcher.displays.map((d) => '${d.id}:${d.size.width}x${d.size.height}@${d.devicePixelRatio}').join(',')} '
+        'surface=PlatformViewLayer filtering=IHS-owned (not Flutter Image) '
         'contentInsets=${content.left},${content.top},${content.right},${content.bottom} '
         'safeInsets=${safe.left},${safe.top},${safe.right},${safe.bottom} '
         'oneToOne=${fitted.isOneToOne}';
@@ -317,7 +323,7 @@ class _ProjectionViewState extends State<ProjectionView>
       creationParams: <String, Object?>{
         if (widget.stream != null) 'streamId': widget.stream!.id,
       },
-      diagnostics: widget.isRendererTest,
+      diagnostics: widget.isRendererTest || widget.geometryDiagnostics,
     );
   }
 
