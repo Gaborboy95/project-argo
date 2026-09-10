@@ -278,6 +278,10 @@ never silently falls back to another microphone. With no saved selection, a sole
 available non-Bluetooth input can be selected automatically. Microphone mute is
 session-local and applies to both providers. Input changes require capture to stop.
 
+The AA microphone descriptor retains `available_while_in_call=true`, matching the
+established discovery contract and the pinned LIVI reference. This protocol
+advertisement does not grant concurrent access to the host input: capture requests
+still require the selected input and the shared native lease.
 A single native lease prevents simultaneous AA/HFP capture. For multichannel ADCs,
 PipeWire performs mono conversion for the selected source. Choose a dedicated mix
 node when channel weights, AUX channel mapping or pre-processing are needed;

@@ -271,10 +271,18 @@ firewall prompt must not be mistaken for late detection or successful teardown.
   NetworkManager D-Bus error name; profile values and remote error bodies are redacted.
   An invalid profile is a configuration error, not evidence of missing permissions. Do not change country settings to bypass a refusal.
 - Waiting for Bluetooth: check the selected bond, phone prompts, HFP trigger result
-  and AA profile/channel conflicts.
+  and AA profile/channel conflicts. `br-connection-busy` means BlueZ has another
+  connection operation underway. Argo continues awaiting authenticated RFCOMM;
+  a later successful bootstrap supersedes that trigger warning.
 - Accepted start but no TCP: check AP association/DHCP and interface firewall policy.
-- TCP admitted but no projection: inspect AA version/TLS/channel errors. Do not replace
-  working identity files or weaken signature checks as a generic troubleshooting step.
+- TCP admitted but no projection: inspect AA version/TLS/channel errors. DEBUG
+  confirms completed discovery transmission and the frozen display configuration.
+  Transport EOF includes a bounded scalar summary: startup versus established,
+  whether discovery was sent, the last validated RX channel/message ID, the last
+  completed channel-handler reply, and elapsed time after TLS. Message IDs in this
+  summary are decimal. No payloads are retained. A peer close does not disclose the
+  phone's reason; use a TRACE capture of one attempt if the checkpoints are inconclusive.
+  Do not replace working identity files or weaken signature checks as a generic fix.
 - Cleanup pending: resolve the owned AP/guard state before another connection.
 
 Mu lifecycle validation:

@@ -226,6 +226,12 @@ async fn run_engine(
     let mut microphone_frame = None;
     let mut awaiting_video = false;
     let mut streaming = false;
+    // Scalar checkpoints only, bounded for the entire session. Do not retain
+    // bodies, identities, media, or credentials for disconnect diagnostics.
+    let mut discovery_sent = false;
+    let mut established = false;
+    let mut last_rx = None;
+    let mut last_reply = None;
     let mut ping_enabled = false;
 
     let mut next_ping = tokio::time::Instant::now() + Duration::from_millis(1500);
@@ -352,6 +358,7 @@ async fn run_engine(
                 continue;
             }
             let effects = channels.handle(packet.channel, message_id, &body[2..])?;
+            last_rx = Some((packet.channel, message_id));
             // Unknown/ignored and rejected optional messages have no validated
             // effect. Neither they nor incomplete TLS/AA frames renew the timer.
             if effects
@@ -444,7 +451,23 @@ async fn run_engine(
                             liveness.valid();
                         }
                     }
-                    Effect::Reply(reply) => send(transport, &mut tls, reply).await?,
+                    Effect::Reply(reply) => {
+                        let checkpoint = (reply.channel, reply.id);
+                        send(transport, &mut tls, reply).await?;
+                        last_reply = Some(checkpoint);
+                        if checkpoint == (0, 6) {
+                            discovery_sent = true;
+                            crate::daemon_log!(
+                                Debug,
+                                "aa-session",
+                                "AA discovery response sent: {}x{} {} FPS {} DPI; awaiting phone channel opens",
+                                config.display.width,
+                                config.display.height,
+                                config.display.fps,
+                                config.display.dpi
+                            );
+                        }
+                    }
                     Effect::End => return Ok(()),
                     Effect::Metadata(update) => {
                         state.send_if_modified(|snapshot| snapshot.update_metadata(&id, update));
@@ -501,6 +524,7 @@ async fn run_engine(
                         });
                     }
                     Effect::Established => {
+                        established = true;
                         liveness.establish();
                         if let Some(readiness) = readiness {
                             readiness.establish();
@@ -548,7 +572,11 @@ async fn run_engine(
             },
             read=transport.read(&mut input)=>{
                 let count=read.map_err(Failure::from)?;
-                if count==0 {let context = decoder.disconnect().err().unwrap_or_else(|| "Android phone transport disconnected".into());return Err(Failure::new(Kind::TransportLoss, context));}
+                if count==0 {
+                    let context = decoder.disconnect().err().unwrap_or_else(|| "Android phone transport disconnected".into());
+                    let stage = if established { "established" } else { "startup" };
+                    return Err(Failure::new(Kind::TransportLoss, format!("{context}; {stage}: discovery_sent={discovery_sent}, last_valid_rx={last_rx:?}, last_completed_reply={last_reply:?}, post_tls_ms={}", clock.elapsed().as_millis())));
+                }
                 decoder.push(&input[..count])?;
             },
             command=commands.recv()=>{

@@ -198,6 +198,19 @@ fn discovery_video_setup_and_native_stream_lifecycle() {
     };
     assert_eq!(reply.id, 6);
     assert!(numbers(&reply.body).is_ok());
+    // Channel 9 descriptor from the accepted pre-HFP discovery contract:
+    // MediaSourceService PCM, 16 kHz / 16-bit / mono, available_while_in_call.
+    // Keep this golden wire fragment independent of the production encoder.
+    let microphone = [
+        0x0a, 0x11, 0x08, 0x09, 0x2a, 0x0d, 0x08, 0x01, 0x12, 0x07, 0x08, 0x80, 0x7d, 0x10, 0x10,
+        0x18, 0x01, 0x18, 0x01,
+    ];
+    assert!(
+        reply
+            .body
+            .windows(microphone.len())
+            .any(|w| w == microphone)
+    );
     let mut channels = opened();
     let setup = channels
         .handle(3, 0x8000, &Proto::default().number(1, 3).finish())
@@ -515,6 +528,10 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
     exercise_live_session(0, Vec::new()).await;
 }
 #[tokio::test(start_paused = true)]
+async fn wireless_phone_close_after_discovery_reports_stage_and_preserves_recovery() {
+    exercise_live_session(4, Vec::new()).await;
+}
+#[tokio::test(start_paused = true)]
 async fn wireless_silent_open_transport_reaches_typed_recovery() {
     exercise_live_session(1, Vec::new()).await;
 }
@@ -658,6 +675,18 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
         assert_eq!(&auth[4..], [0, 4, 8, 0]);
         phone_send(&mut phone, &phone_tx, 0, 5, vec![]).await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 6);
+        if mode == 4 {
+            drop(phone_tx); // Real engine EOF after completed TLS/discovery.
+            let error = task.await.unwrap().unwrap_err();
+            assert_eq!(error.kind, crate::failure::Kind::TransportLoss);
+            assert!(error.detail.contains("startup: discovery_sent=true"));
+            assert!(error.detail.contains("last_valid_rx=Some((0, 5))"));
+            assert!(error.detail.contains("last_completed_reply=Some((0, 6))"));
+            assert!(crate::wireless::retry_allowed(&error, false, 0));
+            assert!(!crate::wireless::retry_allowed(&error, true, 0));
+            assert!(!path.exists(), "owned socket removed before retry");
+            return Vec::new();
+        }
         for channel in [3, 8] {
             phone_send(
                 &mut phone,

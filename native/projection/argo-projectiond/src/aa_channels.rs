@@ -213,7 +213,10 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
             Proto::default()
                 .number(1, 1) // PCM
                 .nested(2, mic_config)
-                .number(3, 0), // exclusive microphone; unavailable during HFP call
+                // Retain the working AA discovery contract (also LIVI b8651d7).
+                // This flag is not the local capture lease: Voice still rejects
+                // capture when HFP owns the microphone, or no input is selected.
+                .number(3, 1), // available_while_in_call
         ),
     );
     let touch = Proto::default()
