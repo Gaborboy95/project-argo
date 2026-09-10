@@ -18,7 +18,11 @@ void main() {
         for (final dpr in [1.0, 1.25, 2.0]) {
           final viewport = physical / dpr;
           final layout = DashboardGeometry(viewport);
-          final overlay = layout.dockTop - layout.primaryHeight;
+          final overlay = layout.mediaSafeHeight;
+          expect(
+            overlay,
+            layout.closedMediaHeight + DashboardGeometry.mediaEdgeGap,
+          );
           final value = requested.forViewport(
             viewport.width,
             layout.dockTop,

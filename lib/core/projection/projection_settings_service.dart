@@ -5,6 +5,7 @@ import '../settings/app_setting_keys.dart';
 import '../settings/settings_service.dart';
 import 'projection_configuration.dart';
 import 'projection_preferences.dart';
+import 'projection_types.dart';
 
 /// Persisted requests belong to Argo; only daemon acknowledgements are pending/active.
 final class ProjectionSettingsService {
@@ -33,6 +34,13 @@ final class ProjectionSettingsService {
       backend?.configuration ?? const ProjectionConfigurationState();
 
   (double, double, double)? _viewport;
+  (double, double, double)? get measuredViewport => _viewport;
+  Future<void> calculateAutomatically() => update(
+    requested.copyWith(
+      viewInsets: const ProjectionInsets(),
+      safeInsets: const ProjectionInsets(),
+    ),
+  );
   ProjectionPreferences? _sentViewport;
   Timer? _viewportTimer;
   ProjectionPreferences get effective {
@@ -44,6 +52,7 @@ final class ProjectionSettingsService {
     final next = (width, height, mediaHeight);
     if (_closed || _viewport == next) return;
     _viewport = next;
+    _notify();
     _scheduleViewport();
   }
 

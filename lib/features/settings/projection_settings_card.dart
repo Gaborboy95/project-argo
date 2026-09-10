@@ -186,6 +186,25 @@ class ProjectionSettingsCard extends StatelessWidget {
               const Text(
                 'View Area fits the encoded stream to the measured dashboard above the dock. Extra margins below are encoded pixels, not screen pixels.',
               ),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: enabled && service.measuredViewport != null
+                    ? () => unawaited(service.calculateAutomatically())
+                    : null,
+                icon: const Icon(Icons.fit_screen),
+                label: const Text('Calculate automatically'),
+              ),
+              if (service.measuredViewport case final measured?)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'Available above dock: ${measured.$1.toStringAsFixed(1)} × ${measured.$2.toStringAsFixed(1)} logical px\n'
+                    'Closed media + bottom gap: ${measured.$3.toStringAsFixed(1)} logical px\n'
+                    'Automatic fit stays active as the window changes. Calculate clears manual margins; resolution, FPS and DPI stay unchanged. Applies on next connection.',
+                  ),
+                )
+              else
+                const Text('Waiting for dashboard measurements.'),
               _insets(
                 context,
                 'View Area — additional margins',

@@ -154,7 +154,11 @@ already negotiated picture.
 
 Safe Area is separate: `UiConfig.content_insets` and `stable_content_insets` request
 that AA keep important UI clear of the host overlay. Its minimum bottom inset covers
-the collapsed media slot, even when that strip is hidden. Maps may render beneath
+the closed media panel plus its gap above the dock, even when the strip is hidden.
+Settings → Projection → Calculate automatically clears manual margin overrides
+and uses this measured fit, preserving resolution, FPS and DPI. The page displays
+the available viewport and media clearance in logical pixels; negotiated insets
+are converted to source pixels. Maps may render beneath
 it; individual phone applications must honor the layout hint for this to work.
 Expanded panels remain modal overlays, not new safe-area negotiations.
 

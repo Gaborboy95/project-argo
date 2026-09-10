@@ -26,5 +26,11 @@ class DashboardGeometry {
     );
     dockTop = height - dockHeight;
   }
+  static const mediaEdgeGap = 4.0;
+  double get closedMediaHeight =>
+      (dockTop - primaryHeight - 2 * mediaEdgeGap).clamp(1, double.infinity);
+  // Insets are measured from the viewport edge, so include the bottom gap.
+  double get mediaSafeHeight => closedMediaHeight + mediaEdgeGap;
+
   late final double primaryHeight, dockHeight, dockTop, mediaHeight;
 }

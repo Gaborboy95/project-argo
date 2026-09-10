@@ -201,7 +201,7 @@ class _AppShellState extends State<AppShell> {
                       services.get<ProjectionSettingsService>().setViewport(
                         constraints.maxWidth,
                         geometry.dockTop,
-                        geometry.dockTop - geometry.primaryHeight,
+                        geometry.mediaSafeHeight,
                       );
                     }
                   });
@@ -259,16 +259,15 @@ class _AppShellState extends State<AppShell> {
                       key: const ValueKey('floating-media-slot'),
                       left: constraints.maxWidth * .025,
                       right: constraints.maxWidth * .025,
-                      bottom: geometry.dockHeight + 4,
+                      bottom:
+                          geometry.dockHeight + DashboardGeometry.mediaEdgeGap,
                       child: Visibility(
                         visible:
                             _mediaVisible &&
                             (_panel == null || _panel == 'media'),
                         maintainState: true,
                         child: DashboardFloatingMedia(
-                          collapsedHeight:
-                              (geometry.dockTop - geometry.primaryHeight - 8)
-                                  .clamp(1, double.infinity),
+                          collapsedHeight: geometry.closedMediaHeight,
                           expandedHeight: sheetHeight,
                           open: _panel == 'media',
                           onOpen: () => setState(() => _panel = 'media'),
