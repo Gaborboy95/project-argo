@@ -528,6 +528,10 @@ async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() 
     exercise_live_session(0, Vec::new()).await;
 }
 #[tokio::test(start_paused = true)]
+async fn hevc_negotiation_reaches_existing_video_and_presentation_session() {
+    exercise_live_session(5, Vec::new()).await;
+}
+#[tokio::test(start_paused = true)]
 async fn wireless_phone_close_after_discovery_reports_stage_and_preserves_recovery() {
     exercise_live_session(4, Vec::new()).await;
 }
@@ -556,6 +560,7 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             .send_replace(crate::host_control::SessionConfig {
                 active: None,
                 display: DisplayConfig::default(),
+                offer_hevc: mode == 5,
                 identity: Some(fixture.identity.clone()),
                 media_socket: Some(path.clone()),
             });
@@ -632,7 +637,7 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
                 input,
                 output,
                 tcp,
-                wireless: mode != 0,
+                wireless: mode != 0 && mode != 5,
             };
             let mut media = crate::native_playback::SessionMedia::default();
             let ready = crate::readiness::Readiness::default();
@@ -706,7 +711,7 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             &phone_tx,
             3,
             0x8000,
-            Proto::default().number(1, 3).finish(),
+            Proto::default().number(1, if mode == 5 { 7 } else { 3 }).finish(),
         )
         .await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8003);
@@ -721,7 +726,7 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             &phone_tx,
             3,
             0x8001,
-            Proto::default().number(1, 1).number(2, 0).finish(),
+            Proto::default().number(1, 1).number(2, u64::from(mode == 5)).finish(),
         )
         .await;
         assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8008);
@@ -752,7 +757,7 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             .await
             .unwrap();
         assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
-        if mode != 0 {
+        if mode != 0 && mode != 5 {
             use std::time::Duration;
             let mut stale = Vec::new();
             // Draining output without replying keeps writes successful while the
@@ -868,6 +873,9 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
                 "Disconnect must stop replacement during backoff"
             );
             return Vec::new();
+        }
+        if mode == 5 {
+            assert_eq!(observed.borrow().video_codec, crate::media::VideoCodec::Hevc);
         }
         // Entertainment selection is independent of focus/native-view ownership.
         let mut gate_ack = control.entertainment_ack.subscribe();
@@ -1054,4 +1062,133 @@ async fn actual_engine_io_failures_reach_retry_policy_without_text_matching() {
         Failure::from(crate::session::parse_version_response(&rejected_frame).unwrap_err());
     assert_eq!(rejected.kind, Kind::Protocol);
     assert!(!crate::wireless::retry_allowed(&rejected, false, 0));
+}
+
+#[test]
+fn hevc_offer_selection_rejects_unadvertised_codecs_and_wrong_configuration() {
+    use crate::media::VideoCodec;
+    for enabled in [false, true] {
+        for codec in [3, 7] {
+            let mut channels = Channels::with_hevc(DisplayConfig::default(), enabled);
+            channels.handle(0, 5, &[]).unwrap();
+            channels
+                .handle(3, 7, &Proto::default().number(2, 3).finish())
+                .unwrap();
+            let setup = channels.handle(3, 0x8000, &Proto::default().number(1, codec).finish());
+            if codec == 7 && !enabled {
+                assert!(setup.is_err());
+                continue;
+            }
+            let setup = setup.unwrap();
+            let selected = if codec == 7 {
+                VideoCodec::Hevc
+            } else {
+                VideoCodec::H264
+            };
+            assert!(
+                setup
+                    .iter()
+                    .any(|e| matches!(e, Effect::VideoCodec(c) if *c == selected))
+            );
+            let index = u64::from(codec == 7);
+            let Effect::Reply(reply) = &setup[0] else {
+                panic!("no setup reply");
+            };
+            assert_eq!(numbers(&reply.body).unwrap().get(&3), Some(&index));
+            assert!(
+                channels
+                    .handle(
+                        3,
+                        0x8001,
+                        &Proto::default().number(1, 1).number(2, 1 - index).finish()
+                    )
+                    .is_err()
+            );
+            assert!(
+                channels
+                    .handle(
+                        3,
+                        0x8001,
+                        &Proto::default().number(1, 1).number(2, index).finish()
+                    )
+                    .is_ok()
+            );
+            assert!(
+                channels
+                    .handle(
+                        3,
+                        0x8000,
+                        &Proto::default()
+                            .number(1, if codec == 3 { 7 } else { 3 })
+                            .finish()
+                    )
+                    .is_err()
+            );
+            // Existing IPC6 codec enum, not a new private interpretation.
+            let mut current = crate::daemon_state::ProjectionRuntimeSnapshot::connecting(
+                "test".into(),
+                "test".into(),
+            );
+            current.video = Some((DisplayConfig::default(), true));
+            current.video_codec = selected;
+            let messages =
+                crate::daemon_state::snapshot_messages(&Default::default(), &current).unwrap();
+            let video = messages.iter().find(|m| m.kind == 4).unwrap();
+            let mut reader = crate::ipc::PayloadReader::new(&video.payload);
+            reader.string().unwrap();
+            reader.string().unwrap();
+            assert_eq!(reader.u8(), Some(0));
+            assert_eq!(reader.u8(), Some(selected.wire()));
+        }
+    }
+}
+
+#[tokio::test]
+async fn hevc_feed_replays_vps_sps_pps_for_recreated_view_and_clears_on_new_session() {
+    use tokio::io::AsyncReadExt;
+    let fixture = IdentityFixture::new();
+    let path = fixture.root.join("hevc.sock");
+    let mut feed = VideoFeed::open(path.clone()).unwrap();
+    feed.set_codec(crate::media::VideoCodec::Hevc).unwrap();
+    let mut client = tokio::net::UnixStream::connect(&path).await.unwrap();
+    let parameters: Vec<u8> = [32, 33, 34]
+        .into_iter()
+        .flat_map(|n| [0, 0, 0, 1, n << 1, 1, 42])
+        .collect();
+    feed.push(parameters.clone()).unwrap();
+    let mut read = vec![0; parameters.len()];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.read_exact(&mut read),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(read, parameters);
+    drop(client);
+    let mut replacement = tokio::net::UnixStream::connect(&path).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        replacement.read_exact(&mut read),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(read, parameters);
+    feed.close().await;
+    drop(replacement);
+    let mut fresh = VideoFeed::open(path.clone()).unwrap();
+    let mut client = tokio::net::UnixStream::connect(&path).await.unwrap();
+    fresh.push(vec![0, 0, 0, 1, 0x67, 1, 99]).unwrap();
+    let mut first = [0; 7];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.read_exact(&mut first),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(first, [0, 0, 0, 1, 0x67, 1, 99]);
+    fresh.close().await;
+    assert!(!path.exists());
 }

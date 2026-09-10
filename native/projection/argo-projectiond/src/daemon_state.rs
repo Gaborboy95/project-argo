@@ -50,6 +50,7 @@ pub struct ProjectionSessionStatusSnapshot {
 pub struct ProjectionRuntimeSnapshot {
     pub device: Option<ProjectionDeviceStatus>,
     pub session: Option<ProjectionSessionStatusSnapshot>,
+    pub video_codec: crate::media::VideoCodec,
     pub video: Option<(crate::aa_channels::DisplayConfig, bool)>,
     pub audio: [bool; 3],
     pub host_return_revision: u32,
@@ -71,6 +72,7 @@ impl ProjectionRuntimeSnapshot {
                 state: ProjectionSessionStatus::Connecting,
                 failure: None,
             }),
+            video_codec: Default::default(),
             video: None,
             audio: [false; 3],
             host_return_revision: 0,
@@ -147,13 +149,14 @@ pub fn snapshot_messages(
         if let Some((display, visible)) = &current.video
             && (previous.video != current.video
                 || previous.session != current.session
-                || previous.presentation_revision != current.presentation_revision)
+                || previous.presentation_revision != current.presentation_revision
+                || previous.video_codec != current.video_codec)
         {
             let mut writer = PayloadWriter::default();
             writer.string(&session.id)?;
             writer.string(&format!("{}:main", session.id))?;
             writer.u8(0);
-            writer.u8(0);
+            writer.u8(current.video_codec.wire());
             writer.u16(display.width);
             writer.u16(display.height);
             writer.u8(display.fps);

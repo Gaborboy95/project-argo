@@ -202,10 +202,13 @@ impl From<FrameError> for VersionNegotiationError {
 }
 
 pub fn version_request_frame() -> Frame {
+    version_request_frame_minor(REQUESTED_VERSION_MINOR)
+}
+fn version_request_frame_minor(minor: u16) -> Frame {
     let mut payload = Vec::with_capacity(6);
     payload.extend_from_slice(&VERSION_REQUEST_ID.to_be_bytes());
     payload.extend_from_slice(&REQUESTED_VERSION_MAJOR.to_be_bytes());
-    payload.extend_from_slice(&REQUESTED_VERSION_MINOR.to_be_bytes());
+    payload.extend_from_slice(&minor.to_be_bytes());
     Frame {
         channel: CONTROL_CHANNEL,
         flags: FLAGS_PLAINTEXT_SINGLE_FRAME,
@@ -244,9 +247,21 @@ pub fn parse_version_response(frame: &Frame) -> Result<VersionResponse, VersionN
 pub async fn negotiate_version(
     transport: &mut impl AndroidAutoTransport,
 ) -> Result<VersionResponse, VersionNegotiationError> {
-    let request = encode_frame(&version_request_frame())?;
+    let minor = crate::configuration::protocol_minor(
+        std::env::var("ARGO_ANDROID_AUTO_PROTOCOL_VERSION")
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let request = encode_frame(&version_request_frame_minor(minor))?;
     transport.write_all(&request).await?;
-    crate::daemon_log!(Debug, "session", "AA VersionRequest sent");
+    crate::daemon_log!(
+        Debug,
+        "session",
+        "AA VersionRequest sent: {}.{}",
+        REQUESTED_VERSION_MAJOR,
+        minor
+    );
 
     let mut wire = vec![0u8; 4];
     let mut offset = 0;
@@ -283,7 +298,13 @@ pub async fn negotiate_version(
     }
     let frame = FrameDecoder::default().push(&wire)?.remove(0);
     let response = parse_version_response(&frame)?;
-    crate::daemon_log!(Debug, "session", "AA VersionResponse received");
+    crate::daemon_log!(
+        Info,
+        "session",
+        "AA VersionResponse received: {}.{}",
+        response.major,
+        response.minor
+    );
     Ok(response)
 }
 
@@ -611,5 +632,24 @@ mod tcp_boundary_tests {
         let mut tls = [0; 7];
         assert_eq!(hu.read(&mut tls).await.unwrap(), 7);
         assert_eq!(tls, [0, 3, 0, 3, 0, 3, 42]);
+    }
+}
+
+#[cfg(test)]
+mod protocol_version_tests {
+    #[test]
+    fn supported_versions_encode_exact_wire_prelude_and_reject_app_version_numbers() {
+        for (text, minor) in [("1.1", 1), ("1.7", 7)] {
+            assert_eq!(
+                crate::configuration::protocol_minor(Some(text)).unwrap(),
+                minor
+            );
+            let bytes = super::encode_frame(&super::version_request_frame_minor(minor)).unwrap();
+            assert_eq!(bytes, vec![0, 3, 0, 6, 0, 1, 0, 1, 0, minor as u8]);
+        }
+        assert_eq!(crate::configuration::protocol_minor(None).unwrap(), 1);
+        for bad in ["17.3", "1.8", "2.0", ""] {
+            assert!(crate::configuration::protocol_minor(Some(bad)).is_err());
+        }
     }
 }

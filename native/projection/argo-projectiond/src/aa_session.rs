@@ -212,7 +212,7 @@ async fn run_engine(
         )
     })?;
     media.video = Some(VideoFeed::open(socket).map_err(Failure::configuration)?);
-    let mut channels = Channels::new(config.display.clone());
+    let mut channels = Channels::with_hevc(config.display.clone(), config.offer_hevc);
     let mut commands = control.commands.subscribe();
     let mut entertainment = control.entertainment.subscribe();
     let mut media_gain = 1.0_f64;
@@ -369,6 +369,19 @@ async fn run_engine(
             }
             for effect in effects {
                 match effect {
+                    Effect::VideoCodec(codec) => {
+                        media
+                            .video
+                            .as_ref()
+                            .ok_or("video feed unavailable")?
+                            .set_codec(codec)?;
+                        state.send_modify(|s| s.video_codec = codec);
+                        crate::daemon_log!(
+                            Info,
+                            "aa-session",
+                            "Phone selected video codec {codec:?}"
+                        );
+                    }
                     Effect::Microphone(open, limit) => {
                         microphone_frame = None;
                         microphone.stop();

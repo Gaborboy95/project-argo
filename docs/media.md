@@ -315,3 +315,38 @@ and [OBEX session ownership](https://github.com/bluez/bluez/blob/5.82/obexd/clie
 and [audio-gateway nodes](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/bluez5-device.c),
 revision `1.4.2`; LIVI microphone channel/protobuf definitions at revision
 `b8651d795e5f84871d7454ce25e6ff6fb79e03d5`. Implementations and credentials are not vendored.
+
+## Android Auto video codecs
+
+H.264 is the default offer. Set `ARGO_ANDROID_AUTO_HEVC=1` in the daemon terminal
+before launch to additionally offer HEVC/H.265. H.264 remains configuration index 0
+and HEVC index 1; Argo validates the phone's codec and configuration selection and
+reports it in the existing IPC6 video descriptor. The selected codec is fixed for the AA session, including stream stops and
+presentation suspension. A different codec requires a new connection. This does not implement automatic reconnection in a different
+codec after rejection; disable the offer and start a new explicit connection to
+return to the H.264-only path.
+
+Use the matching native-view library from the release: its GStreamer `parsebin`
+identifies H.264/H.265 before `decodebin`, followed by the existing bounded BGRx
+presentation path. The daemon checks for an H.265 parser and known decoder factory
+before advertising HEVC. Factory availability is not proof that every profile,
+resolution or driver works. On the reference Mu, synthetic 1280×720/30 H.265 Main
+and H.264 streams decoded through this path; H.265 selected Intel `vah265dec`.
+Phone-selected HEVC and on-screen HEVC projection still require acceptance.
+
+The video feed caches bounded parameter sets: SPS/PPS for H.264 and VPS/SPS/PPS
+for HEVC, replayed in order to a recreated native consumer. Cache and codec state
+are owned by one session and discarded before a replacement. Presentation, native
+view identity, audio clocks and audio formats are unchanged. HEVC is not a promise
+of 1080p60 interoperability or zero-copy presentation.
+
+Codec fields/configuration-index behavior follow the pinned LIVI
+[discovery builder](https://github.com/f-io/LIVI/blob/b8651d795e5f84871d7454ce25e6ff6fb79e03d5/src/main/services/projection/driver/aa/stack/session/ServiceDiscoveryBuilder.ts)
+and [session handler](https://github.com/f-io/LIVI/blob/b8651d795e5f84871d7454ce25e6ff6fb79e03d5/src/main/services/projection/driver/aa/stack/session/Session.ts).
+
+AA wire negotiation defaults to 1.1 for compatibility. The optional
+`ARGO_ANDROID_AUTO_PROTOCOL_VERSION=1.7` requests the publicly referenced newer
+wire version; the daemon logs the phone's returned major/minor. A higher protocol
+number does not itself add channels or UI features. Phone-app and AndroidX Car App
+SDK release numbers use separate version schemes. Wire versions beyond 1.7 are
+not implemented from unverified assumptions.

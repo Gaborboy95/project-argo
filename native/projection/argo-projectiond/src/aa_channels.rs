@@ -107,6 +107,9 @@ impl DisplayConfig {
     }
 }
 pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
+    discovery_codecs(display, false)
+}
+fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
     let ping = Proto::default()
         .number(1, 5000) // timeout_ms
         .number(2, 1500) // interval_ms
@@ -167,14 +170,32 @@ pub fn discovery(display: &DisplayConfig) -> Vec<u8> {
         .number(5, display.dpi as u64)
         .number(8, 10000)
         .number(10, 3);
+    let mut sink = Proto::default().number(1, 3).nested(4, video);
+    if hevc {
+        // Keep H.264 at index 0; HEVC is index 1, selected by the phone.
+        // MediaCodecType VIDEO_H265 = 7 (LIVI b8651d7).
+        let hevc_config = Proto::default()
+            .number(
+                1,
+                match display.width {
+                    800 => 1,
+                    1920 => 3,
+                    _ => 2,
+                },
+            )
+            .number(2, if display.fps == 60 { 1 } else { 2 })
+            .number(3, 0)
+            .number(4, 0)
+            .number(5, display.dpi as u64)
+            .number(8, 10000)
+            .number(10, 7);
+        sink = sink.nested(4, hevc_config);
+    }
     response = response.nested(
         1,
         Proto::default().number(1, 3).nested(
             3,
-            Proto::default()
-                .number(1, 3) // H.264
-                .nested(4, video)
-                .number(5, 1) // available_while_in_call = true
+            sink.number(5, 1) // available_while_in_call = true
                 .number(7, 0), // MAIN display
         ),
     );
@@ -255,6 +276,7 @@ impl Reply {
     }
 }
 pub enum Effect {
+    VideoCodec(crate::media::VideoCodec),
     Reply(Reply),
     Video(bool),
     Established,
@@ -268,6 +290,8 @@ pub enum Effect {
     Metadata(crate::metadata::Update),
 }
 pub struct Channels {
+    offer_hevc: bool,
+    video_config: u64,
     display: DisplayConfig,
     open: BTreeSet<u8>,
     setup: BTreeSet<u8>,
@@ -284,6 +308,8 @@ impl Channels {
     pub fn new(display: DisplayConfig) -> Self {
         Self {
             display,
+            offer_hevc: false,
+            video_config: 0,
             open: BTreeSet::new(),
             setup: BTreeSet::new(),
             sessions: BTreeMap::new(),
@@ -292,6 +318,12 @@ impl Channels {
             discovered: false,
             video_requested: true,
             metadata_warnings: BTreeSet::new(),
+        }
+    }
+    pub fn with_hevc(display: DisplayConfig, offer_hevc: bool) -> Self {
+        Self {
+            offer_hevc,
+            ..Self::new(display)
         }
     }
     pub fn set_video_requested(&mut self, requested: bool) {
@@ -353,7 +385,10 @@ impl Channels {
                     );
                 }
                 self.discovered = true;
-                effects.insert(0, reply(0, 6, discovery(&self.display)));
+                effects.insert(
+                    0,
+                    reply(0, 6, discovery_codecs(&self.display, self.offer_hevc)),
+                );
             }
             return Ok(effects);
         }
@@ -401,7 +436,11 @@ impl Channels {
                         );
                     }
                     self.discovered = true;
-                    vec![reply(0, 6, discovery(&self.display))]
+                    vec![reply(
+                        0,
+                        6,
+                        discovery_codecs(&self.display, self.offer_hevc),
+                    )]
                 }
                 11 => vec![reply(0, 12, body.to_vec())],
                 13 => vec![reply(0, 14, Proto::default().number(1, 1).finish())],
@@ -515,24 +554,49 @@ impl Channels {
         if (3..=6).contains(&channel) {
             return Ok(match id {
                 0x8000 => {
-                    let expected = if channel == 3 { 3 } else { 1 };
-                    if number(1) != Some(expected) {
+                    let codec = number(1);
+                    let supported = if channel == 3 {
+                        codec == Some(3) || (self.offer_hevc && codec == Some(7))
+                    } else {
+                        codec == Some(1)
+                    };
+                    if !supported {
                         return Err("AA requested an unadvertised media codec".into());
                     }
+                    let index = u64::from(channel == 3 && codec == Some(7));
+                    if channel == 3 && self.setup.contains(&3) && self.video_config != index {
+                        return Err("AA video codec is fixed for this session".into());
+                    }
+                    if channel == 3 {
+                        self.video_config = index;
+                    }
                     self.setup.insert(channel);
-                    crate::daemon_log!(Debug, "aa-channels", "AA AV setup: channel={channel}");
-                    vec![reply(
+                    crate::daemon_log!(
+                        Debug,
+                        "aa-channels",
+                        "AA AV setup: channel={channel} codec={codec:?} config={index}"
+                    );
+                    let mut effects = vec![reply(
                         channel,
                         0x8003,
                         Proto::default()
                             .number(1, 2)
                             .number(2, 4)
-                            .number(3, 0)
+                            .number(3, index)
                             .finish(),
-                    )]
+                    )];
+                    if channel == 3 {
+                        effects.push(Effect::VideoCodec(if index == 1 {
+                            crate::media::VideoCodec::Hevc
+                        } else {
+                            crate::media::VideoCodec::H264
+                        }));
+                    }
+                    effects
                 }
                 0x8001 => {
-                    if !self.setup.contains(&channel) || number(2).unwrap_or(0) != 0 {
+                    let expected_index = if channel == 3 { self.video_config } else { 0 };
+                    if !self.setup.contains(&channel) || number(2).unwrap_or(0) != expected_index {
                         return Err("AA invalid stream configuration".into());
                     }
                     let stream_session = number(1).ok_or("AA stream session missing")?;

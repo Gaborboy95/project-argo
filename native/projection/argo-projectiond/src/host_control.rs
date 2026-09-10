@@ -9,6 +9,7 @@ use tokio::sync::{Semaphore, broadcast, watch};
 #[derive(Clone, Debug, Default)]
 pub struct SessionConfig {
     pub display: DisplayConfig,
+    pub offer_hevc: bool,
     pub active: Option<(String, DisplayConfig)>,
     pub identity: Option<AndroidAutoIdentity>,
     pub media_socket: Option<std::path::PathBuf>,
@@ -57,6 +58,33 @@ impl Default for HostControl {
 impl HostControl {
     pub fn from_environment() -> Self {
         let mut control = Self::default();
+        if let Err(error) = crate::configuration::protocol_minor(
+            std::env::var("ARGO_ANDROID_AUTO_PROTOCOL_VERSION")
+                .ok()
+                .as_deref(),
+        ) {
+            control.readiness = 3;
+            control.readiness_detail = error;
+            return control;
+        }
+        match std::env::var("ARGO_ANDROID_AUTO_HEVC").as_deref() {
+            Err(_) | Ok("0") => {}
+            Ok("1") => {
+                if let Err(error) = crate::native_playback::check_hevc() {
+                    control.readiness = 3;
+                    control.readiness_detail = error;
+                    return control;
+                }
+                control
+                    .configuration
+                    .send_modify(|config| config.offer_hevc = true);
+            }
+            _ => {
+                control.readiness = 3;
+                control.readiness_detail = "ARGO_ANDROID_AUTO_HEVC must be 0 or 1".into();
+                return control;
+            }
+        }
         match crate::configuration::endpoint(
             "ARGO_PROJECTION_MEDIA_SOCKET",
             "projection-video.sock",

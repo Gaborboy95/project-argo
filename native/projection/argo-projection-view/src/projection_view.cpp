@@ -177,7 +177,9 @@ struct ViewState {
       source =
           "fdsrc fd=" + std::to_string(media_fd) +
           " do-timestamp=true ! queue max-size-buffers=8 ! "
-          "h264parse ! decodebin ! videoconvert ! "
+          // parsebin typefinds Annex-B H.264/H.265 and selects the parser.
+          // Negotiated codec remains session-owned; no raw media crosses Dart.
+          "parsebin ! decodebin ! videoconvert ! "
           "video/x-raw,format=BGRx,width=[1,1920],height=[1,1080] ! ";
     }
     const std::string description = source + "appsink name=projection_sink "

@@ -2,8 +2,12 @@
 use std::{path::PathBuf, time::Duration};
 use tokio::{io::AsyncWriteExt, net::UnixListener, sync::mpsc, task::JoinHandle};
 
+enum VideoPacket {
+    Codec(crate::media::VideoCodec),
+    Data(Vec<u8>),
+}
 pub struct VideoFeed {
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<VideoPacket>,
     task: Option<JoinHandle<()>>,
     path: PathBuf,
 }
@@ -24,10 +28,11 @@ impl VideoFeed {
             return Err(e.to_string());
         }
         crate::daemon_log!(Info, "media", "video socket {}", path.display());
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        let (tx, mut rx) = mpsc::channel::<VideoPacket>(8);
         let task = tokio::spawn(async move {
             let mut client: Option<tokio::net::UnixStream> = None;
             let mut parameters: Vec<Vec<u8>> = Vec::new();
+            let mut codec = crate::media::VideoCodec::H264;
             loop {
                 tokio::select! {
                     accepted=listener.accept()=>match accepted {
@@ -78,11 +83,19 @@ impl VideoFeed {
                         Err(e)=>{crate::daemon_log!(Error, "native-playback", "Native video accept failed: {e}");break;}
                     },
                     bytes=rx.recv()=>{
-                        let Some(bytes)=bytes else {break};
-                        for nal in annex_b_units(&bytes) {
-                            if matches!(nal.0,7|8) && nal.1.len()<=64*1024 {
-                                parameters.retain(|old| nal_type(old)!=Some(nal.0));
+                        let Some(packet)=bytes else {break};
+                        let bytes = match packet {
+                            VideoPacket::Codec(selected) => {
+                                if codec != selected { parameters.clear(); codec = selected; }
+                                continue;
+                            },
+                            VideoPacket::Data(bytes) => bytes,
+                        };
+                        for nal in annex_b_units(&bytes, codec) {
+                            if codec.parameter(nal.0) && nal.1.len()<=64*1024 {
+                                parameters.retain(|old| nal_type(old, codec)!=Some(nal.0));
                                 parameters.push(nal.1.to_vec());
+                                parameters.sort_by_key(|p| nal_type(p, codec));
                             }
                         }
                         if let Some(socket)=client.as_mut()
@@ -99,9 +112,14 @@ impl VideoFeed {
             path,
         })
     }
+    pub fn set_codec(&self, codec: crate::media::VideoCodec) -> Result<(), String> {
+        self.tx
+            .try_send(VideoPacket::Codec(codec))
+            .map_err(|_| "native video codec queue full".into())
+    }
     pub fn push(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.tx
-            .try_send(bytes)
+            .try_send(VideoPacket::Data(bytes))
             .map_err(|_| "native video feed stalled (bounded queue full)".into())
     }
     pub async fn close(&mut self) {
@@ -120,7 +138,7 @@ impl Drop for VideoFeed {
         let _ = std::fs::remove_file(&self.path);
     }
 }
-fn nal_type(bytes: &[u8]) -> Option<u8> {
+fn nal_type(bytes: &[u8], codec: crate::media::VideoCodec) -> Option<u8> {
     let offset = if bytes.starts_with(&[0, 0, 0, 1]) {
         4
     } else if bytes.starts_with(&[0, 0, 1]) {
@@ -128,7 +146,13 @@ fn nal_type(bytes: &[u8]) -> Option<u8> {
     } else {
         return None;
     };
-    bytes.get(offset).map(|b| b & 31)
+    bytes.get(offset).map(|b| {
+        if codec == crate::media::VideoCodec::Hevc {
+            (b >> 1) & 63
+        } else {
+            b & 31
+        }
+    })
 }
 
 /// Kept outside the cancellable wire-engine future so unplug awaits native
@@ -160,7 +184,7 @@ impl SessionMedia {
         }
     }
 }
-fn annex_b_units(bytes: &[u8]) -> Vec<(u8, &[u8])> {
+fn annex_b_units(bytes: &[u8], codec: crate::media::VideoCodec) -> Vec<(u8, &[u8])> {
     let mut starts = Vec::new();
     let mut i = 0;
     while i + 3 < bytes.len() {
@@ -180,7 +204,7 @@ fn annex_b_units(bytes: &[u8]) -> Vec<(u8, &[u8])> {
         .enumerate()
         .filter_map(|(i, &start)| {
             let nal = &bytes[start..starts.get(i + 1).copied().unwrap_or(bytes.len())];
-            Some((nal_type(nal)?, nal))
+            Some((nal_type(nal, codec)?, nal))
         })
         .collect()
 }
@@ -282,4 +306,20 @@ impl AudioPlayback {
     pub fn gain(&self, _: f64) -> Result<(), String> {
         Err("native audio unavailable".into())
     }
+}
+
+/// Capability preflight only; live decode is verified by the native view.
+pub fn check_hevc() -> Result<(), String> {
+    #[cfg(feature = "linux-media")]
+    {
+        gstreamer::init().map_err(|e| e.to_string())?;
+        let parser = gstreamer::ElementFactory::find("h265parse").is_some();
+        let decoder = ["vah265dec", "vaapih265dec", "avdec_h265", "v4l2slh265dec"]
+            .iter()
+            .any(|name| gstreamer::ElementFactory::find(name).is_some());
+        if parser && decoder {
+            return Ok(());
+        }
+    }
+    Err("HEVC requested but an H.265 parser/decoder is unavailable; use H.264".into())
 }

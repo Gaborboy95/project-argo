@@ -20,6 +20,7 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
   entertainment-source selection.
 - Home projection and Media/Now Playing with session-preserving AA Exit and resume.
 - Album artwork from AA and optional BlueZ BIP thumbnails, with a shared Media cache.
+- Opt-in H.265 video negotiation and native decoding, with H.264 retained as default.
 - HFP call control through PipeWire telephony, shared USB ADC/mixed microphone input
   for Android Auto and Bluetooth calls, explicit contacts/recent-call import, and
   acknowledged Quit cleanup.

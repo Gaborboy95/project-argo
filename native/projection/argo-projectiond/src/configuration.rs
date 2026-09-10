@@ -127,6 +127,15 @@ pub fn capabilities(readiness: u8, detail: &str) -> Message {
     }
 }
 
+/// Wire protocol versions with public framing references. App/SDK versions are unrelated.
+pub fn protocol_minor(value: Option<&str>) -> Result<u16, String> {
+    match value {
+        None | Some("1.1") => Ok(1),
+        Some("1.7") => Ok(7),
+        _ => Err("ARGO_ANDROID_AUTO_PROTOCOL_VERSION must be 1.1 or 1.7".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
