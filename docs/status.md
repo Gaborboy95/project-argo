@@ -5,7 +5,7 @@
 | Area | Current behavior |
 |---|---|
 | Application | Retained module navigation, typed persistent settings, diagnostics and lifecycle cleanup. |
-| Voice/calls | PipeWire HFP call control and owned duplex routes; shared selected microphone, mute and AA PCM capture. Physical ADC/phone acceptance pending. |
+| Voice/calls | PipeWire HFP call control and owned duplex routes; shared selected microphone, mute and AA PCM capture. Explicit PBAP contacts/recent-call import. Physical ADC and PBAP phone acceptance pending. |
 | Appearance | Material 3 light/dark/system modes and seed color; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
@@ -70,7 +70,7 @@ the stock Flutter GTK runner lacks the IHS platform-view contract.
 
 ## Unsupported features
 
-- Contacts, phonebook, conference control and call history.
+- Persistent contacts/history storage, SIM selection and conference control.
 - CarPlay and a general local-media player.
 - Wallpaper/shaders and automatic vehicle day/night appearance policy.
 - Argo-rendered Lua UI extension registries; host-state reads do not create UI.

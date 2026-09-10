@@ -32,6 +32,8 @@ pub struct Snapshot {
     pub audio: bool,
     pub operation: u64,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phonebook: Option<super::phonebook::Snapshot>,
 }
 #[derive(Clone, Serialize)]
 pub struct Call {
@@ -39,6 +41,19 @@ pub struct Call {
     pub state: String,
     pub number: Option<String>,
     pub name: Option<String>,
+}
+// PipeWire 1.4.2 ag_dial returns `o`, despite its introspection XML omitting
+// the output argument. Decode the actual wire reply; never repeat a Dial.
+async fn dial(
+    bus: &zbus::Connection,
+    gateway: &str,
+    number: &str,
+) -> Result<OwnedObjectPath, String> {
+    proxy(bus, gateway, AG)
+        .await?
+        .call("Dial", &(number,))
+        .await
+        .map_err(|e| format!("Dial result unavailable: {e}. Check the phone before dialing again."))
 }
 async fn proxy(
     bus: &zbus::Connection,
@@ -285,6 +300,7 @@ fn owned_routes_ready(
             .all(|id| ready.iter().any(|(a, b)| a == id || b == id)))
 }
 struct Controller {
+    book: super::phonebook::Book,
     host: HostControl,
     bt: Arc<Bluetooth>,
     bus: zbus::Connection,
@@ -300,10 +316,12 @@ struct Controller {
 }
 impl Controller {
     fn publish(&self) {
+        let mut snapshot = self.state.clone();
+        snapshot.phonebook = Some(self.book.state.clone());
         self.host
             .connectivity
             .state
-            .send_modify(|s| s.calls = Some(self.state.clone()));
+            .send_modify(|s| s.calls = Some(snapshot));
     }
     async fn silence(&mut self) -> Result<(), String> {
         if let Some(audio) = self.duplex.as_mut() {
@@ -345,6 +363,7 @@ impl Controller {
                 self.wanted = self.attempts < 3;
             }
             self.state.available = false;
+            let _ = self.book.clear().await;
             return Err(e);
         }
         let all = match objects(&self.bus).await {
@@ -354,6 +373,7 @@ impl Controller {
                 self.state.calls.clear();
                 self.epoch += 1;
                 self.state.available = false;
+                let _ = self.book.clear().await;
                 return Err(e);
             }
         };
@@ -375,6 +395,7 @@ impl Controller {
             })
             .collect();
         if matches.len() != 1 {
+            let _ = self.book.clear().await;
             self.silence().await?;
             self.state.calls.clear();
             self.gateway.clear();
@@ -526,6 +547,7 @@ impl Controller {
     async fn request(&mut self, r: &Request) -> Result<(), String> {
         match r.action.as_str() {
             "callsConnect" => {
+                let _ = self.book.clear().await;
                 self.silence().await?;
                 self.state.device = r.target.clone();
                 self.authorized()?;
@@ -539,6 +561,7 @@ impl Controller {
             }
             "callsDisconnect" => {
                 self.wanted = false;
+                let _ = self.book.clear().await;
                 self.silence().await?;
                 if !self.state.device.is_empty() {
                     let device = self.bt.device(&self.state.device)?;
@@ -562,6 +585,39 @@ impl Controller {
                 self.state.phase = "disconnected".into();
                 Ok(())
             }
+            "callsPhonebook" => {
+                self.authorized()?;
+                if !self.wanted || self.state.phase != "connected" {
+                    return Err("Connect calls before importing phone data".into());
+                }
+                if !self
+                    .bt
+                    .device(&self.state.device)?
+                    .is_paired()
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("Phone is no longer paired".into());
+                }
+                let (kind, offset) = r.target.split_once(':').ok_or("Invalid phonebook page")?;
+                let offset = offset.parse::<u16>().map_err(|_| "Invalid page offset")?;
+                let (adapter, remote) = self
+                    .state
+                    .device
+                    .split_once('/')
+                    .ok_or("Select a paired phone")?;
+                let local = self
+                    .bt
+                    .session
+                    .adapter(adapter)
+                    .map_err(|e| e.to_string())?
+                    .address()
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .to_string();
+                self.book.start(local, remote.into(), kind, offset).await
+            }
+            "callsPhonebookClear" => self.book.clear().await,
             "callsAudio" => {
                 self.audio_attempts = 0;
                 self.refresh().await
@@ -573,11 +629,12 @@ impl Controller {
                 if self.gateway.is_empty() {
                     return Err("Connect calls first".into());
                 }
-                proxy(&self.bus, &self.gateway, AG)
-                    .await?
-                    .call::<_, _, ()>("Dial", &(r.target.as_str(),))
-                    .await
-                    .map_err(|e| e.to_string())
+                let path = dial(&self.bus, &self.gateway, &r.target).await?;
+                if !path.as_str().starts_with(&format!("{}/", self.gateway)) {
+                    return Err("Dial returned an unexpected call reference. Check the phone before dialing again.".into());
+                }
+                self.state.detail = "Dial accepted; the phone controls the calling SIM".into();
+                Ok(())
             }
             "callsAnswer" | "callsHangup" => {
                 self.check_owner().await?;
@@ -638,6 +695,7 @@ pub async fn run(
         }
     };
     let mut c = Controller {
+        book: Default::default(),
         host,
         bt,
         bus,
@@ -672,13 +730,20 @@ pub async fn run(
         tokio::select! {biased;
             _=shutdown.changed()=>break,
             Some(_) = async {signals.as_mut().unwrap().next().await}, if signals.is_some()=>{c.epoch+=1;c.state.calls.clear();c.publish();},
-            _=cancel.changed()=>{c.wanted=false;if let Err(e)=c.silence().await {c.state.detail=format!("Call audio cleanup: {e}");}c.publish();},
+            _=cancel.changed()=>{
+                c.wanted=false;
+                if let Err(e)=c.book.clear().await {c.state.detail=e;}
+                if let Err(e)=c.silence().await {c.state.detail=format!("Call audio cleanup: {e}");}
+                c.publish();
+            },
             r=requests.recv()=>{let Some(r)=r else {break};if r.action!="callsDisconnect" && (r.generation!=*cancel.borrow() || c.host.connectivity.stopping.load(std::sync::atomic::Ordering::SeqCst)){continue;}
                 let result=tokio::time::timeout(Duration::from_secs(8),c.request(&r)).await.unwrap_or_else(|_|Err("Call operation timed out; check the phone before repeating it".into()));
-                let result=if r.action!="callsDisconnect" && r.generation!=*cancel.borrow(){c.wanted=false;c.silence().await.and(Err("Call request cancelled".into()))}else{result};
+                let result=if r.action!="callsDisconnect" && r.generation!=*cancel.borrow(){c.wanted=false;let _=c.book.clear().await;c.silence().await.and(Err("Call request cancelled".into()))}else{result};
+                crate::daemon_log!(Info,"calls","operation={} action={} result={}",r.prompt,r.action,if result.is_ok(){"accepted"}else{"not confirmed"});
                 c.state.operation=r.prompt;c.state.error=result.err();if let Some(e)=&c.state.error {c.state.detail=e.clone();}c.publish();
             },
             _=tick.tick()=>{
+                if c.authorized().is_err() {let _=c.book.clear().await;}else{c.book.poll().await;}
                 let _=c.host.voice.refresh().await;
                 c.host.connectivity.state.send_modify(|s|s.voice=Some(c.host.voice.state.borrow().clone()));
                 if let Err(e)=tokio::time::timeout(Duration::from_secs(4),c.refresh()).await.unwrap_or_else(|_|Err("PipeWire telephony did not respond".into())) {
@@ -691,6 +756,9 @@ pub async fn run(
         }
     }
     c.wanted = false;
+    if let Err(e) = c.book.clear().await {
+        crate::daemon_log!(Warn, "phonebook", "{e}");
+    }
     if let Err(e) = c.silence().await {
         crate::daemon_log!(Warn, "calls", "HFP cleanup: {e}");
     }
@@ -740,8 +808,9 @@ mod dbus_tests {
         fn address(&self) -> &str {
             "00:11:22:33:44:55"
         }
-        fn dial(&self, number: &str) {
+        fn dial(&self, number: &str) -> OwnedObjectPath {
             self.0.lock().unwrap().push(number.into());
+            OwnedObjectPath::try_from(format!("{ROOT}/ag0/call0")).unwrap()
         }
     }
     struct Incoming;
@@ -797,12 +866,8 @@ mod dbus_tests {
                 .any(|i| i.get(AG).and_then(|p| text(p, "Address")).as_deref()
                     == Some("00:11:22:33:44:55"))
         );
-        proxy(&bus, &format!("{ROOT}/ag0"), AG)
-            .await
-            .unwrap()
-            .call::<_, _, ()>("Dial", &("123",))
-            .await
-            .unwrap();
+        let call = dial(&bus, &format!("{ROOT}/ag0"), "123").await.unwrap();
+        assert_eq!(call.as_str(), format!("{ROOT}/ag0/call0"));
         assert_eq!(*log.lock().unwrap(), vec!["123"]);
         assert!(
             proxy(&bus, &format!("{ROOT}/ag0/call0"), CALL)

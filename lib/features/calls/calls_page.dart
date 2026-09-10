@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/connectivity/connectivity_service.dart';
+import 'phonebook_card.dart';
 
 /// A view of the shared native call/microphone services; no Bluetooth profiles.
 class CallsPage extends StatefulWidget {
@@ -82,7 +83,8 @@ class _CallsPageState extends State<CallsPage> {
             : devices.any((d) => d.id == state.selected)
             ? state.selected
             : null;
-        final connected = calls?['phase'] == 'connected';
+        final connected =
+            calls?['phase'] == 'connected' && calls?['device'] == chosen;
         final entries = (calls?['calls'] as List?) ?? [];
         return Padding(
           padding: const EdgeInsets.all(24),
@@ -119,6 +121,9 @@ class _CallsPageState extends State<CallsPage> {
                 ],
               ),
               const SizedBox(height: 12),
+              const Text(
+                'Calling SIM: controlled by the phone. Single-SIM phones use their SIM; on dual-SIM phones set the default calling SIM or answer any SIM prompt on the phone. This calling backend does not expose a SIM selector.',
+              ),
               Text(
                 calls?['detail'] as String? ??
                     'Checking installed PipeWire telephony support',
@@ -204,6 +209,22 @@ class _CallsPageState extends State<CallsPage> {
                     'Retry call audio after connecting microphone',
                   ),
                 ),
+              PhonebookCard(
+                book: calls?['phonebook'] as Map<String, dynamic>?,
+                enabled: connected && !busy,
+                request: (action, {target = ''}) =>
+                    command(action, target: target),
+                choose: (value) {
+                  setState(() => number.text = value);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Number filled above. Press Call to dial using the phone’s SIM policy.',
+                      ),
+                    ),
+                  );
+                },
+              ),
             ],
           ),
         );

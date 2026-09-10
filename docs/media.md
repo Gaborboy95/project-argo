@@ -167,7 +167,7 @@ and Lua, all supported playback controls, switching between Bluetooth and AA wit
 overlap, navigation ducking, disconnect/reconnect, and routine wireless cleanup
 after authorization caches expire. Phone AVRCP/A2DP interoperability and long-run
 routing behavior are not established by the virtual-node tests. AA covers/duration and
-Bluetooth BIP transfers still require phone verification. Local-file playback, contacts and phonebook remain unsupported. HFP and microphone acceptance limits are described below.
+Bluetooth BIP transfers still require phone verification. Local-file playback remains unsupported. HFP and microphone acceptance limits are described below.
 
 ## Rollback
 
@@ -194,8 +194,17 @@ The Calls page uses the shared paired-device list and selected Bluetooth adapter
 Press **Connect calls** for the chosen paired phone, then use **Call**, **Answer**
 or **Hang up / reject**. Call controls wait for the native operation result;
 unsupported phone commands remain errors. Dial/answer/hangup are never retried
-automatically. There is no contacts database, phonebook download, call history,
-conference management or emergency-calling assurance.
+automatically. Dial accepts the returned D-Bus call object path. PipeWire 1.4.2's
+implementation returns this path even though its introspection XML omits the output
+argument; interpreting it as an empty reply incorrectly reports failure after dialing.
+If a command times out, check the phone before repeating it. Argo logs operation
+IDs, actions and acceptance status, without dialed numbers or contact names.
+
+The installed `Dial(number)` API exposes no SIM inventory or selection argument.
+Single-SIM and dual-SIM phones use their own calling-subscription policy. Configure
+the default calling SIM on the phone, or respond to any phone-side selection prompt.
+Argo neither guesses a SIM from call objects nor retries dialing on another SIM.
+There is no conference management or emergency-calling assurance.
 
 The native controller uses the session-bus service `org.pipewire.Telephony`,
 provided by WirePlumber's PipeWire Bluetooth backend. `AudioGateway1`, `Call1` and
@@ -226,6 +235,39 @@ or rebuilding its view. The wpctl backend currently uses the desktop default
 output; change that output through desktop audio settings. Stream processes are
 terminated and reaped before releasing microphone ownership. Uncertain microphone
 cleanup fails closed until daemon restart.
+
+## Contacts and recent calls
+
+After **Connect calls**, use **Import contacts** or **Import recent calls** on
+Calls. Approve Bluetooth contact/call-history sharing on the phone if prompted.
+Argo uses the installed BlueZ OBEX session-bus service (`org.bluez.obex`), its
+`PhonebookAccess1` PBAP interface, and the same selected adapter and paired phone
+as call control. It requests the phone's internal address book (`int/pb`) or
+combined history (`int/cch`). SIM phonebooks and SIM attribution are not exposed.
+Phone support and sharing permissions determine availability; HFP call control
+does not require PBAP to succeed.
+
+Imports are explicit, with no background synchronization or automatic retry.
+Pages contain at most 40 records, browsable through offset 1000. Search filters the
+current page. Only vCard 3.0 names and up to three unambiguous telephone numbers
+per record are retained; photos, extensions, encoded fields and non-UTF-8 cards
+are unsupported. Selecting a number fills the dial field; **Call** is separate.
+Recent calls retain the phone-provided order. Argo does not infer timestamps,
+direction or SIM identity, and does not maintain its own historical call log.
+
+Each import has a 35-second bound. **Cancel import**, **Clear**, Disconnect,
+Forget, loss of the call connection and Quit clear the memory cache and stop owned
+OBEX work. A private runtime directory holds the downloaded page only while it is
+processed; normal completion and cancellation remove it. Downloads are limited
+to 256 KiB per page and serialized entries to 16 KiB inside the existing bounded
+IPC6 control snapshot. Contacts are not published to Lua or diagnostic logs.
+Daemon crashes can leave a private temporary directory under `$XDG_RUNTIME_DIR`;
+it contains personal data and can be removed after the daemon has stopped.
+Unconfirmed OBEX cleanup blocks further imports until daemon restart.
+
+PBAP interoperability and phone-side permission behavior still require hardware
+acceptance. A previous phone call may appear after importing recent calls if the
+phone shares its history; terminal diagnostics do not reconstruct that history.
 
 ## Shared microphone and USB ADC
 
@@ -264,7 +306,8 @@ full-duplex audio need hardware acceptance. The inspected Mu had no input source
 attached. Automated PCM and private D-Bus tests do not establish microphone levels,
 phone speech recognition or actual call audio.
 
-Protocol references: PipeWire [telephony implementation](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/telephony.c)
+Protocol references: BlueZ 5.82 [PBAP API](https://github.com/bluez/bluez/blob/5.82/doc/org.bluez.obex.PhonebookAccess.rst)
+and [OBEX session ownership](https://github.com/bluez/bluez/blob/5.82/obexd/client/session.c); PipeWire [telephony implementation](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/telephony.c)
 and [audio-gateway nodes](https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/bluez5/bluez5-device.c),
 revision `1.4.2`; LIVI microphone channel/protobuf definitions at revision
 `b8651d795e5f84871d7454ce25e6ff6fb79e03d5`. Implementations and credentials are not vendored.

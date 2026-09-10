@@ -2,7 +2,7 @@
 # Run only a staged, matching pair; this script does not build or provision.
 set -euo pipefail
 [[ $EUID -ne 0 ]] || { echo 'Run Argo as your desktop user.' >&2; exit 1; }
-argo_bundle=${ARGO_WIRELESS_BUNDLE:-"$HOME/dev/infotainment/bundle/argo-hfp-microphone-ipc6-20260910"}
+argo_bundle=${ARGO_WIRELESS_BUNDLE:-"$HOME/dev/infotainment/bundle/argo-telephony-pbap-ipc6-20260910"}
 argo_ihs=${IHS_PREFIX:-"$HOME/dev/ivi-build/out/usr/local"}
 : "${XDG_RUNTIME_DIR:?Launch from the logged-in desktop environment}"
 export ARGO_PROJECTION_SOCKET="$XDG_RUNTIME_DIR/argo-wireless-ipc6/projection.sock"

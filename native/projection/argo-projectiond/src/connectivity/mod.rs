@@ -4,6 +4,7 @@ pub mod calls;
 mod cover;
 pub mod music;
 pub mod network;
+pub mod phonebook;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 

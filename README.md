@@ -21,7 +21,8 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 - Home projection and Media/Now Playing with session-preserving AA Exit and resume.
 - Album artwork from AA and optional BlueZ BIP thumbnails, with a shared Media cache.
 - HFP call control through PipeWire telephony, shared USB ADC/mixed microphone input
-  for Android Auto and Bluetooth calls, and acknowledged Quit cleanup.
+  for Android Auto and Bluetooth calls, explicit contacts/recent-call import, and
+  acknowledged Quit cleanup.
 - Focused Settings sections, host volume/mute, Material 3 appearance and persistent preferences.
 - Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
   explicitly enabled host power integration.
@@ -34,7 +35,7 @@ admission is development-only and does not cryptographically bind TCP identity t
 Bluetooth identity. Full compatibility, endurance and lifecycle hardware validation
 remain limited. Bluetooth music hardware interoperability remains unverified;
 HFP duplex audio and AA microphone capture require ADC/phone acceptance.
-Contacts, phonebook and wallpaper/shaders are not implemented.
+PBAP phone interoperability remains unverified. Wallpaper/shaders are not implemented.
 
 ## Documentation
 
