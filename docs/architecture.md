@@ -257,6 +257,11 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 `veloce_lua_flutter`, and does not render those extension registries. Adding that
 UI would be separate work, not merely a Lua manifest permission.
 
+Settings uses a category sidebar when space permits and horizontal category navigation
+in smaller windows. Each category scrolls within one themed content surface; pairing
+requests remain visible outside Devices. This presentation uses the existing services
+and does not change configuration or session ownership.
+
 ## Projection configuration ownership (IPC v7)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
