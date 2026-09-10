@@ -130,6 +130,11 @@ Logging out stops Argo. Quit does not disable future graphical-login autostart;
 it stops the target for this session. `argoctl quit` invokes the same acknowledged
 application Quit path.
 
+The managed app requests Wayland fullscreen by default; it does not enlarge a
+fixed small window to the output. Configure an explicit development window or
+output index in [display configuration](configuration.md#managed-display-configuration).
+Appearance → Control size adjusts host controls without altering projection geometry.
+
 Individual service control and journal access:
 
 ```bash

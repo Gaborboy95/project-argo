@@ -20,10 +20,12 @@ if ! command -v emb >/dev/null && [[ -x "$HOME/.local/state/Dart/install/bin/emb
 fi
 export FLUTTER_WORKSPACE="$renderer_workspace"
 export IHS_PREFIX="$renderer_ihs"
-renderer_bundle="$renderer_workspace/bundle/argo-render-test"
+[[ $# -le 1 ]] || fail 'Usage: run_renderer_test.sh [existing-bundle]'
+renderer_bundle=${1:-"$renderer_workspace/bundle/argo-render-test"}
+[[ "$renderer_bundle" == /* ]] || fail 'Bundle path must be absolute.'
 renderer_build="$argo_root/build/native-projection-render-test"
 renderer_executable="$IHS_PREFIX/bin/homescreen"
-for command in cmake ninja pkg-config gst-inspect-1.0 emb flock pgrep; do
+for command in gst-inspect-1.0 flock pgrep; do
   command -v "$command" >/dev/null || fail "Required command missing: $command (load your emb CLI environment)."
 done
 [[ -x "$renderer_executable" ]] || fail "Missing executable: $renderer_executable"
@@ -39,23 +41,25 @@ if pgrep -u "$UID" -x homescreen >/dev/null; then
 fi
 # A workspace cross-compilation environment must not redirect system GStreamer.
 unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_LIBDIR
-cmake -S "$argo_root/native/projection/argo-projection-view" \
-  -B "$renderer_build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DIHS_INCLUDE_DIR="$IHS_PREFIX/include" \
-  -DIHS_SHARED_LIBRARY="$IHS_PREFIX/lib/libihs_shared.so"
-cmake --build "$renderer_build"
-cd -- "$renderer_workspace"
-emb bundle --app-path "$argo_root" --workspace "$renderer_workspace" \
-  --arch x86_64 --mode release --build --output "$renderer_bundle"
-install -m 755 "$renderer_build/libargo_projection_view.so" \
-  "$renderer_bundle/lib/libargo_projection_view.so"
+if [[ $# -eq 0 ]]; then
+  cmake -S "$argo_root/native/projection/argo-projection-view" \
+    -B "$renderer_build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DIHS_INCLUDE_DIR="$IHS_PREFIX/include" \
+    -DIHS_SHARED_LIBRARY="$IHS_PREFIX/lib/libihs_shared.so"
+  cmake --build "$renderer_build"
+  cd -- "$renderer_workspace"
+  emb bundle --app-path "$argo_root" --workspace "$renderer_workspace" \
+    --arch x86_64 --mode release --build --output "$renderer_bundle"
+  install -m 755 "$renderer_build/libargo_projection_view.so" \
+    "$renderer_bundle/lib/libargo_projection_view.so"
+fi
 for library in libapp.so libflutter_engine.so libargo_projection_view.so libveloce_lua_native.so libsqlite3.so; do
   [[ -f "$renderer_bundle/lib/$library" ]] || fail "Missing bundled library: $library"
 done
 # Clear inherited Argo/Veloce integrations, scenarios, sockets and credentials.
 # Preserve explicit DRM selection and opt-in geometry logging; otherwise native discovery wins.
 for variable in ${!ARGO_@} ${!VELOCE_@}; do
-  [[ "$variable" == ARGO_PROJECTION_DRM_RENDER_NODE || "$variable" == ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS ]] || unset "$variable"
+  [[ "$variable" == ARGO_PROJECTION_DRM_RENDER_NODE || "$variable" == ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS || "$variable" == ARGO_PROJECTION_RENDER_PATTERN ]] || unset "$variable"
 done
 renderer_state=$(mktemp -d /tmp/argo-renderer-test.XXXXXX)
 trap 'rm -rf -- "$renderer_state"' EXIT
@@ -69,5 +73,5 @@ export VELOCE_PLUGIN_DIR="$renderer_state/plugins" VELOCE_PLUGIN_STORAGE="$rende
 export VELOCE_LUA_LIBRARY="$renderer_bundle/lib/libveloce_lua_native.so"
 export LD_LIBRARY_PATH="$IHS_PREFIX/lib:$renderer_bundle/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # pipefail preserves homescreen failure even when tee succeeds.
-"$renderer_executable" -b "$renderer_bundle" --backend wayland-egl --width=1280 --height=720 \
+"$renderer_executable" -b "$renderer_bundle" --backend wayland-egl --fullscreen \
   2>&1 | tee /tmp/argo-renderer-test.log

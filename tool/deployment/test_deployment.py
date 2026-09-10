@@ -123,6 +123,21 @@ class DeploymentTest(unittest.TestCase):
                 self.assertNotIn('LD_PRELOAD', env)
                 self.assertEqual(env['WAYLAND_DISPLAY'], 'test-wayland')
                 self.assertEqual(env['ARGO_STARTUP_CONNECTIONS'], '')
+                self.assertIn('--fullscreen', execute.call_args.args[1])
+                self.assertFalse(any(arg.startswith(('--width', '--height', '--pixel-ratio'))
+                                     for arg in execute.call_args.args[1]))
+
+    def test_display_configuration_uses_surface_configuration_not_guessed_mode(self):
+        configuration = self.d.settings()
+        configuration['display'] = {'fullscreen': False, 'width': 960, 'height': 720, 'output_index': 0}
+        a.save(self.d.config / 'deployment.json', configuration)
+        self.assertEqual(self.d.display_arguments(self.d.settings()),
+                         ['--width=960', '--height=720', '--output-index=0'])
+        for display in ({'fullscreen': False}, {'fullscreen': 'false'}, {'width': 0}, {'pixel_ratio': 2}):
+            configuration['display'] = display
+            a.save(self.d.config / 'deployment.json', configuration)
+            with self.assertRaises(ValueError):
+                self.d.settings()
 
 
 if __name__ == '__main__':

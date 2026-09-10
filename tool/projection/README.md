@@ -186,8 +186,16 @@ cd "$ARGO"
 tool/projection/run_renderer_test.sh
 ```
 
-The script builds a dedicated app/view bundle, selects videotestsrc, disables real
-backends and isolates inherited credentials, integrations and sockets. It writes
+With no bundle argument the script builds a dedicated app/view bundle. To inspect
+an already staged release without rebuilding, pass its absolute path:
+
+```bash
+RENDER_BUNDLE=$(readlink -f "$HOME/.config/project-argo/current-release")
+tool/projection/run_renderer_test.sh "$RENDER_BUNDLE"
+```
+
+Both forms select videotestsrc, disable real
+backends and isolate inherited credentials, integrations and sockets. It writes
 `/tmp/argo-renderer-test.log`. Run it only when renderer validation is needed; it is
 not the LIVE AA launch command and does not validate wireless/TLS/audio.
 
@@ -211,12 +219,53 @@ or credentials. Renderer and daemon logs are separate.
 
 ```bash
 cd "$ARGO"
-ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1 tool/projection/run_renderer_test.sh
+RENDER_BUNDLE=$(readlink -f "$HOME/.config/project-argo/current-release")
+IHS_LOG_LEVEL=debug ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1 \
+  ARGO_PROJECTION_RENDER_PATTERN=circular \
+  tool/projection/run_renderer_test.sh "$RENDER_BUNDLE"
 ```
 
-Select Home and compare the measured fitted destination against the actual window.
-The launcher requests 1280×720; black letterboxing preserves source aspect ratio.
-AA Exit returns to Media through session focus, not renderer teardown.
+The supported diagnostic patterns are `smpte` (default), `checkers-1` (single-source-
+pixel detail), `circular` (curves/diagonals) and `ball` (motion). Text is overlaid when
+the GStreamer `textoverlay` plugin is installed; its absence is logged. Input remains
+1280×720/30 with square pixels, independently of fullscreen output dimensions. These
+are local test pixels, not a phone connection or evidence of codec fidelity.
+
+Both managed and renderer launchers request supported Wayland fullscreen. Flutter
+view metrics and LayoutBuilder allocate the dashboard; they never set a fake DPR.
+On the reference Mu at 125% desktop scaling, IHS reports 1638×1229 logical surface
+configuration and an actual 2048×1536 framebuffer. Flutter's physical view is divided
+by its real DPR for layout; the 16:9 native region is 2048×1152 physical pixels.
+The 1280×720 source therefore enlarges uniformly by 1.6. The half-logical-pixel
+rounding in Wayland configuration is not a separate touch-coordinate conversion.
+
+Opt-in Dart logs report geometry changes, not every frame. Native logs report decoded
+BGRx size/stride, submitted GBM frame size, ID and bounded submit counters. Submission
+is not proof of presentation. For an independent actual-buffer measurement, capture
+a short `WAYLAND_DEBUG=client` renderer run and inspect `create_immed` buffer dimensions,
+`xdg_toplevel.configure`, `preferred_scale` and `wp_viewport.set_destination`. Keep raw
+traces local and bounded; normal deployment does not enable Wayland packet logging.
+
+The installed IHS importer (`egl_dmabuf_import.cc`) sets GL_LINEAR minification and
+magnification. Its Wayland EGL compositor uses linear blitting/texturing. Argo keeps
+source-sized native buffers and has no `videoscale` or Dart pixel copy in this path.
+Flutter `Image.filterQuality` cannot change PlatformViewLayer filtering. No filtering
+or IHS patch is required by the measured fullscreen target; the exact dependency
+requirement above remains unchanged.
+
+Compare fine patterns and text at fit size with actual AA, using the existing next-
+session 720p/1080p settings. Smooth interpolated source-pixel boundaries indicate
+resampling; block/ringing artifacts confined to phone video suggest compression;
+misplaced regions, wrong clipping or input offsets indicate composition/mapping.
+A screenshot/geometry test alone cannot establish motion quality or zero artifacts.
+Use 1080p30 for a controlled comparison with 720p30; 1080p60 is not established on
+the reference phone. Changing host control size must not renegotiate any stream.
+
+Open climate over moving diagnostic video and check opacity, dimming and clipping;
+close it and confirm the same native ID continues. Toggle the media strip, change
+control size, then repeat with AA input and AA Exit → Media → Home. These operations
+must not move the primary/dock rectangles or create another native consumer.
+
 
 ## Host metadata and Lua
 

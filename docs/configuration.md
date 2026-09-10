@@ -188,6 +188,7 @@ additional settings file is used.
 | Typed key | Default | Accepted persisted value |
 |---|---|---|
 | `appearance.themeMode` | `dark` | String: `light`, `dark`, `system` |
+| `appearance.controlSize` | `1.0` | Number: `1.0` (Standard), `1.15` (Large), `1.3` (Extra large); live host sizing only |
 | `appearance.seedColor` | `#6750A4` | Opaque six-digit RGB string `#RRGGBB`; case-insensitive input, normalized uppercase in memory |
 
 The default accent retains Flutter's existing Material 3 palette. Other seeds
@@ -195,7 +196,7 @@ produce light/dark Material ColorSchemes. The UI offers Purple (default), Teal
 (`#006A6A`), Blue (`#005AC1`) and Amber (`#895100`). Seed colours are not exact
 foreground colours: Material derives readable surface/foreground pairs.
 Malformed stored values produce the existing settings diagnostic and fall back
-to the corresponding default. Reset appearance removes only these two overrides;
+to the corresponding default. Reset appearance removes only these three overrides;
 audio, projection preferences and the selected module remain intact.
 
 “System” follows the brightness preference reported to Flutter, using
@@ -203,7 +204,7 @@ MaterialApp's ThemeMode.system. Live desktop brightness-preference propagation t
 is not verified; system mode depends on host forwarding. Manual light/dark selection works
 independently. This setting does not control physical display brightness,
 headlights, vehicle night mode or Android Auto's day/night mode.
-Fullscreen projection remains opaque black, including letterboxing. Wallpaper,
+The projection region remains opaque black, including letterboxing. Wallpaper,
 shaders and vehicle-driven day/night selection remain future work.
 
 ## Connectivity requests
@@ -270,13 +271,15 @@ Managed deployment uses `$HOME/.config/project-argo/`:
 - `current-release`: the atomic shared release symlink; change it with `argoctl select`.
 - `previous-release.json`: the previous managed selection used by `argoctl rollback`.
 - `deployment.json`: absolute `ihs_prefix`, common `environment` map and default-off
-  `connect` booleans (`wireless`, `music`, `calls`).
+  `connect` booleans (`wireless`, `music`, `calls`) and optional `display` options.
 - `daemon.json`: daemon-only identity paths and optional AA wire/codec opt-ins.
 - `settings.json`: existing application preferences; release switches never replace it.
 
 `deployment.json` accepts these common environment keys: `ARGO_AUDIO_BACKEND`,
 `ARGO_PROJECTION_BACKEND`, `ARGO_PROJECTION_LOG_LEVEL`, `ARGO_HOST_POWER_BACKEND`,
-`ARGO_MODE`, `ARGO_VEHICLE_PROFILE`. Defaults are production mode, Android Auto,
+`ARGO_MODE`, `ARGO_VEHICLE_PROFILE`, `ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS` and
+`ARGO_PROJECTION_RENDER_TEST`. The renderer test requires the disabled projection
+backend and must not be used for normal phone operation. Defaults are production mode, Android Auto,
 PipeWire and disabled host power. Use the option values documented above.
 Unknown keys are rejected. The launcher strips ambient ARGO, Veloce and dynamic
 loader overrides, then supplies matched view/Lua libraries and private runtime
@@ -313,3 +316,20 @@ A later application start creates a fresh startup window. AA Exit only hides
 presentation. Connecting music does not override entertainment-source selection
 or start playback automatically; choose the desired source in Media. Calls use
 the existing shared microphone/audio ownership.
+
+### Managed display configuration
+
+The default is `"display": {"fullscreen": true}`. IHS requests fullscreen from
+Wayland; the compositor supplies the surface size and output scale. Argo does not
+force a resolution, display index or pixel ratio. For a development window, merge
+`"display": {"fullscreen": false, "width": 960, "height": 720}` into
+`deployment.json`; dimensions are required positive integers. Optional
+`"output_index": 0` selects an IHS output index when explicitly configured.
+Changing these options requires an app restart. Application control size remains
+independent of window size and desktop scaling.
+
+`ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS=1` logs source size, fitted logical/physical
+rectangles, view DPR and Flutter physical size only when they change. During startup, IHS may
+publish view metrics before Flutter's display list; an empty list is reported
+without guessing display identity. Native target verification
+uses the IHS/Wayland diagnostics in the [renderer guide](../tool/projection/README.md#fullscreen-presentation-geometry).

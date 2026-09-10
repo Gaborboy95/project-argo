@@ -23,7 +23,8 @@ REQUIRED = ('bin/argo-projectiond', 'lib/libapp.so', 'lib/libargo_projection_vie
 IHS_FILES = ('bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_view.h')
 # Explicit common whitelist. Identity is read only in the daemon exec branch.
 COMMON = {'ARGO_AUDIO_BACKEND', 'ARGO_PROJECTION_BACKEND', 'ARGO_PROJECTION_LOG_LEVEL',
-          'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE'}
+          'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE',
+          'ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS', 'ARGO_PROJECTION_RENDER_TEST'}
 DAEMON = {'ARGO_ANDROID_AUTO_CERT_FILE', 'ARGO_ANDROID_AUTO_KEY_FILE',
           'ARGO_ANDROID_AUTO_HEVC', 'ARGO_ANDROID_AUTO_PROTOCOL_VERSION'}
 
@@ -88,6 +89,16 @@ class Deployment:
         auto = value.get('connect', {})
         if set(auto) - {'wireless', 'music', 'calls'} or any(type(v) is not bool for v in auto.values()):
             raise ValueError('Connect options must be wireless/music/calls booleans')
+        display = value.get('display', {})
+        if not isinstance(display, dict) or set(display) - {'fullscreen', 'width', 'height', 'output_index'}:
+            raise ValueError('Unknown display option')
+        if type(display.get('fullscreen', True)) is not bool:
+            raise ValueError('Display fullscreen must be a boolean')
+        for key in ('width', 'height', 'output_index'):
+            if key in display and (type(display[key]) is not int or display[key] < (0 if key == 'output_index' else 1)):
+                raise ValueError('Display ' + key + ' must be a valid integer')
+        if not display.get('fullscreen', True) and not all(key in display for key in ('width', 'height')):
+            raise ValueError('Windowed display requires explicit width and height')
         return value
 
     def ihs(self):
@@ -309,8 +320,18 @@ class Deployment:
             if managed:
                 env['ARGO_MANAGED_SOCKET'] = str(runtime / 'application.sock')
             command = [str(prefix / 'bin/homescreen'), '-b', str(bundle), '--backend', 'wayland-egl',
-                       '--width=1280', '--height=720']
+                       *self.display_arguments(configuration)]
         os.execve(command[0], command, env)
+
+    @staticmethod
+    def display_arguments(configuration):
+        display = configuration.get('display', {})
+        # Wayland configures the fullscreen surface; no guessed mode or fake DPR.
+        args = ['--fullscreen'] if display.get('fullscreen', True) else [
+            '--width=' + str(display['width']), '--height=' + str(display['height'])]
+        if 'output_index' in display:
+            args.append('--output-index=' + str(display['output_index']))
+        return args
 
     def app_request(self, action):
         with socket.socket(socket.AF_UNIX) as client:

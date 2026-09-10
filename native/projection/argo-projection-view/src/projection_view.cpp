@@ -141,9 +141,29 @@ struct ViewState {
   bool StartPipeline() {
     std::string source;
     if (renderer_test) {
-      source = "videotestsrc is-live=true pattern=smpte horizontal-speed=2 ! "
+      const char* configured = std::getenv("ARGO_PROJECTION_RENDER_PATTERN");
+      const std::string pattern = configured != nullptr ? configured : "smpte";
+      // Never interpolate arbitrary pipeline text from the environment. These
+      // patterns exercise spatial detail and motion on the same native path.
+      if (pattern != "smpte" && pattern != "checkers-1" &&
+          pattern != "circular" && pattern != "ball") {
+        std::fprintf(stderr, "Argo renderer test: unsupported test pattern\n");
+        return false;
+      }
+      source = "videotestsrc is-live=true pattern=" + pattern + " horizontal-speed=2 ! "
           "video/x-raw,format=BGRx,width=1280,height=720,"
           "framerate=30/1,pixel-aspect-ratio=1/1 ! ";
+      // Pango is optional for the existing bars test, required for text/detail
+      // comparisons. Report its absence rather than silently claiming coverage.
+      GstElementFactory* text = gst_element_factory_find("textoverlay");
+      if (text != nullptr) {
+        gst_object_unref(text);
+        source += "textoverlay text=\"Argo renderer diagnostic / 1280 x 720 / 30 fps\" "
+            "font-desc=\"Sans 18\" shaded-background=true ! ";
+      } else {
+        std::fprintf(stderr, "Argo renderer test: textoverlay unavailable; text comparison unavailable\n");
+      }
+      std::fprintf(stderr, "Argo renderer test: pattern=%s; native source 1280x720, no intermediate resize; filtering owned by IHS\n", pattern.c_str());
     } else {
       const char* override_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
       const char* runtime = std::getenv("XDG_RUNTIME_DIR");
