@@ -11,7 +11,16 @@ final class ConnectivityPreferences implements ConnectivityService {
     this.settings, {
     Set<String> startupConnections = const {},
     Timer Function(Duration, void Function()) deadlineTimer = Timer.new,
-  }) : _startupPending = {...startupConnections} {
+  }) : _startupPending = settings.get(AppSettingKeys.autoConnectPhone)
+           ? {'phone', ...startupConnections}
+           : {} {
+    _settingsSubscription = settings.changes.listen((change) {
+      if (change.keyId == AppSettingKeys.autoConnectPhone.id &&
+          !settings.get(AppSettingKeys.autoConnectPhone)) {
+        _startupPending.clear();
+        _startupDeadline?.cancel();
+      }
+    });
     if (_startupPending.isNotEmpty) {
       _startupDeadline = deadlineTimer(const Duration(seconds: 30), () {
         _startupPending.clear();
@@ -23,6 +32,8 @@ final class ConnectivityPreferences implements ConnectivityService {
   final ConnectivityService backend;
   final SettingsService settings;
   StreamSubscription<ConnectivitySnapshot>? _subscription;
+  StreamSubscription<SettingChange>? _settingsSubscription;
+  bool _selectionSuppressed = false, _selectingPhone = false;
   final Set<String> _startupPending;
   Timer? _startupDeadline;
   String? _startupPhone;
@@ -30,6 +41,10 @@ final class ConnectivityPreferences implements ConnectivityService {
   bool _restored = false;
 
   void _startup(ConnectivitySnapshot state) {
+    if (!settings.get(AppSettingKeys.autoConnectPhone)) {
+      _startupPending.clear();
+      return;
+    }
     if (!_choicesRestored ||
         !state.daemonConnected ||
         !state.available ||
@@ -37,6 +52,16 @@ final class ConnectivityPreferences implements ConnectivityService {
         state.cleanupError.isNotEmpty ||
         !state.devices.any((d) => d.id == state.selected && d.paired)) {
       return;
+    }
+    if (_startupPending.contains('phone')) {
+      if (state.enabled && state.wirelessAvailable == true) {
+        _startupPending.remove('phone');
+        _startupPending.add('wireless');
+      } else if ((!state.enabled || state.wirelessAvailable == false) &&
+          state.music != null) {
+        _startupPending.remove('phone');
+        _startupPending.add('music');
+      }
     }
     // Consume before sending. Radio loss, suspension and later snapshots cannot
     // rearm these requests. Provider controllers own their bounded retries.
@@ -49,6 +74,29 @@ final class ConnectivityPreferences implements ConnectivityService {
       };
       if (!ready) continue;
       _startupPending.remove(source);
+      final phase = switch (source) {
+        'wireless' => state.phase,
+        'music' => state.music?['phase'],
+        _ => state.calls?['phase'],
+      };
+      if ({
+        'preparing',
+        'bootstrap',
+        'connecting',
+        'connected',
+        'projecting',
+        'streaming',
+        'suspended',
+        'backoff',
+        'retrying',
+        'waiting',
+        'waiting-audio',
+        'routing-failed',
+        'disconnecting',
+        'cleanup',
+      }.contains(phase)) {
+        continue;
+      }
       final action = switch (source) {
         'wireless' => 'connect',
         'music' => 'musicConnect',
@@ -64,6 +112,7 @@ final class ConnectivityPreferences implements ConnectivityService {
 
   bool _microphoneRestored = false;
   void _restore(ConnectivitySnapshot state) {
+    if (_choicesRestored) _restorePhone(state);
     _startup(state);
     final input = settings.get(AppSettingKeys.microphoneInput);
     if (!_microphoneRestored && input.isNotEmpty && state.voice != null) {
@@ -83,14 +132,16 @@ final class ConnectivityPreferences implements ConnectivityService {
 
   Future<void> _restoreChoices(ConnectivitySnapshot state) async {
     if (state.band != null) {
-      await backend.connectivityCommand(
-        'band',
-        target: settings.get(AppSettingKeys.connectivityBand),
-      );
+      await backend
+          .connectivityCommand(
+            'band',
+            target: settings.get(AppSettingKeys.connectivityBand),
+          )
+          .catchError((Object _) {});
     }
     final adapter = settings.get(AppSettingKeys.connectivityAdapter);
     final interface = settings.get(AppSettingKeys.connectivityInterface);
-    final phone = settings.get(AppSettingKeys.connectivityPhone);
+    if (_selectionSuppressed) return;
     final radio = state.adapters
         .where((r) => r.address == adapter || r.id == adapter)
         .firstOrNull;
@@ -108,19 +159,45 @@ final class ConnectivityPreferences implements ConnectivityService {
       }
     }
     if (state.networks.any((r) => r.id == interface)) {
-      await backend.connectivityCommand('interface', target: interface);
+      await backend
+          .connectivityCommand('interface', target: interface)
+          .catchError((Object _) {});
     }
+    _choicesRestored = true;
+    _restorePhone(backend.connectivity);
+  }
+
+  void _restorePhone(ConnectivitySnapshot state) {
+    if (_selectionSuppressed || _selectingPhone || _startupPhone != null) {
+      return;
+    }
+    final phone = settings.get(AppSettingKeys.connectivityPhone);
+    final adapter = settings.get(AppSettingKeys.connectivityAdapter);
+    final radio = state.adapters
+        .where((r) => r.address == adapter || r.id == adapter)
+        .firstOrNull;
     final phoneAddress = phone.contains('/') ? phone.split('/').last : '';
     final restoredPhone = radio != null && phoneAddress.isNotEmpty
         ? '${radio.id}/$phoneAddress'
         : phone;
-    if ((adapter.isEmpty || radio != null) &&
-        state.devices.any((d) => d.id == restoredPhone && d.paired)) {
-      _startupPhone = restoredPhone;
-      await backend.connectivityCommand('select', target: restoredPhone);
+    if ((adapter.isNotEmpty && radio == null) ||
+        !state.devices.any((d) => d.id == restoredPhone && d.paired)) {
+      return;
     }
-    _choicesRestored = true;
-    _startup(backend.connectivity);
+    _selectingPhone = true;
+    _startupPhone = restoredPhone;
+    unawaited(() async {
+      try {
+        if (!_selectionSuppressed && state.selected != restoredPhone) {
+          await backend.connectivityCommand('select', target: restoredPhone);
+        }
+        if (!_selectionSuppressed) _startup(backend.connectivity);
+      } on Object {
+        /* Missing/forgotten phone remains ordinary disconnected UI. */
+      } finally {
+        _selectingPhone = false;
+      }
+    }());
   }
 
   @override
@@ -138,16 +215,24 @@ final class ConnectivityPreferences implements ConnectivityService {
     // Explicit intent wins even while waiting for inventory/restore or a failed
     // command. Startup never chooses a different phone after Forget/selection.
     if ({'forget', 'stopAll', 'adapter', 'select'}.contains(action)) {
+      _selectionSuppressed = true;
       _startupPending.clear();
-    } else if (action == 'disconnect' ||
+    } else if ({
+          'disconnect',
+          'musicDisconnect',
+          'callsDisconnect',
+        }.contains(action) ||
         ({'enable', 'projectionEnabled'}.contains(action) && !accept)) {
-      _startupPending.remove('wireless');
-    } else if (action == 'musicDisconnect' || action == 'musicConnect') {
-      _startupPending.remove('music');
-    } else if (action == 'callsDisconnect' || action == 'callsConnect') {
-      _startupPending.remove('calls');
-    } else if (action == 'connect') {
-      _startupPending.remove('wireless');
+      _startupPending.clear();
+    } else if ({'connect', 'musicConnect', 'callsConnect'}.contains(action)) {
+      _startupPending.remove('phone');
+      _startupPending.remove(
+        action == 'connect'
+            ? 'wireless'
+            : action == 'musicConnect'
+            ? 'music'
+            : 'calls',
+      );
     }
     await backend.connectivityCommand(
       action,
@@ -173,14 +258,17 @@ final class ConnectivityPreferences implements ConnectivityService {
       );
     }
     if (action == 'forget' &&
-        settings.get(AppSettingKeys.connectivityPhone) == target) {
+        (settings.get(AppSettingKeys.connectivityPhone) == target ||
+            target == _startupPhone)) {
       await settings.reset(AppSettingKeys.connectivityPhone);
     }
   }
 
   Future<void> close() async {
+    _selectionSuppressed = true;
     _startupDeadline?.cancel();
     _startupPending.clear();
+    await _settingsSubscription?.cancel();
     await _subscription?.cancel();
   }
 }

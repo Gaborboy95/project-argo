@@ -59,12 +59,26 @@ rectangles. It cannot change stream negotiation, AA DPI or Flutter's DPR. Render
 and input continue to use the same ProjectionViewGeometry and ProjectionTouchMapper.
 Window metric changes update layout and cancel any active projection gesture.
 
-Dock Home resumes projection; Media toggles only the strip. Apps opens registered
-destinations, including the full Media page; Settings stays directly accessible.
-Camera is unavailable. Climate is presentation-only: normal controls are disabled,
-while `ARGO_MODE=simulation` labels local interactive values as a demo. The handle
-supports dragging between closed/expanded states. Neither sheet publishes vehicle
-feedback or sends CAN commands. The native session/view remains mounted beneath it.
+Dock Home resumes projection; Media toggles only the reserved strip directly
+below projection. Pulling up on that strip opens Media with larger artwork,
+metadata, supported transport commands and source selection. Apps opens a centered
+labelled grid of registered destinations; Settings stays directly accessible.
+Camera is unavailable.
+
+Media, Climate and Apps share one modal DashboardPanel above the stationary dock.
+Opening another replaces the current panel. Its single vertical recognizer lets
+small movements remain child taps; intentional vertical movement cancels the tap.
+Downward movement anywhere pulls the panel, with distance and release velocity
+choosing dismissal or snap-back. Upward movement scrolls longer panel content.
+Horizontal temperature adjustment retains its own axis. The modal scope cancels
+projection pointers and blocks background input without replacing the native view.
+
+Each dock temperature toggles Climate. Arrows and horizontal drags adjust local
+preview values in 0.5°C steps from 18–26°C; the temporary adjustment bar runs from
+blue through neutral at 22°C to red. Climate is explicitly labelled an interactive
+demo with no vehicle connection. It has temperature and airflow groups, no seat
+controls, and sends no vehicle commands. Volume remains outside panel gesture
+ownership.
 
 The volume gesture starts from AudioService's current level, applies relative
 vertical motion and keeps one in-flight write plus one replaceable target, with a

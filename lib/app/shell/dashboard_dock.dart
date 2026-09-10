@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_service.dart';
 import 'dashboard_volume.dart';
+import 'dashboard_temperature.dart';
 
 class DashboardDock extends StatelessWidget {
   const DashboardDock({
@@ -16,136 +17,88 @@ class DashboardDock extends StatelessWidget {
     required this.onApps,
     required this.onSettings,
     required this.onClimate,
-    required this.onClimateDrag,
-    required this.onClimateEnd,
+    required this.left,
+    required this.right,
+    required this.onLeft,
+    required this.onRight,
     required this.audio,
     required this.onVolume,
   });
-  final double scale;
+  final double scale, left, right;
   final bool home, mediaVisible;
-  final VoidCallback onHome,
-      onMedia,
-      onApps,
-      onSettings,
-      onClimate,
-      onClimateEnd;
-  final ValueChanged<double> onClimateDrag;
+  final VoidCallback onHome, onMedia, onApps, onSettings;
+  final ValueChanged<String> onClimate;
+  final ValueChanged<double> onLeft, onRight;
   final AudioService? audio;
   final ValueChanged<double?> onVolume;
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.surfaceContainer,
-    child: Column(
-      children: [
-        GestureDetector(
-          key: const ValueKey('climate-handle'),
-          behavior: HitTestBehavior.opaque,
-          onTap: onClimate,
-          onVerticalDragUpdate: (e) => onClimateDrag(e.delta.dy),
-          onVerticalDragEnd: (_) => onClimateEnd(),
-          onVerticalDragCancel: onClimateEnd,
-          child: SizedBox(
-            height: 24,
-            width: double.infinity,
-            child: Center(
-              child: Container(
-                width: 40,
-                height: 3,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
+    child: LayoutBuilder(
+      builder: (context, c) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: math.max(c.maxWidth, 700 * scale),
+          height: c.maxHeight,
+          child: Row(
+            children: [
+              _button('Settings', Icons.settings_outlined, onSettings),
+              Expanded(child: _temperature('Left', left, onLeft)),
+              const VerticalDivider(width: 1, indent: 22, endIndent: 22),
+              _button('Home', Icons.home_outlined, onHome, selected: home),
+              _button(
+                'Media strip',
+                Icons.music_note_outlined,
+                onMedia,
+                selected: mediaVisible,
+              ),
+              _button('Apps', Icons.apps_rounded, onApps),
+              _button('Camera unavailable', Icons.videocam_outlined, null),
+              const VerticalDivider(width: 1, indent: 22, endIndent: 22),
+              Expanded(child: _temperature('Right', right, onRight)),
+              SizedBox(
+                width: 80 * scale,
+                height: double.infinity,
+                child: DashboardVolume(
+                  audio: audio,
+                  scale: scale * 1.25,
+                  onIndicator: onVolume,
                 ),
               ),
-            ),
+            ],
           ),
-        ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) => SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: math.max(constraints.maxWidth, 528 * scale),
-                height: constraints.maxHeight,
-                child: Row(
-                  children: [
-                    _button('Settings', Icons.settings_outlined, onSettings),
-                    Expanded(child: _climate('Left climate')),
-                    SizedBox(
-                      width: 256 * scale,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _button(
-                            'Home',
-                            Icons.home_outlined,
-                            onHome,
-                            selected: home,
-                          ),
-                          _button(
-                            'Media strip',
-                            Icons.music_note_outlined,
-                            onMedia,
-                            selected: mediaVisible,
-                          ),
-                          _button('Apps', Icons.apps_rounded, onApps),
-                          _button(
-                            'Camera unavailable',
-                            Icons.videocam_outlined,
-                            null,
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(child: _climate('Right climate')),
-                    SizedBox(
-                      width: 64 * scale,
-                      height: double.infinity,
-                      child: DashboardVolume(
-                        audio: audio,
-                        scale: scale,
-                        onIndicator: onVolume,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    ),
-  );
-  Widget _climate(String label) => SizedBox(
-    width: 72 * scale,
-    height: double.infinity,
-    child: TextButton(
-      onPressed: onClimate,
-      child: Semantics(
-        label: label,
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Icon(Icons.thermostat, size: 20 * scale),
-            Text('—', style: TextStyle(fontSize: 22 * scale)),
-          ],
         ),
       ),
     ),
   );
+  Widget _temperature(String side, double value, ValueChanged<double> change) =>
+      Column(
+        children: [
+          const Text('DEMO', style: TextStyle(fontSize: 9, letterSpacing: 1)),
+          Expanded(
+            child: DashboardTemperature(
+              side: side,
+              value: value,
+              onChange: change,
+              onTap: () => onClimate(side),
+              scale: scale,
+            ),
+          ),
+        ],
+      );
   Widget _button(
     String label,
     IconData icon,
-    VoidCallback? onTap, {
+    VoidCallback? tap, {
     bool selected = false,
   }) => SizedBox(
-    width: 64 * scale,
+    width: 80 * scale,
     height: double.infinity,
     child: IconButton(
       tooltip: label,
       isSelected: selected,
-      onPressed: onTap,
-      icon: Icon(icon, size: 26 * scale),
+      onPressed: tap,
+      icon: Icon(icon, size: 36 * scale),
     ),
   );
 }

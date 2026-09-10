@@ -110,6 +110,7 @@ The service's `set`/`reset` is the supported in-app change path.
 | Key | Type, default and accepted values | Effect |
 |---|---|---|
 | `app.navigation.lastModule` | String `home`, nonempty | Last selection; shell resolves registered modules and falls back for unavailable IDs. |
+| `connectivity.autoConnectPhone` | Boolean `true` | Settings → Devices: one bounded startup request for the remembered paired phone; disabling cancels pending startup actions for this run. |
 | `audio.master.volume` | Number `0.5`, 0..1 | Requested master volume; real backend applies supported operation. |
 | `audio.master.muted` | Boolean `false` | Requested mute. |
 | `audio.output.balance` | Number `0`, -1..1 | Saved preference; current wpctl backend cannot apply. |
@@ -219,8 +220,8 @@ on the next connection. Wireless capability is enabled automatically when a sele
 managed Wi-Fi interface supports AP mode and a permitted channel in that band.
 A card used by another connection is unavailable. If exactly one candidate is viable
 and no interface was chosen, it is selected; ambiguity requires selection. Disable
-persists for the application connection until explicitly enabled again. Connect and
-discovery remain explicit, never restored or initiated by capability detection.
+persists for the application connection until explicitly enabled again. Capability detection itself does not connect or start discovery. The separate
+saved startup preference can request a connection to the remembered paired phone.
 The former `ARGO_WIRELESS_DEVELOPMENT` flag is no longer read.
 See [security, permissions, launch and rollback](wireless.md).
 
@@ -234,9 +235,9 @@ There is no new media payload channel or Lua write permission.
 `ARGO_PROJECTION_BACKEND=disabled` selects a connectivity-only client on Linux and
 disables native projection admission; shared pairing/music remain available. The
 normal launcher respects this setting. With `android-auto`, absent/invalid daemon
-identity prevents AA startup but does not disable Bluetooth. Neither mode starts
-music until an explicit connection request. Selected entertainment source and its
-bounded connection intent are session-local, not persistent auto-connect settings.
+identity prevents AA startup but does not disable Bluetooth. Music connection requires a manual or saved startup request. Selected
+entertainment source and bounded connection intent remain session-local; the
+startup preference does not select music or begin playback.
 
 Administrator-approved firewall interfaces/accounts are stored only in root-owned
 `/etc/argo/projection-firewall.json`; the runtime cannot edit the helper or polkit
@@ -304,17 +305,25 @@ they do not mutate a live session. The installed CLI saves opt-in connection cho
 "$HOME/.local/bin/argoctl" autoconnect wireless off
 ```
 
-At application startup Argo restores the existing selected adapter/phone, then
-waits up to 30 seconds for inventory and the corresponding controller. It sends
-at most one initial request per enabled option; native controllers retain their
-existing bounded retry policy. Wireless additionally requires enabled projection,
-a viable selected Wi-Fi interface and wireless availability. This is not a persistent
-reconnect supervisor. Explicit Connect consumes that pending startup request;
-Disconnect/Disable suppress the corresponding pending request, and Forget,
-selection changes or Quit cancel all pending requests for that application run.
-A later application start creates a fresh startup window. AA Exit only hides
-presentation. Connecting music does not override entertainment-source selection
-or start playback automatically; choose the desired source in Media. Calls use
+Settings → Devices → **Auto-connect phone** is saved in application preferences
+and defaults to **on**. At application startup Argo restores the selected adapter
+and last selected paired phone, waiting up to 30 seconds for inventory and controller
+readiness. It requests wireless AA when projection is enabled and wireless is
+available; otherwise it requests Bluetooth music when that controller is available.
+No valid remembered paired phone leaves the ordinary disconnected UI quietly.
+The deployment options above can additionally request specific profiles (each
+remains off by default), but the application setting is the master switch for all
+startup phone requests. Calls are not automatically requested by the default alone.
+
+Each ready profile request is consumed before sending, and an already connecting
+or connected controller is not started again. Existing controllers retain their
+bounded retry policy. Explicit Connect consumes its pending startup request;
+Disconnect or Disable cancels all remaining startup requests for the run. Forget
+clears the matching remembered phone, while selection changes or Quit also cancel
+pending requests. Turning the setting on again does not rearm the current run;
+a later application start creates a fresh window. Manual Connect still works when
+auto-connect is off. AA Exit changes presentation only. Music connection does not
+select its source or start playback; use Media for source selection. Calls retain
 the existing shared microphone/audio ownership.
 
 ### Managed display configuration

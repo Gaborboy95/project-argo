@@ -3,9 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/settings/settings_service.dart';
+import '../../core/settings/app_setting_keys.dart';
 
 class ConnectivitySettingsCard extends StatefulWidget {
-  const ConnectivitySettingsCard({required this.service, super.key});
+  const ConnectivitySettingsCard({
+    required this.service,
+    this.settings,
+    super.key,
+  });
+  final SettingsService? settings;
   final ConnectivityService service;
   @override
   State<ConnectivitySettingsCard> createState() =>
@@ -62,6 +69,30 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
                 'Devices & connectivity',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
+              if (widget.settings != null)
+                SwitchListTile(
+                  title: const Text('Auto-connect phone'),
+                  subtitle: const Text(
+                    'Try the last paired phone at startup. Explicit Disconnect stops automatic attempts for this run.',
+                  ),
+                  value: widget.settings!.get(AppSettingKeys.autoConnectPhone),
+                  onChanged: (v) async {
+                    try {
+                      await widget.settings!.set(
+                        AppSettingKeys.autoConnectPhone,
+                        v,
+                      );
+                      if (mounted) setState(() {});
+                    } on Object {
+                      if (mounted) {
+                        setState(
+                          () =>
+                              error = 'Could not save auto-connect preference',
+                        );
+                      }
+                    }
+                  },
+                ),
               if (prompt != null)
                 Card(
                   color: Theme.of(context).colorScheme.secondaryContainer,

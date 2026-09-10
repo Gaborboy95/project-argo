@@ -156,6 +156,18 @@ and at most three starts in a 90-second window. `systemctl --user reset-failed
 argo-app.service argo-projectiond.service` clears a start-rate limit after the
 underlying problem is corrected.
 
+### Startup phone preference
+
+Settings → Devices → **Auto-connect phone** defaults on and remembers the last
+selected paired phone. Once connectivity is ready, Argo makes one initial request
+through the existing wireless controller, or Bluetooth music when wireless is not
+available/enabled. Disable this saved setting to keep startup disconnected; manual
+Connect remains available. Disconnect/Disable suppress pending startup actions for
+the current run. See [configuration](configuration.md#typed-saved-settings) for the
+master setting and [deployment options](configuration.md) for
+additional opt-in profile requests.
+
+
 ## Shutdown, updates and rollback
 
 **Settings → Application → Quit Argo** waits for the daemon's `stopAll`

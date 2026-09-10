@@ -59,7 +59,7 @@ For Bluetooth-only operation set `ARGO_PROJECTION_BACKEND=disabled` in both laun
 terminals before starting the daemon/application. Identity exports can be unset;
 the launcher no longer requires them for shared connectivity. Identity remains
 mandatory on the daemon for actual AA projection. No boot-time music connection or
-persistent auto-connect is enabled.
+startup auto-connect is enabled (see [configuration](configuration.md)).
 
 ## Artwork and output volume
 
@@ -353,13 +353,19 @@ not implemented from unverified assumptions.
 
 ## Dashboard strip and volume
 
-The dock's Media shortcut shows/hides a reserved thin strip containing the selected
-MediaSessionService source's artwork, title/artist and supported playback commands.
-Unsupported commands are omitted; unknown artwork/metadata stays unavailable. Use
-Apps → Media for source selection and the full Now Playing page. The strip toggle
-is independent of AA Exit, which navigates to Media while retaining the session.
-Selecting Home resumes that session; showing a strip or climate sheet does not
-change the selected entertainment source or projection focus.
+The dock's Media shortcut shows/hides a reserved thin strip directly below
+projection. It presents the selected MediaSessionService source's artwork beside
+a two-line title/artist area, with centered supported playback commands. Pull up
+anywhere on the strip to open the larger Media panel; its artwork, metadata,
+position/duration and source choices use the same service. Unknown fields remain
+unknown and unsupported commands are omitted. Pull down anywhere in the panel,
+including over a control, to dismiss; small movement still permits a tap.
+Apps → Media also opens the full Now Playing destination.
+
+The strip toggle and expanded panels are independent of AA Exit, which navigates
+to Media while retaining the session. Home resumes that session. Opening a panel
+does not change entertainment-source selection or projection focus; selecting a
+source explicitly uses the existing audio ownership policy.
 
 Tap the dock volume control to mute, or drag vertically from its current level for
 live relative adjustment. Its floating indicator disappears on release/cancel;

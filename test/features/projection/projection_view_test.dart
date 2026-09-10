@@ -348,7 +348,7 @@ void main() {
           await settings.set(AppSettingKeys.appearanceControlSize, size);
           await tester.pumpAndSettle();
           await tester.tap(find.byTooltip('Media strip'));
-          await tester.tap(find.byKey(const ValueKey('climate-handle')));
+          await tester.tap(find.byKey(const ValueKey('temperature-Left')));
           await tester.pumpAndSettle();
           expect(find.byType(DashboardClimate), findsOneWidget);
           expect(tester.getRect(find.byType(PlatformViewSurface)), rectangle);
@@ -359,6 +359,41 @@ void main() {
           );
           await tester.tap(find.byTooltip('Close climate'));
           await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('Apps'));
+          await tester.pumpAndSettle();
+          expect(tester.getRect(find.byType(PlatformViewSurface)), rectangle);
+          expect(tester.getRect(find.byType(DashboardDock)), dock);
+          expect(
+            tester.layers.whereType<PlatformViewLayer>().single.viewId,
+            nativeId,
+          );
+          await tester.tap(find.byTooltip('Close apps'));
+          await tester.pumpAndSettle();
+          if (find.byTooltip('Expand media').evaluate().isEmpty) {
+            await tester.tap(find.byTooltip('Media strip'));
+            await tester.pumpAndSettle();
+          }
+          await tester.fling(
+            find.byTooltip('Expand media'),
+            const Offset(0, -80),
+            700,
+          );
+          await tester.pumpAndSettle();
+          expect(find.byTooltip('Close media'), findsOneWidget);
+          expect(find.byType(DashboardClimate), findsNothing);
+          expect(tester.getRect(find.byType(PlatformViewSurface)), rectangle);
+          expect(tester.getRect(find.byType(DashboardDock)), dock);
+          expect(
+            tester.layers.whereType<PlatformViewLayer>().single.viewId,
+            nativeId,
+          );
+          await tester.fling(
+            find.byTooltip('Close media'),
+            const Offset(0, 140),
+            900,
+          );
+          await tester.pumpAndSettle();
+          expect(find.byTooltip('Close media'), findsNothing);
         }
       }
       await settings.set(AppSettingKeys.appearanceControlSize, 1.0);
@@ -367,12 +402,12 @@ void main() {
         const Offset(400, 200),
         pointer: 50,
       );
-      await tester.tap(find.byKey(const ValueKey('climate-handle')));
+      await tester.tap(find.byKey(const ValueKey('temperature-Left')));
       await tester.pumpAndSettle();
       expect(backend.touches.last.phase, ProjectionTouchPhase.cancel);
       final touchCount = backend.touches.length;
       await tester.tapAt(
-        const Offset(400, 100),
+        const Offset(400, 10),
       ); // Barrier dismisses; no phone input.
       await heldModal.up();
       await tester.pumpAndSettle();

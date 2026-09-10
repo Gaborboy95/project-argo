@@ -51,7 +51,10 @@ class _SettingsPageState extends State<SettingsPage> {
         (
           'Devices',
           Icons.devices_outlined,
-          ConnectivitySettingsCard(service: widget.connectivity!),
+          ConnectivitySettingsCard(
+            service: widget.connectivity!,
+            settings: widget.settings,
+          ),
         ),
       if (widget.projectionSettings != null)
         (

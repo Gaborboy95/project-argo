@@ -54,6 +54,125 @@ class Deadline implements Timer {
 }
 
 void main() {
+  test('default phone request waits for paired inventory, consumes once and persists master opt-out', () async {
+    final store = Store();
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: store,
+    );
+    expect(settings.get(AppSettingKeys.autoConnectPhone), isTrue);
+    const phone = 'hci0/phone';
+    await settings.set(AppSettingKeys.connectivityPhone, phone);
+    const inventory = ConnectivitySnapshot(
+      daemonConnected: true,
+      available: true,
+      adapters: [ConnectivityRadio('hci0', 'radio')],
+      selected: phone,
+      enabled: true,
+      wirelessAvailable: true,
+      phase: 'idle',
+    );
+    final backend = Backend(inventory);
+    final preferences = ConnectivityPreferences(
+      backend,
+      settings,
+      deadlineTimer: Deadline.new,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'connect'), isEmpty);
+    const ready = ConnectivitySnapshot(
+      daemonConnected: true,
+      available: true,
+      adapters: [ConnectivityRadio('hci0', 'radio')],
+      selected: phone,
+      devices: [ConnectivityDevice(phone, 'phone', true, false)],
+      enabled: true,
+      wirelessAvailable: true,
+      phase: 'idle',
+    );
+    backend.connectivity = ready;
+    backend.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'connect').length, 1);
+    await preferences.connectivityCommand('disconnect');
+    backend.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'connect').length, 1);
+    await preferences.connectivityCommand('forget', target: phone);
+    expect(settings.get(AppSettingKeys.connectivityPhone), isEmpty);
+    await settings.set(AppSettingKeys.autoConnectPhone, false);
+    await preferences.close();
+    await backend.events.close();
+    await settings.close();
+    final reopened = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: store,
+    );
+    expect(reopened.get(AppSettingKeys.autoConnectPhone), isFalse);
+    await reopened.set(AppSettingKeys.connectivityPhone, phone);
+    final manual = Backend(ready);
+    final disabled = ConnectivityPreferences(
+      manual,
+      reopened,
+      deadlineTimer: Deadline.new,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(manual.requests.where((r) => r.$1 == 'connect'), isEmpty);
+    await disabled.connectivityCommand('connect', target: phone);
+    expect(manual.requests.where((r) => r.$1 == 'connect').length, 1);
+    await disabled.close();
+    await manual.events.close();
+    await reopened.close();
+  });
+
+  test('startup does not duplicate an active controller and disabling pending auto-connect wins', () async {
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: Store(),
+    );
+    const phone = 'hci0/phone';
+    await settings.set(AppSettingKeys.connectivityPhone, phone);
+    const ready = ConnectivitySnapshot(
+      daemonConnected: true,
+      available: true,
+      adapters: [ConnectivityRadio('hci0', 'radio')],
+      selected: phone,
+      devices: [ConnectivityDevice(phone, 'phone', true, true)],
+      enabled: true,
+      wirelessAvailable: true,
+      phase: 'connecting',
+    );
+    final backend = Backend(ready);
+    final preferences = ConnectivityPreferences(
+      backend,
+      settings,
+      deadlineTimer: Deadline.new,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(backend.requests.where((r) => r.$1 == 'connect'), isEmpty);
+    await preferences.close();
+    await backend.events.close();
+    final later = Backend(const ConnectivitySnapshot());
+    final pending = ConnectivityPreferences(
+      later,
+      settings,
+      deadlineTimer: Deadline.new,
+    );
+    await settings.set(AppSettingKeys.autoConnectPhone, false);
+    later.connectivity = ready;
+    later.events.add(ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      later.requests.where(
+        (r) => r.$1.endsWith('Connect') || r.$1 == 'connect',
+      ),
+      isEmpty,
+    );
+    await pending.close();
+    await later.events.close();
+    await settings.close();
+  });
+
   test('startup uses selected phone once and explicit stops suppress pending requests', () async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),
@@ -84,9 +203,7 @@ void main() {
     backend.connectivity = ready;
     backend.events.add(ready);
     await Future<void>.delayed(Duration.zero);
-    expect(backend.requests.where((r) => r.$1 == 'musicConnect').toList(), [
-      ('musicConnect', phone),
-    ]);
+    expect(backend.requests.where((r) => r.$1 == 'musicConnect'), isEmpty);
     expect(
       backend.requests.any((r) => r.$1 == 'connect' || r.$1 == 'callsConnect'),
       isFalse,
@@ -95,7 +212,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     backend.events.add(ready);
     await Future<void>.delayed(Duration.zero);
-    expect(backend.requests.where((r) => r.$1 == 'musicConnect').length, 1);
+    expect(backend.requests.where((r) => r.$1 == 'musicConnect'), isEmpty);
     await preferences.close();
     final closing = backend.events.close();
     await Future<void>.delayed(Duration.zero);
@@ -103,7 +220,7 @@ void main() {
     await settings.close();
   });
 
-  test('default off and expired startup window never connect later', () async {
+  test('expired startup window never connects later', () async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),
       store: Store(),

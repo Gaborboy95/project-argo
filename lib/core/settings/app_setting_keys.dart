@@ -17,6 +17,15 @@ abstract final class AppSettingKeys {
     'projectionInterface',
   );
   static final microphoneInput = _connectivityReference('microphoneInput');
+  static final autoConnectPhone = SettingKey<bool>(
+    id: 'connectivity.autoConnectPhone',
+    defaultValue: true,
+    serialize: (v) => v,
+    deserialize: (v) {
+      if (v is bool) return v;
+      throw const FormatException('Expected boolean');
+    },
+  );
   static final connectivityPhone = _connectivityReference('projectionPhone');
   static final connectivityBand = SettingKey<String>(
     id: 'connectivity.projectionBand',
@@ -162,6 +171,7 @@ abstract final class AppSettingKeys {
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)
+    ..register(autoConnectPhone)
     ..register(microphoneInput)
     ..register(connectivityBand)
     ..register(appearanceThemeMode)

@@ -4,7 +4,7 @@ import 'dashboard_media_strip.dart';
 import 'dashboard_climate.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/media/media_session_service.dart';
-import '../../core/runtime/argo_runtime_mode.dart';
+import 'dashboard_panel.dart';
 import 'argo_background.dart';
 
 import 'dart:async';
@@ -43,10 +43,17 @@ class _AppShellState extends State<AppShell> {
   int _navigationEpoch = 0;
   bool get _home =>
       widget.environment.moduleRegistry.modules[_selectedIndex].id == 'home';
-  bool _mediaVisible = true, _apps = false;
-  double _climate = 0;
+  bool _mediaVisible = true;
+  String? _panel, _climateSide;
+  double _left = 22, _right = 22;
   double? _volume;
-  bool get _modal => _apps || _climate > 0;
+  bool get _modal => _panel != null;
+  void _togglePanel(String panel) =>
+      setState(() => _panel = _panel == panel ? null : panel);
+  void _dismissPanel() => setState(() {
+    _panel = null;
+    _climateSide = null;
+  });
   final _contentKey = GlobalKey();
 
   SettingsService get _settings =>
@@ -187,7 +194,8 @@ class _AppShellState extends State<AppShell> {
                   AppSettingKeys.appearanceControlSize,
                 );
                 final services = widget.environment.services;
-                final sheetHeight = (geometry.dockTop * .65).clamp(0.0, 420.0);
+                final panel = _panel;
+                final sheetHeight = geometry.dockTop * .82;
                 return Stack(
                   children: [
                     Positioned(
@@ -200,12 +208,13 @@ class _AppShellState extends State<AppShell> {
                     Positioned(
                       left: 0,
                       right: 0,
-                      bottom: geometry.dockHeight,
+                      top: geometry.primaryHeight,
                       height: geometry.mediaHeight,
                       child: Visibility(
                         visible: _mediaVisible,
                         maintainState: true,
                         child: DashboardMediaStrip(
+                          onOpen: () => setState(() => _panel = 'media'),
                           scale: scale,
                           media: services.contains<MediaSessionService>()
                               ? services.get<MediaSessionService>()
@@ -222,62 +231,40 @@ class _AppShellState extends State<AppShell> {
                         child: ModalBarrier(
                           color: Colors.black45,
                           dismissible: true,
-                          onDismiss: () => setState(() {
-                            _climate = 0;
-                            _apps = false;
-                          }),
+                          onDismiss: _dismissPanel,
                         ),
                       ),
-                    if (_apps)
-                      Positioned(
-                        left: 12,
-                        right: 12,
-                        bottom: geometry.dockHeight,
-                        height: sheetHeight,
-                        child: Material(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHigh,
-                          borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(24),
-                          ),
-                          child: SingleChildScrollView(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  for (var i = 0; i < modules.length; i++)
-                                    SizedBox(
-                                      width: 140 * scale,
-                                      child: ListTile(
-                                        leading: Icon(modules[i].icon),
-                                        title: Text(modules[i].label),
-                                        onTap: () {
-                                          setState(() => _apps = false);
-                                          _selectModule(i);
-                                        },
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_climate > 0)
+                    if (_panel != null)
                       Positioned(
                         left: 0,
                         right: 0,
                         bottom: geometry.dockHeight,
-                        height: sheetHeight * _climate,
-                        child: DashboardClimate(
-                          demo:
-                              services.contains<ArgoRuntimeMode>() &&
-                              services.get<ArgoRuntimeMode>() ==
-                                  ArgoRuntimeMode.simulation,
-                          onDismiss: () => setState(() => _climate = 0),
+                        height: sheetHeight,
+                        child: DashboardPanel(
+                          key: ValueKey(_panel),
+                          height: sheetHeight,
+                          label: _panel!,
+                          onDismiss: () {
+                            if (_panel == panel) _dismissPanel();
+                          },
+                          child: switch (_panel) {
+                            'media' => DashboardMediaStrip(
+                              scale: scale,
+                              expanded: true,
+                              onDismiss: _dismissPanel,
+                              media: services.contains<MediaSessionService>()
+                                  ? services.get<MediaSessionService>()
+                                  : null,
+                            ),
+                            'climate' => DashboardClimate(
+                              onDismiss: _dismissPanel,
+                              left: _left,
+                              right: _right,
+                              onLeft: (v) => setState(() => _left = v),
+                              onRight: (v) => setState(() => _right = v),
+                            ),
+                            _ => _appsPanel(modules, scale),
+                          },
                         ),
                       ),
                     Positioned(
@@ -291,38 +278,26 @@ class _AppShellState extends State<AppShell> {
                         home: _home,
                         mediaVisible: _mediaVisible,
                         onHome: () {
-                          setState(() {
-                            _climate = 0;
-                            _apps = false;
-                          });
+                          _dismissPanel();
                           _selectId('home');
                         },
                         onMedia: () =>
                             setState(() => _mediaVisible = !_mediaVisible),
-                        onApps: () => setState(() {
-                          _apps = !_apps;
-                          _climate = 0;
-                        }),
+                        onApps: () => _togglePanel('apps'),
                         onSettings: () {
-                          setState(() {
-                            _apps = false;
-                            _climate = 0;
-                          });
+                          _dismissPanel();
                           _selectId('settings');
                         },
-                        onClimate: () => setState(() {
-                          _apps = false;
-                          _climate = _climate > 0 ? 0 : 1;
+                        left: _left,
+                        right: _right,
+                        onLeft: (v) => setState(() => _left = v),
+                        onRight: (v) => setState(() => _right = v),
+                        onClimate: (side) => setState(() {
+                          _panel = _panel == 'climate' && _climateSide == side
+                              ? null
+                              : 'climate';
+                          _climateSide = side;
                         }),
-                        onClimateDrag: (delta) => setState(() {
-                          _apps = false;
-                          _climate = (_climate - delta / sheetHeight).clamp(
-                            0.0,
-                            1.0,
-                          );
-                        }),
-                        onClimateEnd: () =>
-                            setState(() => _climate = _climate >= .2 ? 1 : 0),
                         audio: services.contains<AudioService>()
                             ? services.get<AudioService>()
                             : null,
@@ -371,6 +346,66 @@ class _AppShellState extends State<AppShell> {
       ),
     );
   }
+
+  Widget _appsPanel(List<AppModule> modules, double scale) => Padding(
+    padding: const EdgeInsets.all(24),
+    child: Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Apps',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Close apps',
+              onPressed: _dismissPanel,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        LayoutBuilder(
+          builder: (context, c) {
+            final columns = (c.maxWidth / (180 * scale)).floor().clamp(2, 5);
+            final extent = c.maxWidth / columns;
+            return Wrap(
+              alignment: WrapAlignment.center,
+              runSpacing: 20,
+              children: [
+                for (var i = 0; i < modules.length; i++)
+                  SizedBox(
+                    width: extent,
+                    height: 140 * scale,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () {
+                        _dismissPanel();
+                        _selectModule(i);
+                      },
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(modules[i].icon, size: 54 * scale),
+                          const SizedBox(height: 16),
+                          Text(
+                            modules[i].label,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ],
+    ),
+  );
 
   Widget _buildContent(List<AppModule> modules) {
     return IndexedStack(

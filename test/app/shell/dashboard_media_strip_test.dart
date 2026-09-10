@@ -10,6 +10,7 @@ void main() {
     (tester) async {
       final media = CachedMediaSessionService();
       final commands = <String>[];
+      var opens = 0;
       media.execute = (source, command) async =>
           commands.add('${source.id}:$command');
       final provider = media.register('bluetooth');
@@ -39,7 +40,11 @@ void main() {
                 child: SizedBox(
                   width: 480,
                   height: 48,
-                  child: DashboardMediaStrip(media: media, scale: 1.3),
+                  child: DashboardMediaStrip(
+                    media: media,
+                    scale: 1.3,
+                    onOpen: () => opens++,
+                  ),
                 ),
               ),
             ),
@@ -53,6 +58,10 @@ void main() {
       expect(find.byTooltip('next'), findsNothing);
       await tester.tap(find.byTooltip('pause'));
       await tester.pumpAndSettle();
+      expect(commands, ['bt:phone:pause']);
+      await tester.fling(find.byTooltip('pause'), const Offset(0, -80), 700);
+      await tester.pumpAndSettle();
+      expect(opens, 1);
       expect(commands, ['bt:phone:pause']);
       provider.close();
       await tester.pumpAndSettle();

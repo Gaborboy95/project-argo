@@ -9,7 +9,7 @@
 | Appearance | Material 3 light/dark/system modes, seed color and persisted host control size; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth playback controls, provider-owned source selection and read-only Lua state. |
-| Dashboard | Measured 4:3 layout, stationary dock/media slot, registered-app drawer, modal climate presentation/demo; Camera unavailable. |
+| Dashboard | Measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and labelled climate demo; Camera unavailable. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -37,7 +37,9 @@ A short renderer run is not long-term phone/media endurance validation.
 The dashboard has widget coverage at multiple 4:3 sizes (including 2000×1500),
 fractional DPRs, and short landscape windows. Native IDs and physical rectangles
 survive media toggles, modal sheets and control-size changes; modal gesture
-cancellation and AA Exit/resume have automated coverage. The real Mu renderer
+cancellation, tap-versus-drag arbitration, temperature clamps, panel replacement
+and AA Exit/resume have automated coverage. Auto-connect persistence and explicit
+stop suppression have focused controller coverage. The real Mu renderer
 has produced a 2048×1152 projection region in a measured 2048×1536 IHS/Wayland
 buffer at 125% scaling. Phone touch alignment, modal occlusion during live AA,
 physical volume dragging and controlled 720p/1080p picture comparisons still need
@@ -99,7 +101,8 @@ host suspend quiesces its transport; physical wake is a platform responsibility.
 
 Systemd user units, readiness/Quit integration, versioned releases and atomic
 selection are implemented for KDE Wayland. Startup phone connections are saved,
-independent and off by default. They use existing selected-device controllers and
+with a default-on application auto-connect switch for the last paired phone. Additional
+profile-specific deployment requests remain opt-in. They use existing controllers and
 bounded retries; they do not add a Bluetooth stack or change AA presentation.
 Local KDE service readiness, idle shutdown, active release switching/rollback and
 bounded idle crash recovery have been checked. Login/logout with active phone

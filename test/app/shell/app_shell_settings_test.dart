@@ -9,6 +9,7 @@ import 'package:argo/app/argo_environment.dart';
 import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
 import 'package:argo/app/shell/app_shell.dart';
+import 'package:argo/app/shell/dashboard_panel.dart';
 import 'package:argo/core/services/service_registry.dart';
 import 'package:argo/core/settings/app_setting_keys.dart';
 import 'package:argo/core/settings/settings_service.dart';
@@ -32,10 +33,10 @@ void main() {
         tester.view.physicalSize = size;
         await tester.pumpWidget(harness.widget);
         await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const ValueKey('climate-handle')));
+        await tester.tap(find.byKey(const ValueKey('temperature-Left')));
         await tester.pumpAndSettle();
         expect(
-          find.text('Vehicle climate controls unavailable'),
+          find.text('Interactive demo — no vehicle connection'),
           findsOneWidget,
         );
         await tester.tap(find.byTooltip('Close climate'));
@@ -151,13 +152,41 @@ void main() {
     });
   }
 
+  testWidgets('dock replaces panels and the same temperature toggles climate', (
+    tester,
+  ) async {
+    final harness = await _createHarness();
+    await tester.pumpWidget(harness.widget);
+    await tester.fling(
+      find.byTooltip('Expand media'),
+      const Offset(0, -80),
+      700,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Close media'), findsOneWidget);
+    await tester.tap(find.byTooltip('Apps'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Close media'), findsNothing);
+    expect(find.byType(DashboardPanel), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('temperature-Left')).last);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Close apps'), findsNothing);
+    expect(find.byTooltip('Close climate'), findsOneWidget);
+    expect(find.byType(DashboardPanel), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('temperature-Left')).last);
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPanel), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await harness.settings.close();
+  });
+
   testWidgets('persists a module only when navigation changes', (tester) async {
     final harness = await _createHarness();
     await tester.pumpWidget(harness.widget);
 
     expect(harness.store.writeCount, 0);
     await tester.tap(find.byTooltip('Apps'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     await tester.tap(find.text('climate'));
     await tester.pump();
     await harness.settings.flush();
@@ -165,7 +194,7 @@ void main() {
     expect(harness.settings.get(AppSettingKeys.lastModule), 'climate');
     expect(harness.store.writeCount, 1);
     await tester.tap(find.byTooltip('Apps'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     await tester.tap(find.text('climate'));
     await tester.pump();
     await harness.settings.flush();
