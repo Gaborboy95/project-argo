@@ -253,9 +253,15 @@ fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
     response
         .nested(
             1,
-            Proto::default()
-                .number(1, 8)
-                .nested(4, Proto::default().nested(2, touch)),
+            Proto::default().number(1, 8).nested(
+                4,
+                Proto::default()
+                    .number(1, 87)
+                    .number(1, 88)
+                    .number(1, 126)
+                    .number(1, 127)
+                    .nested(2, touch),
+            ),
         )
         .finish()
 }
@@ -666,6 +672,37 @@ impl Channels {
         }
         Ok(vec![])
     }
+    /// AA InputEventIndication.button_event; separate press/release reports.
+    /// The input service advertises exactly these Android media key codes.
+    pub fn media_key(&self, code: u64, timestamp: u64) -> Result<[Reply; 2], String> {
+        if !self.open.contains(&8) {
+            return Err("Android Auto input channel is not ready".into());
+        }
+        if !matches!(code, 87 | 88 | 126 | 127) {
+            return Err("Unsupported Android Auto media key".into());
+        }
+        Ok([true, false].map(|pressed| {
+            Reply::new(
+                8,
+                0x8001,
+                Proto::default()
+                    .number(1, timestamp + u64::from(!pressed))
+                    .nested(
+                        4,
+                        Proto::default().nested(
+                            1,
+                            Proto::default()
+                                .number(1, code)
+                                .number(2, u64::from(pressed))
+                                .number(3, 0)
+                                .number(4, 0),
+                        ),
+                    )
+                    .finish(),
+            )
+        }))
+    }
+
     pub fn touch(
         &mut self,
         pointer: u16,
@@ -749,5 +786,47 @@ impl Channels {
                 .nested(3, touch)
                 .finish(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod media_key_tests {
+    use super::*;
+    #[test]
+    fn media_keys_use_input_reports_and_release_without_changing_video_focus() {
+        let mut channels = Channels::new(DisplayConfig::default());
+        assert!(channels.media_key(126, 100).is_err());
+        channels.open.insert(8);
+        channels.set_video_requested(false);
+        assert!(channels.media_key(999, 100).is_err());
+        for code in [87, 88, 126, 127] {
+            let replies = channels.media_key(code, 100).unwrap();
+            for (index, reply) in replies.iter().enumerate() {
+                assert_eq!((reply.channel, reply.id), (8, 0x8001));
+                // timestamp, ButtonEvents container, repeated ButtonEvent,
+                // code, pressed, meta=0, long_press=false.
+                assert_eq!(
+                    reply.body,
+                    vec![
+                        8,
+                        100 + index as u8,
+                        34,
+                        10,
+                        10,
+                        8,
+                        8,
+                        code as u8,
+                        16,
+                        u8::from(index == 0),
+                        24,
+                        0,
+                        32,
+                        0
+                    ]
+                );
+            }
+            assert!(!channels.video_requested);
+            assert!(channels.pointers.is_empty());
+        }
     }
 }

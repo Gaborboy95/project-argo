@@ -596,6 +596,26 @@ async fn run_engine(
                 let command=match command {Ok(c)=>c,Err(broadcast::error::RecvError::Lagged(_))=>return Err("projection control queue overflow".into()),Err(_)=>return Ok(())};
                 let reply=match command {
                     Command::Disconnect(target) if target==id=>{send(transport,&mut tls,Reply::new(0,15,Proto::default().number(1,1).finish())).await?;return Ok(());},
+                    Command::MediaKey {session, code, deadline, result} => {
+                        if session != id || tokio::time::Instant::now() >= deadline || result.receiver_count() == 0 {
+                            result.send_replace(Some(Err("Stale Android Auto playback request".into())));
+                        } else {
+                            match channels.media_key(code, clock.elapsed().as_micros() as u64) {
+                                Err(error) => { result.send_replace(Some(Err(error))); },
+                                Ok(replies) => {
+                                    for reply in replies {
+                                        if let Err(error) = send(transport, &mut tls, reply).await {
+                                            result.send_replace(Some(Err(error.to_string())));
+                                            return Err(error);
+                                        }
+                                    }
+                                    // Delivery acknowledgement, not proof the phone app obeyed.
+                                    result.send_replace(Some(Ok(())));
+                                }
+                            }
+                        }
+                        None
+                    },
                     Command::Touch(target,pointer,phase,x,y) if target==id=>channels.touch(pointer,phase,x,y,clock.elapsed().as_micros() as u64)?,
                     Command::Activate(target) if target==id=>{crate::daemon_log!(Debug,"aa-focus","host activation requested");channels.set_video_requested(true);awaiting_video=true;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,1).number(2,1).finish()))},
                     Command::Visibility(target,visible) if target==format!("{id}:main")=>{crate::daemon_log!(Debug,"aa-focus","host visibility requested: {visible}");channels.set_video_requested(visible);awaiting_video=visible;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,if visible{1}else{2}).number(2,1).finish()))},

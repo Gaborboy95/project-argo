@@ -17,6 +17,7 @@ const AUDIO_SOURCE: &str = "0000110a-0000-1000-8000-00805f9b34fb";
 pub struct Snapshot {
     #[serde(skip)]
     pub busy: bool,
+    pub projection_commands: bool,
     pub selected: String,
     pub device: String,
     pub phase: String,
@@ -717,6 +718,13 @@ impl Music {
             }
             "musicPlay" | "musicPause" | "musicPrevious" | "musicNext" => {
                 let action = r.action.trim_start_matches("music").to_ascii_lowercase();
+                if r.target.starts_with("projection:") {
+                    if self.snapshot.selected != "projection" {
+                        return Err("Select Android Auto before playback control".into());
+                    }
+                    return projection_command(&self.host, &self.projection, &r.target, &action)
+                        .await;
+                }
                 if self.snapshot.selected != "bluetooth" {
                     return Err("Select Bluetooth music before playback control".into());
                 }
@@ -727,6 +735,59 @@ impl Music {
         Ok(())
     }
 }
+/// Route a generation-scoped source through the existing AA session writer.
+async fn projection_command(
+    host: &HostControl,
+    state: &watch::Sender<ProjectionRuntimeSnapshot>,
+    target: &str,
+    action: &str,
+) -> Result<(), String> {
+    use crate::{daemon_state::ProjectionSessionStatus, host_control::Command};
+    let session = state
+        .borrow()
+        .session
+        .clone()
+        .ok_or("Android Auto session disappeared")?;
+    if target != format!("projection:{}:media", session.id)
+        || !matches!(
+            session.state,
+            ProjectionSessionStatus::Streaming | ProjectionSessionStatus::Suspended
+        )
+    {
+        return Err("Stale Android Auto media source".into());
+    }
+    let code = match action {
+        "next" => 87,
+        "previous" => 88,
+        "play" => 126,
+        "pause" => 127,
+        _ => return Err("Unsupported Android Auto playback command".into()),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let (result, mut response) = watch::channel(None);
+    host.commands
+        .send(Command::MediaKey {
+            session: session.id,
+            code,
+            deadline,
+            result,
+        })
+        .map_err(|_| "Android Auto session writer unavailable")?;
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            if let Some(result) = response.borrow_and_update().clone() {
+                return result;
+            }
+            response
+                .changed()
+                .await
+                .map_err(|_| "Android Auto playback delivery cancelled")?;
+        }
+    })
+    .await
+    .map_err(|_| "Android Auto playback delivery timed out")?
+}
+
 pub async fn run(
     bt: Arc<Bluetooth>,
     host: HostControl,
@@ -744,6 +805,7 @@ pub async fn run(
         host,
         projection,
         snapshot: Snapshot {
+            projection_commands: true,
             selected: "projection".into(),
             phase: "disconnected".into(),
             ..Default::default()
@@ -840,6 +902,60 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn projection_commands_target_suspended_session_and_bound_delivery() {
+        use crate::{daemon_state::ProjectionSessionStatus, host_control::Command};
+        let host = HostControl::default();
+        let mut commands = host.commands.subscribe();
+        let mut snapshot = ProjectionRuntimeSnapshot::connecting("device".into(), "Phone".into());
+        snapshot.session.as_mut().unwrap().state = ProjectionSessionStatus::Suspended;
+        let state = watch::channel(snapshot).0;
+        let target = "projection:aa-wired:device:media";
+        for (action, expected) in [
+            ("next", 87),
+            ("previous", 88),
+            ("play", 126),
+            ("pause", 127),
+        ] {
+            let request = projection_command(&host, &state, target, action);
+            let peer = async {
+                let Command::MediaKey {
+                    session,
+                    code,
+                    result,
+                    ..
+                } = commands.recv().await.unwrap()
+                else {
+                    panic!("wrong command")
+                };
+                assert_eq!(session, "aa-wired:device");
+                assert_eq!(code, expected);
+                result.send_replace(Some(Ok(())));
+            };
+            let (result, ()) = tokio::join!(request, peer);
+            result.unwrap();
+        }
+        assert!(
+            projection_command(&host, &state, "projection:obsolete:media", "play")
+                .await
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
+        let request = projection_command(&host, &state, target, "play");
+        let silent = async {
+            let Command::MediaKey {
+                result, deadline, ..
+            } = commands.recv().await.unwrap()
+            else {
+                panic!("wrong command")
+            };
+            tokio::time::sleep_until(deadline + Duration::from_millis(1)).await;
+            assert_eq!(result.receiver_count(), 0); // cancelled requests cannot issue late keys
+        };
+        let (result, ()) = tokio::join!(request, silent);
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
     #[test]
     fn routing_reuses_owned_links_and_rejects_external_or_unmatched_routes() {
         let address = "00:11:22:33:44:55";

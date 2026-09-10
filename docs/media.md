@@ -111,8 +111,23 @@ links. A failed pause cannot leave music audible through those links. Before
 Bluetooth routing is created, the AA engine acknowledges that its media channel
 (channel 4) is gated. This gate multiplies the existing source gain and applies to
 newly opened media streams too; navigation/speech/system channels keep their normal
-focus and gain behavior. Projection has no implemented playback-command provider,
-so its Media source does not expose fake transport buttons.
+focus and gain behavior. When the daemon advertises `music.projection_commands`,
+the AA source offers previous, next, play/resume and pause through the existing
+shared media command acknowledgement path. The daemon validates the exact source
+and live session, then sends media-key press/release reports on AA input channel 8.
+These commands work while presentation is suspended and do not request video focus.
+A two-second delivery deadline rejects queued stale commands; success means reports
+were written, not proof that a particular phone media app obeyed. Track skipping
+still depends on the phone app and its current queue. Older daemons omit the
+capability and retain metadata-only AA controls. IPC remains v6 with this optional
+connectivity field; use a matched release.
+
+The independently encoded wire fields follow aasdk revision
+[`046b3b3`](https://github.com/f1xpl/aasdk/tree/046b3b381595509d0939fa84b14a90978f46ff63/aasdk_proto):
+[InputEventIndication](https://github.com/f1xpl/aasdk/blob/046b3b381595509d0939fa84b14a90978f46ff63/aasdk_proto/InputEventIndicationMessage.proto),
+[ButtonEvent](https://github.com/f1xpl/aasdk/blob/046b3b381595509d0939fa84b14a90978f46ff63/aasdk_proto/ButtonEventData.proto)
+and [media key codes](https://github.com/f1xpl/aasdk/blob/046b3b381595509d0939fa84b14a90978f46ff63/aasdk_proto/ButtonCodeEnum.proto).
+No external implementation is vendored.
 
 Bluetooth audio follows the host's selected default output, including subsequent
 default-output changes. Select that output in the desktop sound controls; Argo's
@@ -353,13 +368,17 @@ not implemented from unverified assumptions.
 
 ## Dashboard strip and volume
 
-The dock's Media shortcut shows/hides a reserved thin strip directly below
-projection. It presents the selected MediaSessionService source's artwork beside
+The dock's Media shortcut shows/hides a rounded floating surface directly below
+projection. It occupies the available space between projection and dock with small
+vertical margins and a 2.5% inset on each side; its height is not capped at 56 logical
+pixels. Projection and dock allocations remain unchanged. It presents the selected MediaSessionService source's artwork beside
 a two-line title/artist area, with centered supported playback commands. Pull up
-anywhere on the strip to open the larger Media panel; its artwork, metadata,
+anywhere on the compact surface to expand that same surface continuously; its artwork, metadata,
 position/duration and source choices use the same service. Unknown fields remain
 unknown and unsupported commands are omitted. Pull down anywhere in the panel,
-including over a control, to dismiss; small movement still permits a tap.
+including over a control, to collapse; small movement still permits a tap.
+Height follows the finger before release, compact/expanded content crossfades,
+and distance plus velocity chooses the final position.
 Apps → Media also opens the full Now Playing destination.
 
 The strip toggle and expanded panels are independent of AA Exit, which navigates
@@ -367,7 +386,8 @@ to Media while retaining the session. Home resumes that session. Opening a panel
 does not change entertainment-source selection or projection focus; selecting a
 source explicitly uses the existing audio ownership policy.
 
-Tap the dock volume control to mute, or drag vertically from its current level for
+The slim meter beside the inset speaker shows current output volume (empty while
+muted/unavailable). Tap the dock volume control to mute, or drag vertically from its current level for
 live relative adjustment. Its floating indicator disappears on release/cancel;
 changes already heard are retained. Accessibility increase/decrease adjusts five
 percentage points. AudioService and the selected host output own volume capability;

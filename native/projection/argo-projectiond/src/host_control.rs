@@ -21,6 +21,12 @@ pub enum Command {
     Touch(String, u16, u8, f32, f32),
     Visibility(String, bool),
     Gain(String, String, f32),
+    MediaKey {
+        session: String,
+        code: u64,
+        deadline: tokio::time::Instant,
+        result: watch::Sender<Option<Result<(), String>>>,
+    },
 }
 #[derive(Clone)]
 pub struct HostControl {

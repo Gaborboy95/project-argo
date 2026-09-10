@@ -4,6 +4,7 @@ import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/projection/projection_service.dart';
 import 'package:argo/core/projection/projection_models.dart';
 import 'package:argo/integrations/projection/projection_media_source.dart';
+import 'package:argo/integrations/bluetooth/bluetooth_media_source.dart';
 
 import 'dart:async';
 import 'dart:io';
@@ -166,6 +167,130 @@ void main() {
     expect(changes, 1);
     await subscription.cancel();
     await source.close();
+    await media.close();
+    await backend.close();
+  });
+
+  test('AA commands are capability gated and target the suspended session through control IPC', () async {
+    final transport = _FakeTransport();
+    final backend = AndroidAutoProjectionBackend(
+      socketPath: '/tmp/test.sock',
+      preferences: preferences,
+      diagnostics: DiagnosticsService(),
+      transportFactory: (_) async => transport,
+    );
+    await backend.start();
+    transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+    transport.emit(_capabilities());
+    transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.device,
+        (ProjectionIpcWriter()
+              ..string('device')
+              ..string('Phone')
+              ..uint8(0)
+              ..uint8(0))
+            .takeBytes(),
+      ),
+    );
+    transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.session,
+        (ProjectionIpcWriter()
+              ..string('aa-wired:device')
+              ..string('device')
+              ..uint8(3)
+              ..string('')
+              ..uint32(0))
+            .takeBytes(),
+      ),
+    );
+    final hex = File('test/fixtures/projection/ipc_v6_metadata.hex')
+        .readAsStringSync()
+        .trim();
+    transport.emit(
+      ProjectionIpcDecoder().add([
+        for (var i = 0; i < hex.length; i += 2)
+          int.parse(hex.substring(i, i + 2), radix: 16),
+      ]).single,
+    );
+    final media = CachedMediaSessionService();
+    final playback = BluetoothMediaSource(backend, media);
+    final provider = ProjectionMediaSource(
+      _BackendProjection(backend),
+      media,
+      connectivity: backend,
+    );
+    expect(media.current.sources.single.commands, isEmpty);
+    void capabilities({bool supported = true, int operation = 0}) {
+      transport.emit(
+        ProjectionIpcMessage(
+          ProjectionIpcKind.connectivity,
+          utf8.encode(
+            jsonEncode({
+              'adapters': [],
+              'networks': [],
+              'devices': [],
+              'adapter': '',
+              'interface': '',
+              'selected': '',
+              'enabled': true,
+              'discovering': false,
+              'wifi_connected': true,
+              'phase': 'streaming',
+              'detail': '',
+              'music': {
+                'projection_commands': supported,
+                'selected': 'projection',
+                'operation': operation,
+              },
+            }),
+          ),
+        ),
+      );
+    }
+
+    capabilities();
+    expect(media.current.activeSource!.commands, [
+      'previous',
+      'play',
+      'pause',
+      'next',
+    ]);
+    for (final command in ['previous', 'play', 'pause', 'next']) {
+      final done = media.command('projection:aa-wired:device:media', command);
+      await Future<void>.delayed(Duration.zero);
+      final request = jsonDecode(utf8.decode(transport.sent.last.payload));
+      expect(request['target'], 'projection:aa-wired:device:media');
+      expect(
+        request['action'],
+        'music${command[0].toUpperCase()}${command.substring(1)}',
+      );
+      capabilities(operation: request['prompt'] as int);
+      await done;
+    }
+    expect(
+      backend.current.sessions.single.state,
+      ProjectionSessionState.suspended,
+    );
+    capabilities(supported: false);
+    expect(media.current.sources.single.commands, isEmpty);
+    await expectLater(
+      media.command('projection:aa-wired:device:media', 'play'),
+      throwsUnsupportedError,
+    );
+    transport.emit(
+      ProjectionIpcMessage(
+        ProjectionIpcKind.sessionRemoved,
+        (ProjectionIpcWriter()..string('aa-wired:device')).takeBytes(),
+      ),
+    );
+    await expectLater(
+      media.command('projection:aa-wired:device:media', 'play'),
+      throwsStateError,
+    );
+    await provider.close();
+    await playback.close();
     await media.close();
     await backend.close();
   });

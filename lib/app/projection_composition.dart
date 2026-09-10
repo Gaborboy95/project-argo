@@ -150,7 +150,13 @@ Future<ProjectionService> registerProjectionServices({
     audio: services.get<AudioService>(),
     diagnostics: diagnostics,
   );
-  final mediaSource = ProjectionMediaSource(projection, media);
+  final mediaSource = ProjectionMediaSource(
+    projection,
+    media,
+    connectivity: services.contains<ConnectivityService>()
+        ? services.get<ConnectivityService>()
+        : null,
+  );
   lifecycle.registerShutdown(
     name: 'projection.mediaSource',
     phase: AppShutdownPhase.stopActivity,
