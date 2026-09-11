@@ -23,6 +23,7 @@ class Backend implements ConnectivityService {
   ConnectivitySnapshot connectivity;
   final events = StreamController<ConnectivitySnapshot>.broadcast();
   final requests = <(String, String)>[];
+  Completer<void>? interfaceHold;
   @override
   Stream<ConnectivitySnapshot> get connectivityChanges => events.stream;
   @override
@@ -33,11 +34,13 @@ class Backend implements ConnectivityService {
     int prompt = 0,
   }) async {
     requests.add((action, target));
+    if (action == 'interface') await interfaceHold?.future;
   }
 }
 
 class Deadline implements Timer {
-  Deadline(Duration _, this.callback);
+  Deadline(this.duration, this.callback);
+  final Duration duration;
   final void Function() callback;
   @override
   bool isActive = true;
@@ -239,7 +242,16 @@ void main() {
         startupConnections: choices,
         deadlineTimer: (d, f) => deadline = Deadline(d, f),
       );
-      deadline?.fire();
+      expect(deadline, isNull);
+      backend.connectivity = const ConnectivitySnapshot(
+        available: true,
+        daemonConnected: true,
+        adapters: [ConnectivityRadio('hci0', 'radio')],
+      );
+      backend.events.add(backend.connectivity);
+      await Future<void>.delayed(Duration.zero);
+      expect(deadline!.duration, const Duration(seconds: 90));
+      deadline!.fire();
       backend.connectivity = const ConnectivitySnapshot(
         available: true,
         daemonConnected: true,
@@ -267,6 +279,181 @@ void main() {
     await settings.close();
   });
 
+  test('late inventory arms only after restoration; transient wireless loss never becomes music', () async {
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: Store(),
+    );
+    const phone = 'hci0/saved';
+    await settings.set(AppSettingKeys.connectivityPhone, phone);
+    await settings.set(AppSettingKeys.connectivityInterface, 'wifi0');
+    final backend = Backend(const ConnectivitySnapshot())
+      ..interfaceHold = Completer<void>();
+    final timers = <Deadline>[];
+    final preferences = ConnectivityPreferences(
+      backend,
+      settings,
+      deadlineTimer: (d, f) {
+        final timer = Deadline(d, f);
+        timers.add(timer);
+        return timer;
+      },
+    );
+    Future<void> emit(ConnectivitySnapshot state) async {
+      backend.connectivity = state;
+      backend.events.add(state);
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      timers,
+      isEmpty,
+    ); // Arbitrarily early construction spends no discovery budget.
+    const radios = [ConnectivityRadio('hci0', 'radio')];
+    const networks = [ConnectivityRadio('wifi0', 'wifi')];
+    await emit(
+      const ConnectivitySnapshot(
+        daemonConnected: true,
+        available: true,
+        adapters: radios,
+      ),
+    );
+    expect(timers, isEmpty); // Saved interface inventory not ready.
+    await emit(
+      const ConnectivitySnapshot(
+        daemonConnected: true,
+        available: true,
+        adapters: radios,
+        networks: networks,
+      ),
+    );
+    expect(timers, isEmpty); // Restoration command still pending.
+    backend.interfaceHold!.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(timers.single.duration, const Duration(seconds: 90));
+    await emit(
+      const ConnectivitySnapshot(
+        daemonConnected: true,
+        available: true,
+        adapters: radios,
+        networks: networks,
+        devices: [ConnectivityDevice('hci0/other', 'Other', true, false)],
+        selected: 'hci0/other',
+      ),
+    );
+    expect(backend.requests.where((r) => r.$1 == 'select'), isEmpty);
+    const settling = ConnectivitySnapshot(
+      daemonConnected: true,
+      available: true,
+      adapters: radios,
+      networks: networks,
+      devices: [ConnectivityDevice(phone, 'Saved', true, false)],
+      selected: phone,
+      enabled: false,
+      wirelessAvailable: false,
+      music: {},
+      phase: 'idle',
+    );
+    await emit(settling);
+    await emit(settling);
+    expect(
+      backend.requests.where(
+        (r) => r.$1 == 'musicConnect' || r.$1 == 'connect',
+      ),
+      isEmpty,
+    );
+    const ready = ConnectivitySnapshot(
+      daemonConnected: true,
+      available: true,
+      adapters: radios,
+      networks: networks,
+      devices: [ConnectivityDevice(phone, 'Saved', true, false)],
+      selected: phone,
+      enabled: true,
+      wirelessAvailable: true,
+      music: {},
+      phase: 'idle',
+    );
+    await emit(ready);
+    await emit(ready);
+    expect(backend.requests.where((r) => r.$1 == 'connect').toList(), [
+      ('connect', phone),
+    ]);
+    expect(timers.single.isActive, isFalse);
+    timers.single.fire();
+    await emit(ready);
+    expect(backend.requests.where((r) => r.$1 == 'connect').length, 1);
+    await preferences.close();
+    await backend.events.close();
+    await settings.close();
+  });
+
+  test('only configured projection disable permits music; explicit intent cancels startup', () async {
+    for (final action in [
+      'fallback',
+      'disconnect',
+      'enable',
+      'projectionEnabled',
+      'forget',
+      'adapter',
+      'select',
+      'master',
+    ]) {
+      final settings = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: Store(),
+      );
+      const phone = 'hci0/saved';
+      await settings.set(AppSettingKeys.connectivityPhone, phone);
+      final backend = Backend(
+        const ConnectivitySnapshot(
+          daemonConnected: true,
+          available: true,
+          adapters: [ConnectivityRadio('hci0', 'radio')],
+        ),
+      );
+      Deadline? timer;
+      final preferences = ConnectivityPreferences(
+        backend,
+        settings,
+        projectionConfigured: action != 'fallback',
+        deadlineTimer: (d, f) => timer = Deadline(d, f),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(timer, isNotNull);
+      if (action == 'master') {
+        await settings.set(AppSettingKeys.autoConnectPhone, false);
+      } else if (action != 'fallback') {
+        await preferences.connectivityCommand(action, target: phone);
+      }
+      const ready = ConnectivitySnapshot(
+        daemonConnected: true,
+        available: true,
+        adapters: [ConnectivityRadio('hci0', 'radio')],
+        devices: [ConnectivityDevice(phone, 'Saved', true, false)],
+        selected: phone,
+        enabled: false,
+        wirelessAvailable: false,
+        music: {},
+        phase: 'idle',
+      );
+      backend.connectivity = ready;
+      backend.events.add(ready);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        backend.requests.where((r) => r.$1 == 'musicConnect').length,
+        action == 'fallback' ? 1 : 0,
+        reason: action,
+      );
+      expect(backend.requests.where((r) => r.$1 == 'connect'), isEmpty);
+      expect(timer!.isActive, isFalse);
+      await preferences.close();
+      await backend.events.close();
+      await settings.close();
+    }
+  });
+
   test('adapter choice survives enumeration changes and never selects another radio when absent', () async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),
@@ -285,6 +472,7 @@ void main() {
       final backend = Backend(
         ConnectivitySnapshot(
           available: true,
+          daemonConnected: true,
           adapters: [
             if (present) ConnectivityRadio(id, 'Preferred', address: address),
             const ConnectivityRadio(
@@ -312,7 +500,7 @@ void main() {
       contains(('select', 'hci1/00:11:22:33:44:55')),
     );
     final missing = await restore('hci0', present: false);
-    expect(missing, [('adapter', address)]);
+    expect(missing, isEmpty);
     await settings.close();
   });
 }

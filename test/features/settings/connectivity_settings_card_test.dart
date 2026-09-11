@@ -33,6 +33,7 @@ void main() {
       final second = _Connectivity()
         ..state = const ConnectivitySnapshot(
           available: true,
+          daemonConnected: true,
           band: '5ghz',
           adapters: [ConnectivityRadio('hci0', 'Bluetooth')],
           networks: [ConnectivityRadio('wifi0', 'Wi-Fi')],

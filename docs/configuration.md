@@ -330,11 +330,21 @@ they do not mutate a live session. The installed CLI saves opt-in connection cho
 ```
 
 Settings → Devices → **Auto-connect phone** is saved in application preferences
-and defaults to **on**. At application startup Argo restores the selected adapter
-and last selected paired phone, waiting up to 30 seconds for inventory and controller
-readiness. It requests wireless AA when projection is enabled and wireless is
-available; otherwise it requests Bluetooth music when that controller is available.
-No valid remembered paired phone leaves the ordinary disconnected UI quietly.
+and defaults to **on**. No discovery budget is spent while the app waits for the
+daemon connection, connectivity availability, adapter inventory and completion of
+saved adapter/interface restoration. Once these prerequisites hold, a bounded
+90-second window waits for the exact remembered phone to appear paired and selected,
+then for controller readiness. Argo never substitutes another paired phone.
+
+With projection configured (`ARGO_PROJECTION_BACKEND=android-auto`), the generic
+phone request waits for wireless availability and enablement; transient missing
+Wi-Fi/NetworkManager inventory does not fall back to music. Only an explicitly
+projection-disabled application configuration permits the generic request to use
+Bluetooth music. Disabling projection during the wait cancels the pending request.
+No valid remembered paired phone leaves the ordinary disconnected UI after expiry.
+INFO lifecycle messages report arming, adapter/phone waiting, restoration, wireless
+waiting, request issuance, cancellation and expiry once per run without device
+identifiers or credentials.
 The deployment options above can additionally request specific profiles (each
 remains off by default), but the application setting is the master switch for all
 startup phone requests. Calls are not automatically requested by the default alone.

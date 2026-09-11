@@ -73,6 +73,10 @@ Future<ProjectionService> registerProjectionServices({
     final configured = ConnectivityPreferences(
       connectivity,
       services.get<SettingsService>(),
+      diagnostics: diagnostics,
+      projectionConfigured:
+          ProjectionBackendType.fromEnvironment(environment) ==
+          ProjectionBackendType.androidAuto,
       startupConnections: (environment['ARGO_STARTUP_CONNECTIONS'] ?? '')
           .split(',')
           .where({'wireless', 'music', 'calls'}.contains)
