@@ -1,3 +1,4 @@
+import '../../core/climate/climate_service.dart';
 import 'dashboard_geometry.dart';
 import '../../core/projection/projection_settings_service.dart';
 import 'dashboard_dock.dart';
@@ -46,7 +47,6 @@ class _AppShellState extends State<AppShell> {
       widget.environment.moduleRegistry.modules[_selectedIndex].id == 'home';
   bool _mediaVisible = true;
   String? _panel, _climateSide;
-  double _left = 22, _right = 22;
   double? _volume;
   bool get _modal => _panel != null;
   void _togglePanel(String panel) =>
@@ -246,10 +246,9 @@ class _AppShellState extends State<AppShell> {
                           child: switch (_panel) {
                             'climate' => DashboardClimate(
                               onDismiss: _dismissPanel,
-                              left: _left,
-                              right: _right,
-                              onLeft: (v) => setState(() => _left = v),
-                              onRight: (v) => setState(() => _right = v),
+                              service: services.contains<ClimateService>()
+                                  ? services.get<ClimateService>()
+                                  : null,
                             ),
                             _ => _appsPanel(modules, scale),
                           },
@@ -309,10 +308,9 @@ class _AppShellState extends State<AppShell> {
                           _dismissPanel();
                           _selectId('settings');
                         },
-                        left: _left,
-                        right: _right,
-                        onLeft: (v) => setState(() => _left = v),
-                        onRight: (v) => setState(() => _right = v),
+                        climate: services.contains<ClimateService>()
+                            ? services.get<ClimateService>()
+                            : null,
                         onClimate: (side) => setState(() {
                           _panel = _panel == 'climate' && _climateSide == side
                               ? null

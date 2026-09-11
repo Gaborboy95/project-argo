@@ -1,3 +1,5 @@
+import '../../core/climate/climate_service.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -17,18 +19,15 @@ class DashboardDock extends StatelessWidget {
     required this.onApps,
     required this.onSettings,
     required this.onClimate,
-    required this.left,
-    required this.right,
-    required this.onLeft,
-    required this.onRight,
+    this.climate,
     required this.audio,
     required this.onVolume,
   });
-  final double scale, left, right;
+  final double scale;
+  final ClimateService? climate;
   final bool home, mediaVisible;
   final VoidCallback onHome, onMedia, onApps, onSettings;
   final ValueChanged<String> onClimate;
-  final ValueChanged<double> onLeft, onRight;
   final AudioService? audio;
   final ValueChanged<double?> onVolume;
   @override
@@ -44,7 +43,7 @@ class DashboardDock extends StatelessWidget {
             children: [
               SizedBox(width: 20 * scale),
               _button('Settings', Icons.settings_outlined, onSettings),
-              Expanded(child: _temperature('Left', left, onLeft)),
+              Expanded(child: _temperature('Left', 'front_left')),
               const VerticalDivider(width: 1, indent: 22, endIndent: 22),
               _button('Home', Icons.home_outlined, onHome, selected: home),
               _button(
@@ -56,7 +55,7 @@ class DashboardDock extends StatelessWidget {
               _button('Apps', Icons.apps_rounded, onApps),
               _button('Camera unavailable', Icons.videocam_outlined, null),
               const VerticalDivider(width: 1, indent: 22, endIndent: 22),
-              Expanded(child: _temperature('Right', right, onRight)),
+              Expanded(child: _temperature('Right', 'front_right')),
               SizedBox(
                 width: 80 * scale,
                 height: double.infinity,
@@ -73,21 +72,13 @@ class DashboardDock extends StatelessWidget {
       ),
     ),
   );
-  Widget _temperature(String side, double value, ValueChanged<double> change) =>
-      Column(
-        children: [
-          const Text('DEMO', style: TextStyle(fontSize: 9, letterSpacing: 1)),
-          Expanded(
-            child: DashboardTemperature(
-              side: side,
-              value: value,
-              onChange: change,
-              onTap: () => onClimate(side),
-              scale: scale,
-            ),
-          ),
-        ],
-      );
+  Widget _temperature(String side, String zone) => ClimateTemperatureControl(
+    service: climate,
+    zone: zone,
+    side: side,
+    scale: scale,
+    onTap: () => onClimate(side),
+  );
   Widget _button(
     String label,
     IconData icon,

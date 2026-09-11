@@ -1,3 +1,5 @@
+import '../../climate/climate_models.dart';
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -58,6 +60,9 @@ final class VehicleIntegrationManifestParser {
         id: id,
         displayName: displayName,
         capabilities: capabilities,
+        climate: source.containsKey('climate')
+            ? ClimateCapabilities.parse(source['climate'])
+            : null,
       );
     } on ArgumentError catch (error) {
       throw FormatException('Invalid vehicle profile: ${error.message}.');

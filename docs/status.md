@@ -9,7 +9,7 @@
 | Appearance | Material 3 light/dark/system modes, seed color and persisted host control size; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth and AA playback controls, provider-owned source selection and read-only Lua state. |
-| Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and labelled climate demo; Camera unavailable. |
+| Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and generic vehicle-backed climate with labelled simulation; Camera unavailable. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -118,3 +118,8 @@ configuration freezing and native crop copies. The current extended viewport and
 phone UI safe-inset behavior have not yet been verified on the Mu. Test map rendering
 behind the collapsed media surface, important AA controls above it, touch alignment,
 and AA Exit → Media → Home using the same session before accepting the layout.
+
+Climate has automated manifest, provenance, command/feedback, timeout, debounce and
+dashboard coverage. Real vehicle actuation requires an external integration with
+climate metadata, normalized feedback and permitted writes; no hardware climate
+integration has been validated by this pass.

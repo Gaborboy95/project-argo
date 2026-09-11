@@ -1,3 +1,4 @@
+import 'climate_composition.dart';
 import '../core/lifecycle/managed_application.dart';
 import '../core/lifecycle/application_exit_service.dart';
 import '../core/connectivity/connectivity_service.dart';
@@ -186,6 +187,13 @@ Future<Widget> bootstrapArgoApplication({
       ..register(veloceRuntime)
       ..register<VehicleDataService>(vehicleData)
       ..register<VehicleTransportLifecycle>(canSelection.transportLifecycle);
+    await registerClimateService(
+      services: services,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      integration: activeIntegration,
+      simulated: runtimeMode == ArgoRuntimeMode.simulation,
+    );
     registerHeadUnitPowerService(
       services: services,
       lifecycle: lifecycle,

@@ -1,94 +1,110 @@
 import 'package:flutter/material.dart';
 
+import '../../core/climate/climate_service.dart';
 import 'dashboard_temperature.dart';
 
-/// UI preview only. Separate zone and airflow groups leave room for future
-/// vehicle-backed seat controls without pretending they are implemented.
-class DashboardClimate extends StatefulWidget {
-  const DashboardClimate({
-    super.key,
-    required this.onDismiss,
-    this.left = 22,
-    this.right = 22,
-    this.onLeft,
-    this.onRight,
-  });
+class DashboardClimate extends StatelessWidget {
+  const DashboardClimate({super.key, required this.onDismiss, this.service});
   final VoidCallback onDismiss;
-  final double left, right;
-  final ValueChanged<double>? onLeft, onRight;
+  final ClimateService? service;
   @override
-  State<DashboardClimate> createState() => _DashboardClimateState();
-}
-
-class _DashboardClimateState extends State<DashboardClimate> {
-  double _fan = 2;
-  bool _ac = false;
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(24),
-    child: Column(
-      children: [
-        Row(
+  Widget build(BuildContext context) => StreamBuilder<ClimateSnapshot>(
+    stream: service?.changes,
+    initialData: service?.current ?? ClimateSnapshot(),
+    builder: (context, snapshot) {
+      final state = snapshot.requireData,
+          caps = snapshot.requireData.capabilities;
+      final fan = state.fan.displayed;
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
           children: [
-            Expanded(
-              child: Text(
-                'Climate preview',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-            ),
-            IconButton(
-              tooltip: 'Close climate',
-              onPressed: widget.onDismiss,
-              icon: const Icon(Icons.close),
-            ),
-          ],
-        ),
-        const Text('Interactive demo — no vehicle connection'),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 180,
-          child: Row(
-            children: [
-              for (final side in ['Left', 'Right'])
+            Row(
+              children: [
                 Expanded(
-                  child: DashboardTemperature(
-                    side: side,
-                    value: side == 'Left' ? widget.left : widget.right,
-                    scale: 1.3,
-                    onChange: (v) =>
-                        (side == 'Left' ? widget.onLeft : widget.onRight)?.call(
-                          v,
-                        ),
-                    onTap: () {},
+                  child: Text(
+                    state.simulated ? 'Climate • simulation' : 'Climate',
+                    style: Theme.of(context).textTheme.headlineSmall,
                   ),
                 ),
+                IconButton(
+                  tooltip: 'Close climate',
+                  onPressed: onDismiss,
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            if (!state.available) const Text('Vehicle climate unavailable'),
+            if (state.simulated)
+              const Text('Simulated feedback — no vehicle actuation'),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 180,
+              child: Row(
+                children: [
+                  for (final side in [
+                    ('Left', 'front_left'),
+                    ('Right', 'front_right'),
+                  ])
+                    Expanded(
+                      child: ClimateTemperatureControl(
+                        service: service,
+                        zone: side.$2,
+                        side: side.$1,
+                        scale: 1.3,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (caps?.fan case final range?) ...[
+              const Divider(height: 32),
+              const Text('Fan'),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    tooltip: 'Lower fan',
+                    onPressed: state.available
+                        ? () => service!.requestFanLevel(
+                            range.snap((fan ?? range.min) - range.step),
+                          )
+                        : null,
+                    icon: const Icon(Icons.remove),
+                  ),
+                  Text(
+                    fan == null
+                        ? '--'
+                        : '$fan / ${range.max}${state.fan.pending ? ' …' : ''}',
+                  ),
+                  IconButton(
+                    tooltip: 'Raise fan',
+                    onPressed: state.available
+                        ? () => service!.requestFanLevel(
+                            range.snap((fan ?? range.min) + range.step),
+                          )
+                        : null,
+                    icon: const Icon(Icons.add),
+                  ),
+                ],
+              ),
+              if (state.fan.failure != null) Text(state.fan.failure!),
             ],
-          ),
-        ),
-        const Divider(height: 32),
-        const Text('Airflow • demo'),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              tooltip: 'Lower fan',
-              onPressed: () => setState(() => _fan = (_fan - 1).clamp(0, 5)),
-              icon: const Icon(Icons.remove),
-            ),
-            Text('${_fan.round()} / 5'),
-            IconButton(
-              tooltip: 'Raise fan',
-              onPressed: () => setState(() => _fan = (_fan + 1).clamp(0, 5)),
-              icon: const Icon(Icons.add),
-            ),
+            if (caps?.acSupported == true) ...[
+              FilterChip(
+                label: Text(
+                  'A/C${state.ac.displayed == null ? ' — unknown' : ''}${state.ac.pending ? ' …' : ''}',
+                ),
+                selected: state.ac.displayed == true,
+                onSelected: state.available
+                    ? (v) => service!.requestAc(v)
+                    : null,
+              ),
+              if (state.ac.failure != null) Text(state.ac.failure!),
+            ],
           ],
         ),
-        FilterChip(
-          label: const Text('A/C • demo'),
-          selected: _ac,
-          onSelected: (v) => setState(() => _ac = v),
-        ),
-      ],
-    ),
+      );
+    },
   );
 }

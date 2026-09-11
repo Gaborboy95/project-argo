@@ -78,12 +78,17 @@ choosing dismissal or snap-back. Upward movement scrolls longer panel content.
 Horizontal temperature adjustment retains its own axis. The modal scope cancels
 projection pointers and blocks background input without replacing the native view.
 
-Each dock temperature toggles Climate. Arrows and horizontal drags adjust local
-preview values in 0.5°C steps from 18–26°C; the temporary adjustment bar runs from
-blue through neutral at 22°C to red. Climate is explicitly labelled an interactive
-demo with no vehicle connection. It has temperature and airflow groups, no seat
-controls, and sends no vehicle commands. Volume remains outside panel gesture
-ownership.
+Supported dock temperatures toggle the single Climate panel. ClimateService owns
+capabilities, requested/confirmed state, per-zone 100 ms trailing debounce and
+three-second confirmation deadlines. Dashboard widgets only render state and
+submit declared steps. Unknown production values display `--`; the first explicit
+adjustment uses the range midpoint as a requested starting point, never feedback.
+The blue/neutral/red bar follows the declared range. Fan and A/C appear only when
+supported; there are no seat controls. A selected-bundle Veloce bridge authorizes
+fresh normalized feedback and publishes the generic climate request topic. Plugin
+replacement invalidates live state, and shutdown cancels subscriptions and timers.
+Simulation is explicitly labelled and performs no vehicle writes. Volume remains
+outside panel gesture ownership. See the [climate integration contract](vehicle-integrations.md#vehicle-backed-climate).
 
 The volume gesture starts from AudioService's current level, applies relative
 vertical motion and keeps one in-flight write plus one replaceable target, with a

@@ -1,3 +1,5 @@
+import 'package:argo/core/climate/climate_service.dart';
+
 import 'dart:async';
 
 import 'package:argo/core/diagnostics/diagnostics_service.dart';
@@ -36,7 +38,7 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('temperature-Left')));
         await tester.pumpAndSettle();
         expect(
-          find.text('Interactive demo — no vehicle connection'),
+          find.text('Simulated feedback — no vehicle actuation'),
           findsOneWidget,
         );
         await tester.tap(find.byTooltip('Close climate'));
@@ -222,7 +224,18 @@ Future<_Harness> _createHarness({String? storedModuleId}) async {
     schema: AppSettingKeys.createSchema(),
     store: store,
   );
-  final services = ServiceRegistry()..register(settings);
+  final climate = VehicleClimateService(
+    capabilities: ClimateCapabilities.simulation(),
+    simulated: true,
+    publish: (_) async {},
+    authorize: (_) async => true,
+    diagnostics: DiagnosticsService(),
+  );
+  climate.invalidate(available: true);
+  addTearDown(climate.close);
+  final services = ServiceRegistry()
+    ..register(settings)
+    ..register<ClimateService>(climate);
   final modules = AppModuleRegistry()
     ..register(_module('home'))
     ..register(_module('climate'));

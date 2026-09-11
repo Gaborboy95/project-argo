@@ -1,3 +1,4 @@
+import '../climate/climate_models.dart';
 import 'vehicle_capability.dart';
 
 /// Immutable identity and declared application capabilities for a vehicle
@@ -7,6 +8,7 @@ final class VehicleProfile {
     required String id,
     required String displayName,
     Set<VehicleCapability> capabilities = const {},
+    ClimateCapabilities? climate,
   }) {
     if (id.length > 128 || !_idPattern.hasMatch(id)) {
       throw ArgumentError.value(
@@ -26,6 +28,7 @@ final class VehicleProfile {
       id: id,
       displayName: displayName,
       capabilities: Set.unmodifiable(capabilities),
+      climate: climate,
     );
   }
 
@@ -33,12 +36,14 @@ final class VehicleProfile {
     required this.id,
     required this.displayName,
     required this.capabilities,
+    this.climate,
   });
 
   static final RegExp _idPattern = RegExp(
     r'^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$',
   );
 
+  final ClimateCapabilities? climate;
   final String id;
   final String displayName;
   final Set<VehicleCapability> capabilities;

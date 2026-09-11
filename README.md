@@ -13,8 +13,8 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 
 The Home dashboard extends projection to the stationary dock, with a floating media strip
 above the dock. Host control size is adjustable independently of
-projection resolution and DPI. Climate is a clearly separated presentation/demo;
-vehicle actuation and Camera are not implemented.
+projection resolution and DPI. Climate uses optional vehicle-integration capabilities and confirmed feedback,
+with a separately labelled simulation mode. Camera is not implemented.
 
 ## Capabilities
 

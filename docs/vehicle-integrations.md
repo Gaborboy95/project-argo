@@ -35,14 +35,15 @@ Exact current vehicle manifest fields:
 | `schemaVersion` | Required, `1` | Must equal supported version. |
 | `id` | Required string | At most 128 characters; `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`. |
 | `displayName` | Required string | Nonempty after trimming for validation; original value retained. |
+| `climate` | Optional, unavailable | Zone ranges, optional fan range and features; see climate contract below. |
 | `capabilities` | Optional, empty list | Unique nonempty strings, each at most 128 characters; `^[a-z][A-Za-z0-9_-]*(?:\.[a-z][A-Za-z0-9_-]*)+$`. |
 
 Unknown JSON fields are ignored by the current parser; there is no plugin-path,
 credential, CAN-interface, schema-extension or policy field in this schema.
 Recognized capability constants are `vehicle.telemetry`, `climate.control`,
 `parking.sensors`, `camera.reverse`; syntactically valid additional IDs are
-accepted metadata, not dynamically implemented features. Climate/Parking remain
-placeholder UI even if a bundle declares those capabilities.
+accepted metadata, not dynamically implemented features. Parking remains placeholder UI. Climate requires both `climate.control` and usable
+climate metadata; declaring the capability alone does not invent a temperature range.
 
 Plugin-root precedence is explicit `VELOCE_PLUGIN_DIR` → selected bundle's
 `plugins/` → per-user Veloce plugins directory. See [configuration](configuration.md)
@@ -233,3 +234,61 @@ terminal, with quoting and a 1024-character bound. Enable this deliberately for
 acceptance because such lines may include track/device text. Normal INFO logging
 contains no track dump. [Run instructions](../tool/projection/README.md#host-metadata-and-lua)
 load only this observer without selecting an example vehicle profile.
+
+## Vehicle-backed climate
+
+Schema version 1 accepts optional metadata; old manifests remain valid:
+
+```json
+"climate": {
+  "zones": {
+    "front_left": { "minC": 18, "maxC": 26, "stepC": 0.5 },
+    "front_right": { "minC": 18, "maxC": 26, "stepC": 0.5 }
+  },
+  "fan": { "min": 0, "max": 5, "step": 1 },
+  "features": ["ac"]
+}
+```
+
+This is a fragment inside `vehicle.json`, alongside `capabilities: ["climate.control"]`.
+Ranges require finite endpoints and span, min < max, and a finite positive step no
+larger than the span. Values must lie on the declared grid from min. Zone IDs match
+`^[a-z][a-z0-9_]{0,31}$`, at most eight zones; this dashboard displays `front_left`
+and `front_right`. Fan is optional. The only supported feature name is `ac`;
+unknown/duplicate features are rejected. There are no inferred production defaults.
+
+The host publishes one topic, `vehicle.climate.request.v1`, with one of:
+
+```json
+{ "operation": "set_temperature", "zone": "front_left", "valueC": 22.5 }
+{ "operation": "set_fan_level", "value": 3 }
+{ "operation": "set_ac", "value": true }
+```
+
+An integration subscribes through `veloce.events.subscribe` (the `events`
+permission). It validates the operation and performs its own vehicle-specific
+write. Existing `can.write` permissions, filters and rate limits still apply;
+Argo has no climate CAN IDs or raw CAN encoder. Event delivery is not confirmation.
+
+Publish fresh observed values through `veloce.vehicle.publish` (`vehicle.write`)
+on `climate.front_left.target_temperature_c`,
+`climate.front_right.target_temperature_c`, `climate.fan.level`, and
+`climate.ac.enabled`. Temperatures/fan are numbers; A/C is a boolean. Only a running,
+loaded plugin whose canonical directory belongs to the selected integration can
+confirm values. Malformed/out-of-range feedback is ignored with bounded diagnostics.
+Cached feedback is not replayed after plugin replacement; publish current vehicle
+state again. Reload/unload invalidates confirmed and pending values. Selecting a
+different vehicle profile takes effect through the existing application restart,
+which closes the old service before creating the new one.
+
+The service displays requested values immediately, coalesces each zone's drag for
+100 ms, and waits up to three seconds for matching feedback. Arrows send one
+configured step immediately. New requests supersede pending ones; timeout/delivery
+failure returns the display to the last confirmed value, or `--` if unknown.
+Feedback has no request ID: matching post-send state confirms the value, not proof
+that a particular CAN transaction caused it. No live climate values are persisted.
+
+With `ARGO_MODE=simulation`, the explicitly labelled simulation service provides
+two 18–26°C zones at 0.5°C steps, fan 0–5 and A/C, and confirms simulated requests
+without vehicle writes. Production generic/no-metadata profiles show disabled
+unknown controls; pressing them does not open a fake climate panel.

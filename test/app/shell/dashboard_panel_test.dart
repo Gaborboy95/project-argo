@@ -1,3 +1,4 @@
+import 'package:argo/core/climate/climate_service.dart';
 import 'package:argo/app/shell/dashboard_panel.dart';
 import 'package:argo/app/shell/dashboard_temperature.dart';
 import 'package:flutter/material.dart';
@@ -79,6 +80,7 @@ void main() {
                     height: 180,
                     child: DashboardTemperature(
                       side: 'Left',
+                      range: ClimateTemperatureRange(18, 26, .5),
                       value: value,
                       scale: 1,
                       onChange: (v) => setState(() => value = v),
