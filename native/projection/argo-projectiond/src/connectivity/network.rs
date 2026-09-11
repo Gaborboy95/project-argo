@@ -738,6 +738,41 @@ fn choose_channel(info: &str, band: ApBand) -> Result<u16, String> {
     ))
 }
 
+fn write_guard_intent(
+    record: &std::path::Path,
+    interface: &str,
+    boot_id: &str,
+) -> Result<(), String> {
+    if boot_id.len() != 36
+        || !boot_id.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit() && !b.is_ascii_uppercase()
+            }
+        })
+    {
+        return Err("Cannot record guard ownership: invalid Linux boot ID".into());
+    }
+    let temporary = record.with_extension("json.new");
+    std::fs::write(
+        &temporary,
+        serde_json::json!({"interface": interface, "boot_id": boot_id}).to_string(),
+    )
+    .map_err(|e| format!("Cannot record owned firewall intent: {e}"))?;
+    std::fs::rename(temporary, record).map_err(|e| e.to_string())
+}
+
+fn remove_guard_record(record: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(record) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Guard removed but ownership record cleanup failed: {e}"
+        )),
+    }
+}
+
 async fn firewall(action: &str, interface: &str) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let path = "/usr/local/libexec/argo-projection-firewall";
@@ -754,13 +789,9 @@ async fn firewall(action: &str, interface: &str) -> Result<(), String> {
     if action == "start"
         && let Some(record) = &record
     {
-        let temporary = record.with_extension("json.new");
-        std::fs::write(
-            &temporary,
-            serde_json::json!({"interface": interface}).to_string(),
-        )
-        .map_err(|e| format!("Cannot record owned firewall intent: {e}"))?;
-        std::fs::rename(temporary, record).map_err(|e| e.to_string())?;
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map_err(|e| format!("Cannot read Linux boot ID for guard ownership: {e}"))?;
+        write_guard_intent(record, interface, boot_id.trim())?;
     }
     let status = tokio::time::timeout(
         Duration::from_secs(45),
@@ -778,15 +809,7 @@ async fn firewall(action: &str, interface: &str) -> Result<(), String> {
     if action == "stop"
         && let Some(record) = &record
     {
-        match std::fs::remove_file(record) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(format!(
-                    "Guard removed but ownership record cleanup failed: {e}"
-                ));
-            }
-        }
+        remove_guard_record(record)?;
     }
     Ok(())
 }
@@ -944,6 +967,7 @@ pub(crate) mod tests {
         assert_eq!(ApBand::Ghz5.nm_band(), "a");
     }
     struct Fake {
+        record: Option<std::path::PathBuf>,
         fail: bool,
         calls: Mutex<Vec<String>>,
     }
@@ -958,6 +982,9 @@ pub(crate) mod tests {
         }
         async fn remove_guard(&self, interface: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(interface.into());
+            if let Some(record) = &self.record {
+                remove_guard_record(record)?;
+            }
             Ok(())
         }
     }
@@ -981,18 +1008,33 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn cleanup_is_owned_idempotent_and_retains_guard_on_partial_failure() {
         let mut ap = ap();
+        let record =
+            std::env::temp_dir().join(format!("argo-guard-test-{}.json", std::process::id()));
+        let boot = "00000000-0000-0000-0000-000000000001";
+        write_guard_intent(&record, "testwifi", boot).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"interface": "testwifi", "boot_id": boot})
+        );
+        assert!(write_guard_intent(&record, "testwifi", "invalid").is_err());
         let bad = Fake {
+            record: Some(record.clone()),
             fail: true,
             calls: Mutex::default(),
         };
         assert!(cleanup(&bad, &mut ap).await.is_err());
         assert!(ap.active.is_some() && ap.firewall);
+        assert!(record.exists());
         assert_eq!(*bad.calls.lock().unwrap(), vec!["/owned/activation"]);
         let good = Fake {
+            record: Some(record.clone()),
             fail: false,
             calls: Mutex::default(),
         };
         cleanup(&good, &mut ap).await.unwrap();
+        assert!(!record.exists());
         cleanup(&good, &mut ap).await.unwrap();
         assert_eq!(
             *good.calls.lock().unwrap(),

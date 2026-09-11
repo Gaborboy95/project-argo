@@ -259,8 +259,16 @@ after assembling the matched app/daemon/native assets. The machine-readable
 manifest is authoritative for IPC and IHS compatibility; retain build provenance.
 
 A retained `$HOME/.local/state/project-argo/firewall-owned.json` means a managed
-attempt's guard cleanup is unconfirmed. It records only the interface, never AP
-credentials. A killed daemon's NetworkManager activation is bound to its D-Bus
+attempt's guard cleanup is unconfirmed. New records contain only `interface` and
+`boot_id` (from `/proc/sys/kernel/random/boot_id`), never AP credentials. Before
+managed daemon startup, a valid marker from a previous boot is recovered using
+`pkexec /usr/local/libexec/argo-projection-firewall stop INTERFACE`. The helper
+checks the administrator-approved interface; startup continues only after success
+and marker removal. No NetworkManager profile is modified. Same-boot markers,
+legacy interface-only markers and malformed records remain fail-closed. Failed
+previous-boot recovery also retains the marker. A legacy marker cannot be inferred
+to be stale just because the host rebooted; use the manual procedure below.
+ A killed daemon's NetworkManager activation is bound to its D-Bus
 client, but its firewall guard may remain. Automatic replacement is blocked until
 owned cleanup is inspected. Follow the [owned cleanup procedure](wireless.md#permissions-and-helper-installation),
 confirm the recorded interface has no active projection AP and its Argo guard has

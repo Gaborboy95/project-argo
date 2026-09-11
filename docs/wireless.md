@@ -106,7 +106,11 @@ sudo /usr/bin/python3 -I "$HOME/dev/argo/tool/connectivity/install-permissions.p
 
 The idempotent installer owns `/etc/argo/projection-firewall.json`, the fixed helper,
 a dedicated polkit action and a rule for the `argo-connectivity` group. Only local,
-active enrolled accounts can execute that exact helper without a password. The
+enrolled accounts can execute that exact helper without a password, including
+inactive local sessions during logout cleanup. The rule retains the exact action,
+executable-path and group checks; it does not grant NetworkManager or general root
+access. Re-run the installer after stopping Argo and completing owned cleanup to
+update an existing grant. The
 helper itself accepts only start/stop for administrator-approved interfaces and its
 own deterministic nftables tables; runtime accounts cannot edit these files.
 Log out/in after enrollment. No service restart, password storage, generic pkexec
@@ -122,7 +126,12 @@ authorizations expire. `pkexec --disable-internal-agent` with an unapproved inte
 must fail inside the helper; a non-enrolled account must fail polkit authorization.
 These are installation/hardware checks, separate from input-validation tests.
 
-Cleanup stops only the owned activation and input guard. The inactive credential
+Cleanup stops the owned activation first, removes its input guard second, and
+removes the boot-scoped ownership marker last. An uncertain same-boot cleanup
+continues to block replacement. On managed startup after reboot, a valid older
+boot marker triggers only the exact helper stop operation; success is required
+before the marker is removed. Legacy or malformed markers require manual recovery
+(see [setup recovery](setup.md)). Cleanup stops only the owned activation and input guard. The inactive credential
 template survives Disconnect and daemon restart; it does not retain a hotspot. A partial activation
 failure closes its attempt-local D-Bus owner. If activation/deactivation is uncertain,
 the firewall guard remains and automatic replacement is blocked. Inspect the owned

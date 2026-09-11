@@ -34,6 +34,18 @@ def install(path, content, mode):
     os.replace(tmp, path)
 
 
+def firewall_rule():
+    return f'''// Exact helper only, including inactive local sessions during logout cleanup.
+polkit.addRule(function(action, subject) {{
+ if (action.id === "org.argo.projection-firewall" &&
+     action.lookup("program") === "{HELPER}" &&
+     subject.local && subject.isInGroup("{GROUP}")) {{
+   return polkit.Result.YES;
+ }}
+}});
+'''
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--account')
@@ -91,15 +103,7 @@ def main():
  </action>
 </policyconfig>
 '''.encode(), 0o644)
-    install(RULE, f'''// Root-owned grant for this exact executable only; no authorization cache.
-polkit.addRule(function(action, subject) {{
- if (action.id === "org.argo.projection-firewall" &&
-     action.lookup("program") === "{HELPER}" &&
-     subject.local && subject.active && subject.isInGroup("{GROUP}")) {{
-   return polkit.Result.YES;
- }}
-}});
-'''.encode(), 0o644)
+    install(RULE, firewall_rule().encode(), 0o644)
     subprocess.run(['/usr/sbin/usermod', '-a', '-G', GROUP, args.account], check=True)
     if args.bluetooth_audio:
         script = Path(__file__).resolve().parent.parent / 'audio/install-bluetooth-routing.py'

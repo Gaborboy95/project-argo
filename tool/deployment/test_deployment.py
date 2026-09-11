@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +79,52 @@ class DeploymentTest(unittest.TestCase):
         self.d.select(self.first)
         self.assertEqual(self.d.current.resolve(), self.first)
         self.assertFalse(any(op[0] == 'start' for op in self.d.operations))
+
+    def test_guard_boot_recovery_in_managed_daemon_startup(self):
+        current = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        old = '00000000-0000-0000-0000-000000000001'
+        marker = self.d.state / 'firewall-owned.json'
+        a.save(self.d.config / 'daemon.json', {})
+        self.d.running.add('graphical-session.target')
+        original_lstat = Path.lstat
+        def metadata(path, *args, **kwargs):
+            if str(path) == '/usr/local/libexec/argo-projection-firewall':
+                return types.SimpleNamespace(st_mode=0o100755, st_uid=0)
+            return original_lstat(path, *args, **kwargs)
+        cases = [
+            ({'interface': 'wlan-test', 'boot_id': current}, False, False),
+            ({'interface': 'wlan-test', 'boot_id': old}, True, False),
+            ({'interface': 'wlan-test', 'boot_id': old}, True, True),
+            ({'interface': 'wlan-test'}, False, False),
+            ({'interface': 'wlan-test', 'boot_id': 'not-a-boot'}, False, False),
+            ({'interface': '../oops', 'boot_id': old}, False, False),
+            ({'interface': 'wlan-test', 'boot_id': None}, False, False),
+            ('not-json', False, False),
+        ]
+        with patch.dict(a.os.environ, {'WAYLAND_DISPLAY': 'test',
+                'DBUS_SESSION_BUS_ADDRESS': 'unix:path=test', 'INVOCATION_ID': 'test',
+                'XDG_RUNTIME_DIR': str(self.d.home)}), patch.object(Path, 'lstat', metadata):
+            for record, cleanup, failed in cases:
+                with self.subTest(record=record, failed=failed):
+                    a.save(marker, record)
+                    if record == 'not-json': marker.write_text('{')
+                    before = marker.read_bytes()
+                    def helper(*args, **kwargs):
+                        self.assertEqual(marker.read_bytes(), before)
+                        if failed: raise subprocess.CalledProcessError(1, 'pkexec')
+                        return subprocess.CompletedProcess(args, 0)
+                    with patch.object(a.subprocess, 'run', side_effect=helper) as command, patch.object(a.os, 'execve') as execute:
+                        if cleanup and not failed:
+                            self.d.launch('daemon')
+                            execute.assert_called_once()
+                            self.assertFalse(marker.exists())
+                        else:
+                            with self.assertRaises(RuntimeError): self.d.launch('daemon')
+                            execute.assert_not_called()
+                            self.assertEqual(marker.read_bytes(), before)
+                        if cleanup:
+                            command.assert_called_once_with(['/usr/bin/pkexec', '/usr/local/libexec/argo-projection-firewall', 'stop', 'wlan-test'], check=True, timeout=45)
+                        else: command.assert_not_called()
 
     def test_stopped_select_and_active_rollback(self):
         self.d.select(self.second)

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -268,13 +269,51 @@ class Deployment:
     def marker(self, role):
         return self.state / (role + '.json')
 
+    def recover_guard(self, previous_boot=False):
+        marker = self.state / 'firewall-owned.json'
+        if not marker.exists() and not marker.is_symlink():
+            return
+        try:
+            info = marker.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 1024:
+                raise ValueError('Invalid guard marker file')
+            original = marker.read_bytes()
+            record = json.loads(original)
+            if not isinstance(record, dict) or set(record) not in ({'interface'}, {'interface', 'boot_id'}):
+                raise ValueError('Invalid guard marker fields')
+            interface = record['interface']
+            if not isinstance(interface, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,14}', interface):
+                raise ValueError('Invalid guard marker interface')
+            boot_id = record.get('boot_id')
+            pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+            if 'boot_id' in record and (not isinstance(boot_id, str) or not re.fullmatch(pattern, boot_id)):
+                raise ValueError('Invalid guard marker boot ID')
+            current = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            if not re.fullmatch(pattern, current):
+                raise ValueError('Invalid current Linux boot ID')
+            if not previous_boot or boot_id is None or boot_id == current:
+                raise RuntimeError('Prior projection guard cleanup is unconfirmed; see setup recovery instructions')
+            helper = Path('/usr/local/libexec/argo-projection-firewall')
+            metadata = helper.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+                raise ValueError('Projection firewall helper must be a root-owned fixed executable')
+            print('Recovering previous-boot projection guard on ' + interface, flush=True)
+            # The helper validates administrator-approved interfaces and owns only
+            # its deterministic table. No NetworkManager mutation is needed here.
+            subprocess.run(['/usr/bin/pkexec', str(helper), 'stop', interface],
+                           check=True, timeout=45)
+            if marker.read_bytes() != original:
+                raise RuntimeError('Guard marker changed during recovery; retained')
+            marker.unlink()
+            print('Previous-boot guard cleanup confirmed; continuing startup', flush=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise RuntimeError('Prior projection guard recovery failed; marker retained: ' + str(error)) from error
+
     def launch(self, role, managed=True):
         if not os.environ.get('WAYLAND_DISPLAY') or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
             raise ValueError('Run in KDE Wayland; graphical login must import its environment into systemd --user')
         if managed and self.status('graphical-session.target').get('ActiveState') != 'active':
             raise ValueError('No active graphical session')
-        if (self.state / 'firewall-owned.json').exists():
-            raise RuntimeError('Prior projection guard cleanup is unconfirmed; see setup recovery instructions')
         with self.lock('selection'):
             bundle = self.current.resolve(strict=True)
             self.validate(bundle)
@@ -282,6 +321,7 @@ class Deployment:
             executable = 'argo-projectiond' if role == 'daemon' else 'homescreen'
             if program_pids(executable):
                 raise RuntimeError('An existing ' + executable + ' must finish cleanup first')
+            self.recover_guard(previous_boot=managed and role == 'daemon')
             if managed:
                 save(self.marker(role), {'result': 'running', 'invocation': os.environ['INVOCATION_ID'],
                                          'release': str(bundle)})
