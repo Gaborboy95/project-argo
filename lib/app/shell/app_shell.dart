@@ -1,3 +1,5 @@
+import '../../features/camera/camera_page.dart' show CameraActivityScope;
+import '../../core/camera/camera_service.dart';
 import '../../core/climate/climate_service.dart';
 import 'dashboard_geometry.dart';
 import '../../core/projection/projection_settings_service.dart';
@@ -45,6 +47,10 @@ class _AppShellState extends State<AppShell> {
   int _navigationEpoch = 0;
   bool get _home =>
       widget.environment.moduleRegistry.modules[_selectedIndex].id == 'home';
+  CameraService? get _camera =>
+      widget.environment.services.contains<CameraService>()
+      ? widget.environment.services.get<CameraService>()
+      : null;
   bool _mediaVisible = true;
   String? _panel, _climateSide;
   double? _volume;
@@ -65,7 +71,9 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     final modules = widget.environment.moduleRegistry.modules;
     final storedId = _settings.get(AppSettingKeys.lastModule);
-    final storedIndex = modules.indexWhere((module) => module.id == storedId);
+    final storedIndex = modules.indexWhere(
+      (module) => module.id == storedId && module.id != 'camera',
+    );
     final homeIndex = modules.indexWhere((module) => module.id == 'home');
     _selectedIndex = storedIndex >= 0
         ? storedIndex
@@ -173,6 +181,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    unawaited(_camera?.stop());
     _navigationEpoch++;
     unawaited(_projectionSubscription?.cancel());
     super.dispose();
@@ -308,6 +317,11 @@ class _AppShellState extends State<AppShell> {
                           _dismissPanel();
                           _selectId('settings');
                         },
+                        camera: _camera,
+                        onCamera: () {
+                          _dismissPanel();
+                          _selectId('camera');
+                        },
                         climate: services.contains<ClimateService>()
                             ? services.get<ClimateService>()
                             : null,
@@ -437,8 +451,15 @@ class _AppShellState extends State<AppShell> {
             active: module == modules[_selectedIndex],
             blocked: _modal,
             child: Builder(
-              builder: (context) =>
-                  module.builder(context, widget.environment.services),
+              builder: (context) => module.id == 'camera'
+                  ? CameraActivityScope(
+                      active: module == modules[_selectedIndex],
+                      child: module.builder(
+                        context,
+                        widget.environment.services,
+                      ),
+                    )
+                  : module.builder(context, widget.environment.services),
             ),
           ),
       ],
@@ -456,6 +477,11 @@ class _AppShellState extends State<AppShell> {
     if (index == _selectedIndex) {
       if (_home && _projection != null) _resumeHome();
       return;
+    }
+    final modules = widget.environment.moduleRegistry.modules;
+    if (modules[_selectedIndex].id == 'camera') unawaited(_camera?.stop());
+    if (modules[index].id == 'camera') {
+      unawaited(_camera?.start(CameraRole.rear));
     }
     final oldStream = _home && _projection != null
         ? mainProjectionStream(selectedProjectionSession(_projection!.current))

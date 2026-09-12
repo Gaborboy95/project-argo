@@ -36,6 +36,11 @@ def main():
     else:
         if args.ihs_prefix is None:
             p.error('Bundle records require the known matched --ihs-prefix')
+        camera = [(args.path / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
+        if any(camera) and not all(camera):
+            p.error('Camera bundles require both camerad and camera-view')
+        if all(camera):
+            record['camera_contract'] = 1
         record['managed_control'] = 1
         if version >= 7:
             record['native_view_contract'] = 1  # ARVW negotiated crop parameters

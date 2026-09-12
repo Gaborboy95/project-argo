@@ -9,7 +9,8 @@
 | Appearance | Material 3 light/dark/system modes, seed color and persisted host control size; shared native-page background. |
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth and AA playback controls, provider-owned source selection and read-only Lua state. |
-| Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and generic vehicle-backed climate with labelled simulation; Camera unavailable. |
+| Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and generic vehicle-backed climate with labelled simulation. |
+| Camera | Manual rear assignment and V4L2 raw/MJPEG capture, BGRx shared-memory ring and independent native IHS view. Stale blanking and bounded pipeline retries; no reverse/PDC trigger. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -47,6 +48,13 @@ hardware acceptance. AA media-key delivery and the continuous floating-panel dra
 have automated coverage; phone-app playback responses and physical drag feel remain
 hardware checks. No zero-artifact or phone-endurance claim follows from these
 geometry tests.
+
+The Mu USB capture path has delivered 1920×1080 at 30 fps through the native
+shared-memory ring, with explicit Stop releasing V4L2 and owner disconnect exiting
+the daemon. Camera tests cover IPC bounds, stable identities, stale/retry timing,
+slot guards, manual navigation and native-view retention. Live IHS camera picture,
+physical orientation, unplug/stall recovery, multiple identical devices and
+endurance remain hardware acceptance items. See the [camera guide](../tool/camera/README.md).
 
 ## Experimental and untested behavior
 

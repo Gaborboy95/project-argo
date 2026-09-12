@@ -376,3 +376,17 @@ rectangles, view DPR and Flutter physical size only when they change. During sta
 publish view metrics before Flutter's display list; an empty list is reported
 without guessing display identity. Native target verification
 uses the IHS/Wayland diagnostics in the [renderer guide](../tool/projection/README.md#fullscreen-presentation-geometry).
+
+## Manual camera
+
+`camera.rear` stores only the selected stable capture identity (`by-id:`,
+`by-path:` or physical `sysfs:` reference); default empty means unassigned.
+Assignment is explicit in Apps → Camera. Device nodes and all live frame/stream
+state are runtime-only. No camera pipeline strings, shell commands, reverse
+activation flags or implicit first-device selection are supported.
+
+CameraService uses `ARGO_WIRELESS_BUNDLE` as the existing shared release selector,
+requiring both camera assets and `camera_contract=1` in the manifest. Missing
+camera assets leave the rest of the app usable. No new environment opt-in or
+systemd camera unit is needed. Runtime sockets are private under XDG_RUNTIME_DIR;
+see [camera configuration and ownership](../tool/camera/README.md).

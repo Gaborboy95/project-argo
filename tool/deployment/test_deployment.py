@@ -66,6 +66,24 @@ class DeploymentTest(unittest.TestCase):
         self.d.select(self.first)
         self.d.operations.clear()
 
+    def test_camera_assets_are_optional_but_must_form_a_versioned_pair(self):
+        self.d.validate(self.source)  # Existing camera-less releases stay valid.
+        manifest = a.read(self.source / 'argo-release.json')
+        for file in ('bin/argo-camerad', 'lib/libargo_camera_view.so'):
+            path = self.source / file
+            path.write_text(file)
+            path.chmod(0o755)
+            manifest['sha256'][file] = a.digest(path)
+            a.save(self.source / 'argo-release.json', manifest)
+            with self.assertRaisesRegex(ValueError, 'Camera'):
+                self.d.validate(self.source)
+        manifest['camera_contract'] = 1
+        a.save(self.source / 'argo-release.json', manifest)
+        self.d.validate(self.source)
+        (self.source / 'bin/argo-camerad').write_text('changed binary')
+        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            self.d.validate(self.source)
+
     def test_ipc7_requires_view_contract_and_retains_ipc6_rollback(self):
         m = a.read(self.source / 'argo-release.json')
         m['ipc'] = 7

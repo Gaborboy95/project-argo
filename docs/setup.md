@@ -324,3 +324,15 @@ working bundle while replacing the application build and daemon.
 ### View Area release compatibility
 
 View/Safe Area uses IPC7 and native view creation contract ARVW v1. Stage all three matched components (application, daemon, native view); Engine and IHS are unchanged. The deployment utility accepts retained IPC6 releases for rollback and requires native_view_contract 1 for IPC7. Daemon-only replacement must match the bundle IPC version. Update the installed utility using the existing idempotent installation command before selecting IPC7. Keys and preferences stay outside releases.
+
+### Camera-capable releases
+
+Manual Rear Camera requires a changed application plus `bin/argo-camerad` and
+`lib/libargo_camera_view.so` in the selected bundle. Build only those changed
+components, retaining the matched projection daemon/view, Engine and IHS assets.
+`record-build.py` records `camera_contract=1` when both camera assets exist;
+`argoctl` validates the pair and their file hashes. Older camera-less releases
+remain valid rollback targets. Camerad is an application-owned subprocess, not
+an additional systemd unit. Install the current `argoctl` with the existing
+idempotent command before staging camera bundles. The [camera guide](../tool/camera/README.md)
+contains build commands, V4L2 permissions, explicit assignment and manual checks.

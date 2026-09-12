@@ -51,3 +51,6 @@ app.*.map.json
 # Build related
 
 *.so.release
+
+/native/camera/target/
+/native/camera/argo-camera-view/build/

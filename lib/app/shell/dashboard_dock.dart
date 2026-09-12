@@ -1,3 +1,4 @@
+import '../../core/camera/camera_service.dart';
 import '../../core/climate/climate_service.dart';
 
 import 'dart:math' as math;
@@ -20,10 +21,14 @@ class DashboardDock extends StatelessWidget {
     required this.onSettings,
     required this.onClimate,
     this.climate,
+    this.camera,
+    this.onCamera,
     required this.audio,
     required this.onVolume,
   });
   final double scale;
+  final CameraService? camera;
+  final VoidCallback? onCamera;
   final ClimateService? climate;
   final bool home, mediaVisible;
   final VoidCallback onHome, onMedia, onApps, onSettings;
@@ -53,7 +58,15 @@ class DashboardDock extends StatelessWidget {
                 selected: mediaVisible,
               ),
               _button('Apps', Icons.apps_rounded, onApps),
-              _button('Camera unavailable', Icons.videocam_outlined, null),
+              StreamBuilder<CameraSnapshot>(
+                stream: camera?.changes,
+                initialData: camera?.current,
+                builder: (context, snapshot) => _button(
+                  'Camera',
+                  Icons.videocam_outlined,
+                  snapshot.data?.rearUsable == true ? onCamera : null,
+                ),
+              ),
               const VerticalDivider(width: 1, indent: 22, endIndent: 22),
               Expanded(child: _temperature('Right', 'front_right')),
               SizedBox(

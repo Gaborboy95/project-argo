@@ -14,7 +14,8 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 The Home dashboard extends projection to the stationary dock, with a floating media strip
 above the dock. Host control size is adjustable independently of
 projection resolution and DPI. Climate uses optional vehicle-integration capabilities and confirmed feedback,
-with a separately labelled simulation mode. Camera is not implemented.
+with a separately labelled simulation mode. Manual Rear Camera uses an isolated V4L2 daemon
+and native IHS surface, with stable device assignment and stale-frame blanking.
 
 ## Capabilities
 
@@ -32,6 +33,8 @@ with a separately labelled simulation mode. Camera is not implemented.
 - Focused Settings sections, host volume/mute, Material 3 appearance and persistent preferences.
 - Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
   explicitly enabled host power integration.
+- Manual rear-camera capture, native aspect-fit display and bounded loss recovery;
+  automatic reverse/PDC activation remains unsupported.
 - External vehicle bundles and permission-controlled Lua host-state reads through
   `argo_host.snapshot()`.
 
@@ -54,6 +57,8 @@ PBAP phone interoperability remains unverified. Wallpaper/shaders are not implem
 - [Compatibility and limitations](docs/status.md): tested scope and unsupported work.
 - [Projection build reference](tool/projection/README.md): matching SDK/IHS requirements,
   safe daemon staging, native-view build and renderer diagnostics.
+- [Manual camera build and validation](tool/camera/README.md): V4L2 devices, native
+  shared-memory transport, rear assignment and camera bundle assets.
 - [Vehicle and Lua integrations](docs/vehicle-integrations.md): APIs, permissions and
   examples. [Contributing](CONTRIBUTING.md) covers repository conventions.
 

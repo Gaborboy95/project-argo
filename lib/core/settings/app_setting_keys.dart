@@ -2,6 +2,24 @@ import 'setting_key.dart';
 import 'settings_schema.dart';
 
 abstract final class AppSettingKeys {
+  static String _cameraIdentity(Object? value) {
+    if (value is String &&
+        value.length <= 512 &&
+        (value.isEmpty ||
+            RegExp(r'^(by-id:|by-path:|sysfs:)[^\r\n\x00]+$')
+                .hasMatch(value))) {
+      return value;
+    }
+    throw const FormatException('Expected stable camera identity');
+  }
+
+  static final cameraRear = SettingKey<String>(
+    id: 'camera.rear',
+    defaultValue: '',
+    serialize: _cameraIdentity,
+    deserialize: _cameraIdentity,
+  );
+
   static SettingKey<String> _connectivityReference(String name) =>
       SettingKey<String>(
         id: 'connectivity.$name',
@@ -179,6 +197,7 @@ abstract final class AppSettingKeys {
   static final projectionSafeInsetBottom = _projectionInsetKey('bottom');
 
   static SettingsSchema createSchema() => SettingsSchema()
+    ..register(cameraRear)
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)

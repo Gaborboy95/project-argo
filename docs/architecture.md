@@ -22,7 +22,7 @@ subscriptions/controllers local to their presentation.
 
 [AppModuleRegistry](../lib/app/navigation/app_module_registry.dart) and
 [app_modules.dart](../lib/app/navigation/app_modules.dart) define Home, Vehicle,
-Parking, Media, Calls and Settings. Climate is a dock sheet, not a destination. The shell retains pages in an IndexedStack.
+Parking, Media, Calls, Camera and Settings. Climate is a dock sheet, not a destination. The shell retains pages in an IndexedStack.
 Navigation away is not disposal. ProjectionInputScope explicitly communicates
 input ownership; hiding projection, replacing a session/stream and changing
 presentation geometry cancel accepted gestures. Stable `home` composes
@@ -64,7 +64,7 @@ Dock Home resumes projection; Media toggles only the reserved strip directly
 over the lower part of projection. Pulling up on that strip opens Media with larger artwork,
 metadata, supported transport commands and source selection. Apps opens a centered
 labelled grid of registered destinations; Settings stays directly accessible.
-Camera is unavailable. Settings and volume have symmetric edge insets; a persistent
+Camera opens a manually assigned rear device; its dock shortcut requires a present assignment. Settings and volume have symmetric edge insets; a persistent
 volume meter accompanies the speaker.
 
 Media retains one DashboardFloatingMedia surface between the primary region and
@@ -497,3 +497,25 @@ service launch against selector changes. Update startup failure restores the
 prior selector, with replacement startup conditional on completed cleanup.
 Application settings, daemon identity and administrator grants remain outside
 releases. See [deployment and recovery](setup.md#graphical-session-deployment).
+
+## Manual camera ownership
+
+[CameraService](../lib/core/camera/camera_service.dart) owns stable role assignments,
+discovery and live capture metadata. The application launches `argo-camerad` from
+the selected matched release; it is not a systemd service. Camera availability
+is independent of projection, connectivity and vehicle capabilities.
+[CameraPage](../lib/features/camera/camera_page.dart) uses a separate
+`argo.camera.view` PlatformViewLayer factory with no pointer dispatch. The shell
+explicitly starts Rear on manual entry and stops it on departure; retained pages
+receive CameraActivityScope so their lifetime is not confused with visibility.
+The native instance stays stable across status and size changes while selected.
+
+V4L2/GStreamer and the three-slot BGRx memfd ring stay native. The view receives
+memfd/eventfd descriptors directly, validates slot guards and age, copies the
+newest stable frame into a GBM allocation and submits through normal IHS APIs.
+Flutter only aspect-fits the negotiated source dimensions. No image bytes cross
+Dart or control IPC. Both daemon and view independently enforce a 750 ms stale
+limit; the daemon owns bounded capture restart and releases V4L2 on Stop or
+control-owner loss. Automatic reverse/gear/PDC activation is not implemented.
+The [camera guide](../tool/camera/README.md#native-contracts-and-safety) defines
+creation/control/ring v1 and operational limits.

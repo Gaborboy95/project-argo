@@ -1,3 +1,5 @@
+import '../../core/camera/camera_service.dart';
+import '../../features/camera/camera_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
 import '../../features/calls/calls_page.dart';
 import '../../core/connectivity/connectivity_service.dart';
@@ -94,6 +96,18 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         ),
       ),
     );
+  registry.register(
+    AppModule(
+      id: 'camera',
+      label: 'Camera',
+      icon: Icons.videocam_outlined,
+      builder: (_, services) => CameraPage(
+        service: services.contains<CameraService>()
+            ? services.get<CameraService>()
+            : null,
+      ),
+    ),
+  );
   registry.register(
     AppModule(
       id: 'calls',

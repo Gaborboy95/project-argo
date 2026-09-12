@@ -117,6 +117,11 @@ class Deployment:
             raise ValueError('Release requires IPC6/IPC7 and managed application control v1')
         if manifest.get('ipc') == 7 and manifest.get('native_view_contract') != 1:
             raise ValueError('IPC7 requires the matched ARVW native View Area contract v1')
+        camera = [(bundle / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
+        if any(camera) and (not all(camera) or manifest.get('camera_contract') != 1):
+            raise ValueError('Camera requires both assets and camera_contract=1')
+        if manifest.get('camera_contract') is not None and (manifest['camera_contract'] != 1 or not all(camera)):
+            raise ValueError('Invalid camera contract or missing camera assets')
         _, ihs = self.ihs()
         if manifest.get('ihs_sha256') != ihs:
             raise ValueError('Installed IHS differs from the recorded matched build')
@@ -135,6 +140,8 @@ class Deployment:
                 raise ValueError('Unsafe release entry')
             if not file.is_file() or digest(file) != expected:
                 raise ValueError('Release hash mismatch: ' + relative)
+        if all(camera) and not os.access(bundle / 'bin/argo-camerad', os.X_OK):
+            raise ValueError('Camera daemon is not executable')
         if not os.access(bundle / 'bin/argo-projectiond', os.X_OK):
             raise ValueError('Daemon is not executable')
         return manifest

@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import '../core/camera/camera_service.dart';
+import '../core/camera/native_camera_service.dart';
 import 'climate_composition.dart';
 import '../core/lifecycle/managed_application.dart';
 import '../core/lifecycle/application_exit_service.dart';
@@ -132,6 +136,18 @@ Future<Widget> bootstrapArgoApplication({
       phase: AppShutdownPhase.persistState,
       shutdown: settings.close,
     );
+
+    final camera = NativeCameraService(
+      settings: settings,
+      environment: processEnvironment,
+    );
+    services.register<CameraService>(camera);
+    lifecycle.registerShutdown(
+      name: 'camera',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: camera.close,
+    );
+    unawaited(camera.initialize());
 
     final veloceConfiguration = VeloceRuntimeConfiguration.fromEnvironment(
       environment: processEnvironment,
