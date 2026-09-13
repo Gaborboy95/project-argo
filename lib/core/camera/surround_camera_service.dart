@@ -36,6 +36,7 @@ final class SurroundCameraService
   Future<void> _tail = Future.value();
   CameraRole? _desired;
   int? _lease;
+  CameraRole? _leaseRole;
   int _id = 0, _epoch = 0;
   bool _closed = false, _polling = false;
   DynamicLibrary? _library;
@@ -212,6 +213,8 @@ final class SurroundCameraService
     _socket = null;
     socket.destroy();
     _lease = null;
+    _leaseRole = null;
+    _renderLeases.clear();
     _epoch++;
     _poll?.cancel();
     for (final pending in _pending.values) {
@@ -415,6 +418,10 @@ final class SurroundCameraService
   Future<void> _subscribe(CameraRole role) async {
     _nativeRole?.call(role.index);
     _renderWidth = _renderHeight = null;
+    if (_lease != null && _leaseRole == role) {
+      await _refresh();
+      return;
+    }
     if (_lease != null) {
       await command('unsubscribe', {'subscription_id': _lease});
     }
@@ -426,7 +433,10 @@ final class SurroundCameraService
       'delivery': 'latest',
       'max_outstanding': 1,
     });
-    if (epoch == _epoch) _lease = result['subscription_id'] as int;
+    if (epoch == _epoch) {
+      _lease = result['subscription_id'] as int;
+      _leaseRole = role;
+    }
     await _refresh();
   }
 
@@ -437,6 +447,12 @@ final class SurroundCameraService
     ++_viewEpoch;
     return _serialize(() async {
       await initialize();
+      if (_socket != null) {
+        for (final lease in _renderLeases) {
+          await command('unsubscribe', {'subscription_id': lease});
+        }
+        _renderLeases.clear();
+      }
       if (_socket != null && _desired == role && _lease == null) {
         await _subscribe(role);
       } else if (_socket != null && _desired == role) {
@@ -461,6 +477,7 @@ final class SurroundCameraService
       _renderWidth = _renderHeight = null;
       final lease = _lease;
       _lease = null;
+      _leaseRole = null;
       if (_socket != null && lease != null) {
         await command('unsubscribe', {'subscription_id': lease});
       }

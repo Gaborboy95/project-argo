@@ -207,6 +207,8 @@ void main() {
     await service.initialize();
     expect(service.current.rearUsable, isTrue);
     await service.start(CameraRole.rear);
+    await service.start(CameraRole.rear);
+    expect(commands.where((op) => op == 'subscribe').length, 1);
     await service.close();
     expect(
       commands,
