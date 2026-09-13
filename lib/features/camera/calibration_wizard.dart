@@ -35,7 +35,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
   bool _busy = false, _independent = false, _frozenPreview = false;
   List<dynamic> _corners = [];
   List<double>? _pixel;
-  Map<String, dynamic>? _intrinsics, _extrinsics, _metric;
+  Map<String, dynamic>? _intrinsics, _extrinsics, _metric, _captureDescriptor;
   TextEditingController field(String name) =>
       _values.putIfAbsent(name, TextEditingController.new);
   double number(String name, {bool positive = true}) {
@@ -80,16 +80,42 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
 
   Future<Map<String, dynamic>> solve(Map<String, Object?> request) =>
       _job.run('calibration', request);
+  Map<String, dynamic> get _captureMode {
+    final streams = widget.service.current.details['streams'] as List? ?? [];
+    final stream =
+        streams.where((dynamic s) => s['camera_id'] == _camera).firstOrNull
+            as Map?;
+    final mode =
+        _captureDescriptor?['capture_mode'] as Map? ?? stream?['mode'] as Map?;
+    return {
+      if (mode != null) ...Map<String, dynamic>.from(mode),
+      'orientation': _captureDescriptor?['orientation'] ?? 0,
+      'crop': _captureDescriptor?['crop'],
+    };
+  }
+
+  Future<void> captureForMeasurement() async {
+    if (_camera == null) throw StateError('Select a camera first.');
+    final shot = await widget.control.command('snapshot', {
+      'camera_id': _camera,
+    }, true);
+    _captureDescriptor = Map<String, dynamic>.from(shot['frame'] as Map);
+    _image = shot['path'] as String;
+    await widget.control.command('present', {
+      'path': _image,
+      'timeline': 'replay',
+      'width': _captureDescriptor!['width'],
+      'height': _captureDescriptor!['height'],
+    });
+    _frozenPreview = true;
+    _corners = [];
+    _pixel = null;
+  }
+
   Map<String, dynamic> get _cameraCalibration => {
     'camera_id': _camera,
     'binding': _camera,
-    'capture_mode': {
-      'width': widget.service.current.width,
-      'height': widget.service.current.height,
-      'format': 'BGRx',
-      'orientation_degrees':
-          int.tryParse(field('orientation_degrees').text) ?? 0,
-    },
+    'capture_mode': _captureMode,
     'mount_state': field('mount_state').text,
     'fit_points_vehicle_m': _targets.map((t) => t['point']).toList(),
     'orientation_degrees': int.tryParse(field('orientation_degrees').text) ?? 0,
@@ -328,6 +354,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
         final shot = await widget.control.command('snapshot', {
           'camera_id': _camera,
         }, true);
+        _captureDescriptor = Map<String, dynamic>.from(shot['frame'] as Map);
         _image =
             shot['path'] as String? ??
             (shot['result'] as Map?)?['path'] as String?;
@@ -347,7 +374,17 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
           'session_id': _session,
           'camera_id': _camera,
         });
-        if (observed['accepted'] == true) _observations.add(observed);
+        _corners = observed['corners'] as List? ?? [];
+        _frozenPreview = true;
+        await widget.control.command('present', {
+          'path': _image,
+          'timeline': 'replay',
+          'width': widget.service.current.width,
+          'height': widget.service.current.height,
+        });
+        if (observed['accepted'] == true) {
+          _observations.add(observed);
+        }
         _notices.add(
           'Accepted ${_observations.length}; blur ${observed['blur']}, coverage ${observed['coverage']}; ${observed['reason'] ?? ''}',
         );
@@ -393,6 +430,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
       const Text(
         'Place surveyed targets on the reference ground. Tap each target in the live original image, then enter its measured X/Y position from the rear axle. Use at least four well-separated targets. Approximate mounting estimates do not establish calibration.',
       ),
+      action('Capture target image for measurements', captureForMeasurement),
       preview(pick: true),
       input('target_x', 'Target X forward (m)'),
       input('target_y', 'Target Y left (m)'),
@@ -448,8 +486,9 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
             /* Missing camera coverage is explicit in renderer output. */
           }
         }
-        if (frames.isEmpty)
+        if (frames.isEmpty) {
           throw StateError('Capture a connected camera before preview.');
+        }
         final output =
             '${File(frames.first['path'] as String).parent.path}/argo-calibration-preview.png';
         final image = await _job.run('render', {
@@ -461,6 +500,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
           'width': 640,
           'height': 480,
           'timeline': 'replay',
+          'preview_candidate': true,
           'backend': 'software',
         });
         await widget.control.command('present', {
@@ -492,6 +532,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
       const Text(
         'Use independently measured points excluded from fitting, spanning the intended operating area. Metric thresholds and operating envelope must reflect real measurements. A low fitting residual does not unlock distance accuracy.',
       ),
+      action('Capture target image for measurements', captureForMeasurement),
       preview(pick: true),
       input('validation_x', 'Independent X forward (m)'),
       input('validation_y', 'Independent Y left (m)'),

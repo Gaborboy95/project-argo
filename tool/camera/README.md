@@ -248,3 +248,19 @@ flutter test test/core/camera/surround_camera_test.dart
 This opens an isolated test daemon and verifies discovery, numeric leases,
 snapshot production, a calibration collection session and recorder status. It
 does not open physical devices or establish visible-frame acceptance.
+
+## Recording and parking results
+
+Camera → Camera recordings provides explicit destination and quota selection,
+per-camera track selection, recording start/stop/status, protected 10-second
+pre-event / 20-second post-event marking, session browsing, individual/surround
+replay, play/pause/seek/speed and original or H.264 Matroska export. Recording
+continues when the page is closed; only its explicit Stop button stops it.
+Playback uses the recording's immutable calibration and never writes to the
+live vehicle bus. Playback and export run as independent bounded engine jobs.
+
+The parking perception card loads an explicit local model manifest and starts
+or stops the independent provider. It shows units, input age, source sequence,
+model/calibration revision and reported coverage/uncertainty. Relative depth is
+never labelled metres. Results expire independently of camera imagery, including
+when provider status polling stalls. Missing weights remain unavailable.
