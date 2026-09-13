@@ -1,3 +1,5 @@
+import 'calibration_wizard.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/camera/camera_service.dart';
@@ -36,6 +38,19 @@ class CameraPage extends StatelessWidget {
               const Text(
                 'Choose a capture device. Camera activation is manual.',
               ),
+              if (camera.external && service is SurroundCameraControl)
+                TextButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => CalibrationWizard(
+                        service: service!,
+                        control: service! as SurroundCameraControl,
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.straighten),
+                  label: const Text('Calibrate camera rig'),
+                ),
               TextButton.icon(
                 onPressed: service!.refresh,
                 icon: const Icon(Icons.refresh),
@@ -122,6 +137,19 @@ class CameraPage extends StatelessWidget {
                     TextButton(
                       onPressed: () => service!.start(CameraRole.rear),
                       child: const Text('Retry'),
+                    ),
+                  if (camera.external && service is SurroundCameraControl)
+                    IconButton(
+                      tooltip: 'Calibrate camera rig',
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => CalibrationWizard(
+                            service: service!,
+                            control: service! as SurroundCameraControl,
+                          ),
+                        ),
+                      ),
+                      icon: const Icon(Icons.straighten, color: Colors.white),
                     ),
                   PopupMenuButton<String>(
                     tooltip: 'Rear camera device',

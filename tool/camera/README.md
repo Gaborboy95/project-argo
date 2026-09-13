@@ -191,3 +191,19 @@ frames and explicit V4L2 release, followed by a fresh manual start. An initial d
 `Invalid data` error has also recovered through the bounded retry path; startup
 reliability remains device-dependent. This is not acceptance of the live IHS picture,
 real rear-camera orientation, unplug/stall recovery on every device or endurance.
+
+## External calibration workflow
+
+With the external service connected, Camera → Calibrate camera rig opens the
+seven-stage wizard. Enter measured vehicle/target dimensions; assign optical
+views to stable capture adapters; collect diverse checkerboard observations or
+import an exact OpenCV-fisheye profile; tap surveyed ground targets and solve
+pose; inspect a captured candidate preview; collect separate measured validation
+points; then activate the candidate or roll back an immutable revision.
+
+Observations and solver jobs live in the standalone engine. The session ID can
+resume observation collection. Printed targets require actual-size printing and
+physical scale-bar verification. Native previews display pixels; Flutter carries
+only corner locations, quality metadata and measured coordinates. Frozen
+calibration previews are labelled as captures. Metric geometry validation does
+not validate a depth model. Missing cameras may be saved as incomplete coverage.
