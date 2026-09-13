@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
 
@@ -40,6 +41,13 @@ final class SurroundCameraService
   DynamicLibrary? _library;
   void Function(int)? _nativeRole;
   int Function(Pointer<Utf8>, int, int)? _nativeImage;
+  int Function()? _monotonicNs;
+  Map<String, dynamic> Function()? renderingMeasurements;
+  Map<String, Object?> _orbit = const {
+    'azimuth_rad': -2.3,
+    'elevation_rad': 0.9,
+    'distance_m': 9.0,
+  };
   @override
   CameraSnapshot get current => _current;
   @override
@@ -65,25 +73,29 @@ final class SurroundCameraService
             (bundle == null
                 ? 'libargo_camera_view.so'
                 : '$bundle/lib/libargo_camera_view.so');
-        _library = DynamicLibrary.open(path);
-        final result = _library!
-            .lookupFunction<Int32 Function(), int Function()>(
-              'argo_surround_camera_view_register',
-            )();
+        final library = DynamicLibrary.open(path);
+        _nativeRole = library
+            .lookupFunction<Void Function(Uint32), void Function(int)>(
+              'argo_surround_camera_view_set_role',
+            );
+        _nativeImage = library
+            .lookupFunction<
+              Int32 Function(Pointer<Utf8>, Uint64, Uint32),
+              int Function(Pointer<Utf8>, int, int)
+            >('argo_surround_camera_view_set_image');
+        _monotonicNs = library
+            .lookupFunction<Uint64 Function(), int Function()>(
+              'argo_surround_camera_monotonic_ns',
+            );
+        final result = library.lookupFunction<Int32 Function(), int Function()>(
+          'argo_surround_camera_view_register',
+        )();
         if (result != 0) {
           throw StateError(
             'External camera factory registration failed ($result)',
           );
         }
-        _nativeRole = _library!
-            .lookupFunction<Void Function(Uint32), void Function(int)>(
-              'argo_surround_camera_view_set_role',
-            );
-        _nativeImage = _library!
-            .lookupFunction<
-              Int32 Function(Pointer<Utf8>, Uint64, Uint32),
-              int Function(Pointer<Utf8>, int, int)
-            >('argo_surround_camera_view_set_image');
+        _library = library;
       }
       if (registerNative) {
         final runtime = _directory.toNativeUtf8();
@@ -119,9 +131,7 @@ final class SurroundCameraService
         (bytes) {
           try {
             for (final message in decoder.add(bytes)) {
-              if (message['major'] != 1) {
-                throw const FormatException('Incompatible surround-camera API');
-              }
+              SurroundControlDecoder.validateEnvelope(message);
               final waiter = _pending.remove(message['id']);
               if (waiter == null) continue;
               if (message['ok'] == true) {
@@ -220,6 +230,27 @@ final class SurroundCameraService
     Map<String, Object?> arguments = const {},
     bool administration = false,
   ]) async {
+    if (operation == 'orbit') {
+      final azimuth = arguments['azimuth_rad'] as num?,
+          elevation = arguments['elevation_rad'] as num?,
+          distance = arguments['distance_m'] as num?;
+      if (azimuth == null ||
+          !azimuth.isFinite ||
+          elevation == null ||
+          !elevation.isFinite ||
+          elevation < .15 ||
+          elevation > 1.5 ||
+          distance == null ||
+          !distance.isFinite ||
+          distance < 3 ||
+          distance > 30) {
+        throw ArgumentError(
+          'Orbit bounds: finite azimuth, elevation 0.15–1.5 radians and range 3–30 metres',
+        );
+      }
+      _orbit = Map<String, Object?>.from(arguments);
+      return {'updated': true};
+    }
     if (operation == 'present') {
       if (_nativeImage == null) {
         throw StateError('Native presentation unavailable');
@@ -283,6 +314,7 @@ final class SurroundCameraService
       (bytes) {
         try {
           for (final message in decoder.add(bytes)) {
+            SurroundControlDecoder.validateEnvelope(message);
             if (done.isCompleted || message['id'] != id) continue;
             if (message['major'] != 1 || message['ok'] != true) {
               done.completeError(
@@ -492,8 +524,9 @@ final class SurroundCameraService
           cachedRevision = revision;
         }
         final calibration = cachedCalibration;
-        if (calibration == null)
+        if (calibration == null) {
           throw StateError('Calibrate a rig before surround rendering');
+        }
         final frames = <Map<String, dynamic>>[];
         for (final id in ids) {
           try {
@@ -517,17 +550,62 @@ final class SurroundCameraService
         }
         final output =
             '${File(frames.first['path'] as String).parent.path}/argo-surround-$pid.png';
+        final measurements =
+            renderingMeasurements?.call() ?? <String, dynamic>{};
+        final now = _monotonicNs?.call();
+        final steering = measurements['steering'] as Map?;
+        final pdc = measurements['pdc'] as Map?;
+        final viewportWidth = (width ?? _current.width ?? 640).clamp(64, 3840);
+        final viewportHeight = (height ?? _current.height ?? 480).clamp(
+          64,
+          2160,
+        );
+        const renderBudget = 128 * 1024 * 1024;
+        final inputBytes = frames.fold<int>(
+          0,
+          (sum, frame) =>
+              sum + (frame['width'] as int) * (frame['height'] as int) * 3,
+        );
+        final outputPixels = math.max(
+          4096,
+          (renderBudget - inputBytes) ~/ (64 + 12 * frames.length),
+        );
+        final scale = math.min(
+          1.0,
+          math.sqrt(outputPixels / (viewportWidth * viewportHeight)),
+        );
         final rendered = await SurroundJob(this).run('render', {
           'op': 'render',
           'calibration': calibration,
           'frames': frames,
           'view': mode,
+          'orbit': _orbit,
+          if (measurements['reverse'] is bool)
+            'reverse': measurements['reverse'],
           'camera_id': _current.assignments[_desired],
           'output': output,
-          'width': (width ?? _current.width ?? 640).clamp(64, 3840),
-          'height': (height ?? _current.height ?? 480).clamp(64, 2160),
+          'width': (viewportWidth * scale).floor().clamp(64, 3840),
+          'height': (viewportHeight * scale).floor().clamp(64, 2160),
+          'max_render_memory_mb': 128,
           'timeline': 'live',
           'backend': 'software',
+          if (now != null &&
+              steering != null &&
+              measurements['reverse'] is bool)
+            'telemetry': {
+              'road_wheel_angle_rad': steering['road_wheel_angle_rad'],
+              'timestamp_ns': now - (steering['age_ns'] as int),
+              'clock_source': 'CLOCK_MONOTONIC_source_age_mapping',
+              'clock_uncertainty_ns': null,
+            },
+          if (now != null && pdc != null)
+            'pdc': [
+              for (final observation in pdc['observations'] as List)
+                {
+                  ...Map<String, dynamic>.from(observation as Map),
+                  'timestamp_ns': now - (pdc['age_ns'] as int),
+                },
+            ],
         });
         if (epoch == _viewEpoch && !_closed) {
           final stamps = frames.map((f) => f['capture_ns'] as int).toList()
@@ -595,6 +673,25 @@ final class SurroundControlDecoder {
         }
         yield value;
       }
+    }
+  }
+
+  static void validateEnvelope(Map<String, dynamic> value) {
+    if (value['major'] != 1 ||
+        value['minor'] is! int ||
+        (value['minor'] as int) < 0 ||
+        (value['minor'] as int) > 65535 ||
+        value['id'] is! int ||
+        (value['id'] as int) < 0) {
+      throw const FormatException(
+        'Incompatible or malformed surround-camera envelope',
+      );
+    }
+    if (value.containsKey('ok')) {
+      if (value['ok'] is! bool)
+        throw const FormatException('Invalid response status');
+    } else if (value['op'] is! String || value['args'] is! Map) {
+      throw const FormatException('Invalid request envelope');
     }
   }
 

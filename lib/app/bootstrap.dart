@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../core/camera/camera_service.dart';
+import '../core/camera/camera_presentation_policy.dart';
 import '../core/camera/native_camera_service.dart';
 import '../core/camera/surround_camera_service.dart';
 
@@ -234,6 +235,27 @@ Future<Widget> bootstrapArgoApplication({
       ..register(veloceRuntime)
       ..register<VehicleDataService>(vehicleData)
       ..register<VehicleTransportLifecycle>(canSelection.transportLifecycle);
+    if (camera is SurroundCameraService) {
+      final automatic = CameraPresentationService(
+        vehicleData,
+        policy: CameraPresentationPolicy(
+          enabled: processEnvironment['ARGO_CAMERA_AUTOMATIC'] != '0',
+          sideViews: processEnvironment['ARGO_CAMERA_INDICATOR_VIEWS'] == '1',
+          parkingSpeedMps:
+              double.tryParse(
+                processEnvironment['ARGO_CAMERA_PARKING_MAX_SPEED_MPS'] ?? '',
+              ) ??
+              3,
+        ),
+      );
+      camera.renderingMeasurements = () => automatic.renderingMeasurements;
+      services.register<CameraPresentationService>(automatic);
+      lifecycle.registerShutdown(
+        name: 'camera.presentation',
+        phase: AppShutdownPhase.stopActivity,
+        shutdown: automatic.close,
+      );
+    }
     await registerClimateService(
       services: services,
       lifecycle: lifecycle,

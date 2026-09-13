@@ -10,7 +10,7 @@
 | Projection | Wired AOAP/USB and wireless Bluetooth bootstrap/TCP into the same Android Auto engine. H.264 default; opt-in HEVC and protocol 1.7 negotiation await phone acceptance. |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth and AA playback controls, provider-owned source selection and read-only Lua state. |
 | Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and generic vehicle-backed climate with labelled simulation. |
-| Camera | External API 1.0 reconnecting client and sealed-frame native IHS adapter; retained manual legacy rear path for paired releases. Independent native stale blanking. External hardware picture and restart-with-recording validation pending. |
+| Camera | External API 1.0 client, sealed-frame native presentation, guided real calibration jobs, software surround/orbit, separate-track recording/replay controls, source-aware perception status, and normalized reverse/PDC/optional-indicator arbitration. Legacy manual rear remains available. Physical IHS picture, UI calibration accuracy and vehicle-trigger acceptance remain pending. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |

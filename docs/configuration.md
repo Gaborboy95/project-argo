@@ -377,7 +377,9 @@ publish view metrics before Flutter's display list; an empty list is reported
 without guessing display identity. Native target verification
 uses the IHS/Wayland diagnostics in the [renderer guide](../tool/projection/README.md#fullscreen-presentation-geometry).
 
-## Manual camera
+## Legacy manual camera
+
+This section applies only to `camera_contract=1` paired releases.
 
 `camera.rear` stores only the selected stable capture identity (`by-id:`,
 `by-path:` or physical `sysfs:` reference); default empty means unassigned.
@@ -411,3 +413,34 @@ ordinary subscriptions use `control.sock` and native `media.sock`.
 Legacy `camera.rear` migrates through an engine compare-and-set assignment;
 Argo clears that setting only after a durable acknowledgement. Existing engine
 assignments take precedence. Failed migration retains the old preference.
+
+### Automatic camera presentation and normalized overlays
+
+External mode enables reverse and low-speed PDC presentation when fresh authorized
+normalized signals exist. `ARGO_CAMERA_AUTOMATIC=0` disables automatic navigation;
+manual views and fresh calibrated overlays remain available.
+`ARGO_CAMERA_INDICATOR_VIEWS=1` enables optional side views. The parking speed
+threshold is `ARGO_CAMERA_PARKING_MAX_SPEED_MPS` (default 3 m/s), with 1 m/s exit
+hysteresis. Inputs expire after 750 ms; ending requests hold at most another
+800 ms. Reverse takes precedence, then PDC, then a single indicator. Hazards
+cannot alternate side views. Manual navigation cancels the current owner's
+request until that request ends; only an owning request may restore the previous
+destination. These are configurable bring-up policies, not certified latency limits.
+
+Authorized vehicle bundles may publish these read-only normalized keys:
+
+| Key | Value and interpretation |
+|---|---|
+| `vehicle.gear.reverse` | Boolean; unknown/stale is not assumed false. |
+| `vehicle.speed.mps` | Finite nonnegative speed in metres/second. Unknown speed inhibits PDC/indicator activation. |
+| `parking.pdc.active` | Boolean normalized PDC activity. |
+| `vehicle.indicators.left.active`, `vehicle.indicators.right.active` | Boolean turn requests; both active are hazards. |
+| `vehicle.steering.road_wheel_angle_rad` | Road-wheel angle in radians, within ±1.4. Steering-wheel angle requires a validated mapping upstream and is never substituted. |
+| `parking.pdc.observations` | At most 32 observations, each containing `measured_vehicle_m:[x,y,z]`, a named measured `region`, and optional `provenance`; metres in the rear-axle reference frame. A distance without a calibrated sensor region is insufficient. |
+
+Steering/PDC overlays expire at 250 ms and are mapped to host monotonic source
+age for rendering. Clock-mapping uncertainty remains unknown. No CAN IDs,
+vehicle decoding, steering or braking outputs are included. Signal lock remains
+separate from frame arrival: a capture adapter's arriving no-signal picture is
+not proof of optical camera health. Current capture cards report optical signal
+as unverified in Argo.

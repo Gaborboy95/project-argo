@@ -3,6 +3,10 @@
 #include <cassert>
 #include <cmath>
 int main() {
+  assert(!camera::ClockDiscontinuity(100, 1000));
+  assert(camera::ClockDiscontinuity(100, 200000001));
+  assert(camera::ClockDiscontinuity(200000001, 100));
+
   rapidjson::Document descriptor;
   descriptor.Parse(R"({"format":"BGRx","width":640,"height":480,"generation":1,"sequence":2,"capture_ns":100,"allocation_size":1228800,"planes":[{"offset":0,"stride":2560,"size":1228800}]})");
   camera::Frame immutable;

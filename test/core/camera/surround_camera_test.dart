@@ -13,6 +13,28 @@ import 'package:flutter_test/flutter_test.dart';
 import 'camera_test.dart' show MemoryCameraSettings;
 
 void main() {
+  test('Dart agrees with standalone protocol compatibility fixtures', () {
+    final fixture = jsonDecode(
+      File('test/fixtures/camera/surround_protocol.json').readAsStringSync(),
+    ) as Map;
+    for (final value in fixture['valid'] as List) {
+      expect(
+        () => SurroundControlDecoder.validateEnvelope(
+          Map<String, dynamic>.from(value as Map),
+        ),
+        returnsNormally,
+      );
+    }
+    for (final value in fixture['invalid'] as List) {
+      expect(
+        () => SurroundControlDecoder.validateEnvelope(
+          Map<String, dynamic>.from(value as Map),
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'actual standalone service negotiates Dart leases, snapshots and persistent worker jobs',
     () async {
@@ -80,7 +102,9 @@ void main() {
         expect(process.kill(ProcessSignal.sigterm), isTrue);
         await process.exitCode.timeout(const Duration(seconds: 5));
       } on Object {
-        stderr.writeln('Synthetic daemon stderr: ${utf8.decode(errors,allowMalformed:true)}');
+        stderr.writeln(
+          'Synthetic daemon stderr: ${utf8.decode(errors, allowMalformed: true)}',
+        );
         rethrow;
       } finally {
         await service.close();
@@ -136,8 +160,9 @@ void main() {
       socket.listen((bytes) {
         for (final request in decoder.add(bytes)) {
           commands.add(request['op'] as String);
-          if (request['op'] == 'unsubscribe')
+          if (request['op'] == 'unsubscribe') {
             expect(request['args']['subscription_id'], isA<int>());
+          }
           final result = switch (request['op']) {
             'status' => {
               'devices': [

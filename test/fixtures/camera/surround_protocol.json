@@ -1,0 +1,1 @@
+{"valid":[{"major":1,"minor":0,"id":1,"op":"hello","args":{}},{"major":1,"minor":42,"id":2,"op":"subscribe","args":{"camera_id":"by-path:synthetic-port","formats":["NV12","BGRx"],"max_outstanding":2}}],"invalid":[{"major":2,"minor":0,"id":1,"op":"hello"},{"major":1,"op":"hello"}]}

@@ -49,8 +49,9 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
         setState(() => _status = status);
       }
     } on Object catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(() => _status = {'state': 'unavailable', 'error': '$error'});
+      }
     } finally {
       _pending = false;
     }
@@ -82,6 +83,15 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
         childrenPadding: const EdgeInsets.all(12),
         children: [
           if (_status['error'] != null) Text('${_status['error']}'),
+          for (final item
+              in (_status['external_results'] as Map? ?? {}).entries)
+            ListTile(
+              title: Text('${item.key} • ${item.value['kind']}'),
+              subtitle: Text(
+                '${((item.value['age_ns'] as num? ?? 0) + _received.elapsedMicroseconds * 1000) > (item.value['expires_after_ns'] as num? ?? 0) ? 'stale' : item.value['validity']} • ${item.value['units']} • ${item.value['spatial_region']}\nUncertainty: ${item.value['uncertainty']}',
+              ),
+            ),
+
           if (result != null)
             Text(
               'Input age: ${result['age_ns'] == null ? 'unknown' : '${(ageNs / 1000000).round()} ms'}\nCalibration: ${result['calibration_revision'] ?? 'unknown'}\nModel: ${result['model_revision'] ?? 'unknown'}\nCoverage: ${result['spatial_region'] ?? 'unspecified'}\nUncertainty: ${result['uncertainty'] ?? 'not calibrated'}',

@@ -12,6 +12,9 @@ static_assert(std::endian::native == std::endian::little,
 constexpr std::size_t kCapacity = 1920 * 1080 * 4, kHeader = 128,
                       kSlot = 64 + kCapacity, kSize = kHeader + 3 * kSlot;
 constexpr std::uint64_t kStaleNs = 750000000;
+inline bool ClockDiscontinuity(std::uint64_t previous_offset, std::uint64_t offset) {
+  return (offset >= previous_offset ? offset - previous_offset : previous_offset - offset) > 100000000;
+}
 inline bool Parse(const std::uint8_t *bytes, std::size_t size,
                   std::uint32_t &role) {
   if (!bytes || size != 12 || std::memcmp(bytes, "ARCV", 4) != 0)

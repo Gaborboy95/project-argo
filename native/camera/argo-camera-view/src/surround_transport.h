@@ -11,7 +11,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 namespace surround {
-constexpr std::size_t kMaxMessage = 65536, kMaxAllocation = 64 * 1024 * 1024;
+constexpr std::size_t kMaxMessage = 65536, kMaxAllocation = 32 * 1024 * 1024;
 inline bool Transfer(int fd, void *data, std::size_t size, bool write) {
   auto *bytes = static_cast<std::uint8_t *>(data);
   while (size) {
@@ -56,10 +56,15 @@ inline bool Layout(const rapidjson::Value &value, camera::Frame &frame,
       !Unsigned(value, "capture_ns", frame.time) || !Unsigned(value, "allocation_size", allocation) ||
       !value.HasMember("planes") || !value["planes"].IsArray() || value["planes"].Size() != 1)
     return false;
+  if (value.HasMember("signal")) {
+    if (!value["signal"].IsString()) return false;
+    const std::string signal = value["signal"].GetString();
+    if (signal == "invalid" || signal == "no_signal" || signal == "lost") return false;
+  }
   const auto &plane = value["planes"][0];
   if (!Unsigned(plane, "offset", offset) || !Unsigned(plane, "stride", stride) ||
       !Unsigned(plane, "size", plane_size) || width == 0 || height == 0 ||
-      width > 8192 || height > 8192 || stride < width * 4 ||
+      width > 3840 || height > 2160 || stride < width * 4 ||
       allocation == 0 || allocation > kMaxAllocation || offset > allocation ||
       plane_size > allocation - offset || stride > plane_size / height ||
       frame.time > now || now - frame.time >= camera::kStaleNs) return false;

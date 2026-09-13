@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'parking_perception_panel.dart';
 import 'recordings_page.dart';
 import 'calibration_wizard.dart';
@@ -7,10 +9,86 @@ import 'package:flutter/material.dart';
 import '../../core/camera/camera_service.dart';
 import 'ihs_camera_surface.dart';
 
-/// Navigation owns capture lifetime; IndexedStack retaining this page does not.
+/// Navigation owns display subscriptions; recording and perception stay in the engine.
 class CameraPage extends StatelessWidget {
   const CameraPage({super.key, required this.service});
   final CameraService? service;
+  Future<void> _showOrbit(BuildContext context, BoxConstraints viewport) async {
+    CameraActivityScope.manualSelection(context);
+    final control = service! as SurroundCameraControl;
+    var azimuth = -2.3, elevation = .9, distance = 9.0;
+    await control.selectView(
+      'bowl',
+      width: (viewport.maxWidth * MediaQuery.devicePixelRatioOf(context))
+          .round(),
+      height: (viewport.maxHeight * MediaQuery.devicePixelRatioOf(context))
+          .round(),
+    );
+    if (!context.mounted) return;
+    void update() => unawaited(
+      control.command('orbit', {
+        'azimuth_rad': azimuth,
+        'elevation_rad': elevation,
+        'distance_m': distance,
+      }),
+    );
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('Surround orbit'),
+          content: SizedBox(
+            width: 340,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'View orientation only; physical calibration is unchanged',
+                ),
+                const Text('Azimuth'),
+                Slider(
+                  value: azimuth,
+                  min: -3.14159,
+                  max: 3.14159,
+                  onChanged: (v) {
+                    setLocal(() => azimuth = v);
+                    update();
+                  },
+                ),
+                const Text('Elevation'),
+                Slider(
+                  value: elevation,
+                  min: .15,
+                  max: 1.5,
+                  onChanged: (v) {
+                    setLocal(() => elevation = v);
+                    update();
+                  },
+                ),
+                const Text('View distance'),
+                Slider(
+                  value: distance,
+                  min: 3,
+                  max: 30,
+                  onChanged: (v) {
+                    setLocal(() => distance = v);
+                    update();
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, viewport) => StreamBuilder<CameraSnapshot>(
@@ -145,7 +223,17 @@ class CameraPage extends StatelessWidget {
                         ),
                       ),
                     if (camera.state == CameraStreamState.streaming)
-                      const Spacer(),
+                      Expanded(
+                        child: camera.external
+                            ? const Text(
+                                'Video arriving • optical signal unverified',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  backgroundColor: Colors.black87,
+                                ),
+                              )
+                            : const SizedBox(),
+                      ),
                     if ({
                       CameraStreamState.failed,
                       CameraStreamState.disconnected,
@@ -155,6 +243,12 @@ class CameraPage extends StatelessWidget {
                       TextButton(
                         onPressed: () => service!.start(CameraRole.rear),
                         child: const Text('Retry'),
+                      ),
+                    if (camera.external && service is SurroundCameraControl)
+                      IconButton(
+                        tooltip: 'Orbit controls',
+                        icon: const Icon(Icons.threesixty, color: Colors.white),
+                        onPressed: () => _showOrbit(context, viewport),
                       ),
                     if (camera.external && service is SurroundCameraControl)
                       PopupMenuButton<String>(

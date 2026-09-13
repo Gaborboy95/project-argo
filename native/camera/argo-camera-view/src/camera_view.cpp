@@ -252,6 +252,13 @@ struct View {
     return result == IHS_PV_OK;
   }
   void RunExternal() {
+    auto suspend_offset = [] {
+      timespec t{}; clock_gettime(CLOCK_BOOTTIME, &t);
+      const auto boot = static_cast<std::uint64_t>(t.tv_sec) * 1000000000 + t.tv_nsec;
+      const auto monotonic = Now();
+      return boot >= monotonic ? boot - monotonic : 0;
+    };
+    auto previous_offset = suspend_offset();
     int socket = -1;
     bool black = false;
     std::uint64_t presented = 0;
@@ -262,6 +269,15 @@ struct View {
     blank.width = 16; blank.height = 9; blank.stride = 64; blank.pixels.resize(576);
     auto disconnect = [&] { if (socket >= 0) close(socket); socket = -1; };
     while (!stopping) {
+      const auto offset = suspend_offset();
+      if (camera::ClockDiscontinuity(previous_offset, offset)) {
+        disconnect(); presented = 0;
+        { std::lock_guard lock(image_mutex);
+          if (!selected_image.replay) { selected_image.path.clear(); cached_image.pixels.clear(); image_revision = 0; }
+        }
+        black = Submit(blank, true);
+      }
+      previous_offset = offset;
       PresentedImage image;
       { std::lock_guard lock(image_mutex); image = selected_image; }
       if (!image.path.empty()) {
@@ -551,3 +567,6 @@ argo_surround_camera_runtime_check(const char *path) {
   struct stat info{};
   return path && lstat(path, &info) == 0 && S_ISDIR(info.st_mode) && info.st_uid == getuid() && (info.st_mode & 0077) == 0 ? 0 : -1;
 }
+
+extern "C" __attribute__((visibility("default"))) std::uint64_t
+argo_surround_camera_monotonic_ns() { return Now(); }

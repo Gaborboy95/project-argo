@@ -1,5 +1,6 @@
 import '../../features/camera/camera_page.dart' show CameraActivityScope;
 import '../../core/camera/camera_service.dart';
+import '../../core/camera/camera_presentation_policy.dart';
 import '../../core/climate/climate_service.dart';
 import 'dashboard_geometry.dart';
 import '../../core/projection/projection_settings_service.dart';
@@ -51,6 +52,11 @@ class _AppShellState extends State<AppShell> {
       widget.environment.services.contains<CameraService>()
       ? widget.environment.services.get<CameraService>()
       : null;
+  CameraPresentationService? _automaticCamera;
+  StreamSubscription<CameraPresentationRequest?>? _automaticSubscription;
+  int? _automaticPreviousIndex;
+  String? _automaticOwner;
+  CameraRole? _automaticPreviousRole;
   bool _mediaVisible = true;
   String? _panel, _climateSide;
   double? _volume;
@@ -80,6 +86,18 @@ class _AppShellState extends State<AppShell> {
         : homeIndex >= 0
         ? homeIndex
         : 0;
+    if (widget.environment.services.contains<CameraPresentationService>()) {
+      _automaticCamera = widget.environment.services
+          .get<CameraPresentationService>();
+      _automaticSubscription = _automaticCamera!.changes.listen(
+        _onAutomaticCamera,
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _automaticCamera!.current != null) {
+          _onAutomaticCamera(_automaticCamera!.current);
+        }
+      });
+    }
     if (widget.environment.services.contains<ProjectionService>()) {
       _projection = widget.environment.services.get<ProjectionService>();
       _previous = _projection!.current;
@@ -89,6 +107,49 @@ class _AppShellState extends State<AppShell> {
           if (mounted && _home) _resumeHome();
         });
       }
+    }
+  }
+
+  void _onAutomaticCamera(CameraPresentationRequest? request) {
+    if (!mounted) return;
+    if (request == null) {
+      final previous = _automaticPreviousIndex;
+      if (_automaticOwner != null && previous != null) {
+        _automaticOwner = null;
+        _automaticPreviousIndex = null;
+        if (previous == _selectedIndex && _automaticPreviousRole != null) {
+          unawaited(_camera?.start(_automaticPreviousRole!));
+        } else {
+          _selectModule(
+            previous,
+            automatic: true,
+            cameraRole: _automaticPreviousRole ?? CameraRole.rear,
+          );
+        }
+        _automaticPreviousRole = null;
+      }
+      return;
+    }
+    final camera = _camera;
+    if (camera == null ||
+        !camera.current.assignments.containsKey(request.role)) {
+      return;
+    }
+    final index = widget.environment.moduleRegistry.modules.indexWhere(
+      (m) => m.id == 'camera',
+    );
+    if (index < 0) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    if (_panel != null) _dismissPanel();
+    if (_automaticPreviousIndex == null) {
+      _automaticPreviousRole = _camera?.current.activeRole;
+    }
+    _automaticPreviousIndex ??= _selectedIndex;
+    _automaticOwner = request.owner;
+    if (index == _selectedIndex) {
+      unawaited(camera.start(request.role));
+    } else {
+      _selectModule(index, automatic: true, cameraRole: request.role);
     }
   }
 
@@ -182,6 +243,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     unawaited(_camera?.stop());
+    unawaited(_automaticSubscription?.cancel());
     _navigationEpoch++;
     unawaited(_projectionSubscription?.cancel());
     super.dispose();
@@ -454,6 +516,7 @@ class _AppShellState extends State<AppShell> {
               builder: (context) => module.id == 'camera'
                   ? CameraActivityScope(
                       active: module == modules[_selectedIndex],
+                      onManualSelection: _manualCameraSelection,
                       child: module.builder(
                         context,
                         widget.environment.services,
@@ -473,7 +536,22 @@ class _AppShellState extends State<AppShell> {
     if (index >= 0) _selectModule(index);
   }
 
-  void _selectModule(int index, {bool phoneRequested = false}) {
+  void _manualCameraSelection() {
+    _automaticCamera?.manualSelection();
+    _automaticOwner = null;
+    _automaticPreviousIndex = null;
+    _automaticPreviousRole = null;
+  }
+
+  void _selectModule(
+    int index, {
+    bool phoneRequested = false,
+    bool automatic = false,
+    CameraRole cameraRole = CameraRole.rear,
+  }) {
+    if (!automatic) {
+      _manualCameraSelection();
+    }
     if (index == _selectedIndex) {
       if (_home && _projection != null) _resumeHome();
       return;
@@ -481,7 +559,7 @@ class _AppShellState extends State<AppShell> {
     final modules = widget.environment.moduleRegistry.modules;
     if (modules[_selectedIndex].id == 'camera') unawaited(_camera?.stop());
     if (modules[index].id == 'camera') {
-      unawaited(_camera?.start(CameraRole.rear));
+      unawaited(_camera?.start(cameraRole));
     }
     final oldStream = _home && _projection != null
         ? mainProjectionStream(selectedProjectionSession(_projection!.current))
@@ -515,6 +593,7 @@ class _AppShellState extends State<AppShell> {
       });
     }
     if (_home && _projection != null) _resumeHome();
+    if (automatic) return;
     final moduleId = widget.environment.moduleRegistry.modules[index].id;
     unawaited(
       _settings.set(AppSettingKeys.lastModule, moduleId).catchError((

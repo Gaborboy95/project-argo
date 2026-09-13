@@ -498,24 +498,37 @@ prior selector, with replacement startup conditional on completed cleanup.
 Application settings, daemon identity and administrator grants remain outside
 releases. See [deployment and recovery](setup.md#graphical-session-deployment).
 
-## Manual camera ownership
+## Camera ownership and presentation
 
-[CameraService](../lib/core/camera/camera_service.dart) owns stable role assignments,
-discovery and live capture metadata. The application launches `argo-camerad` from
-the selected matched release; it is not a systemd service. Camera availability
-is independent of projection, connectivity and vehicle capabilities.
-[CameraPage](../lib/features/camera/camera_page.dart) uses a separate
-`argo.camera.view` PlatformViewLayer factory with no pointer dispatch. The shell
-explicitly starts Rear on manual entry and stops it on departure; retained pages
-receive CameraActivityScope so their lifetime is not confused with visibility.
-The native instance stays stable across status and size changes while selected.
+[CameraService](../lib/core/camera/camera_service.dart) separates display requests
+from engine ownership. New releases use the reconnecting API 1.0
+[SurroundCameraService](../lib/core/camera/surround_camera_service.dart). The
+standalone engine owns capture, stable assignments, calibration revisions,
+recording and optional perception. Leaving Camera releases display subscriptions;
+Argo shutdown closes client sockets without stopping the engine or recorder.
 
-V4L2/GStreamer and the three-slot BGRx memfd ring stay native. The view receives
-memfd/eventfd descriptors directly, validates slot guards and age, copies the
-newest stable frame into a GBM allocation and submits through normal IHS APIs.
-Flutter only aspect-fits the negotiated source dimensions. No image bytes cross
-Dart or control IPC. Both daemon and view independently enforce a 750 ms stale
-limit; the daemon owns bounded capture restart and releases V4L2 on Stop or
-control-owner loss. Automatic reverse/gear/PDC activation is not implemented.
-The [camera guide](../tool/camera/README.md#native-contracts-and-safety) defines
-creation/control/ring v1 and operational limits.
+The `argo.surround.view` native factory receives independently leased immutable
+sealed memfd frames, validates allocation/plane bounds, copies final BGRx into
+GBM and presents through the existing PlatformViewLayer. Source age expires in
+native code, including detected suspend clock discontinuities. Completed native
+surround/replay images use atomic private file publication; pixels never enter
+Dart. The current Argo surround branch uses bounded software-render worker jobs,
+with output resolution fitted to the physical viewport and its 128 MiB reference
+render memory budget. This fallback includes conversions, CPU copies and file I/O.
+
+Argo owns the guided calibration wizard, session browsing/playback controls and
+normalized automatic presentation policy. Reverse takes precedence over PDC and
+optional side indicators. Source freshness, hold time, speed hysteresis and
+manual ownership are explicit in
+[CameraPresentationPolicy](../lib/core/camera/camera_presentation_policy.dart).
+Navigation preserves the existing projection session/focus lifecycle and restores
+only the presentation owned by an ending automatic request. Fresh road-wheel and
+measured PDC points pass to calibrated renderer overlays; unknown or stale values
+are omitted. Perception results retain source, units and uncertainty and expire
+independently of video.
+
+Older `camera_contract=1` releases retain `NativeCameraService`, their app-owned
+legacy daemon and manual rear shared-memory ring as the explicit regression and
+rollback path. Legacy/external capture share a per-device ownership lock. See the
+[camera guide](../tool/camera/README.md) and
+[configuration reference](configuration.md#surround-camera-client).

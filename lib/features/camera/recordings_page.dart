@@ -27,7 +27,7 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
   Map<String, dynamic> _status = {};
   Map<String, dynamic>? _session;
   String? _camera, _error;
-  String _view = 'direct', _exportPolicy = 'original';
+  String _view = 'direct', _exportPolicy = 'passthrough';
   bool _busy = false, _playing = false;
   int _position = 0;
   double _speed = 1;
@@ -320,7 +320,7 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
             value: _exportPolicy,
             items: const [
               DropdownMenuItem(
-                value: 'original',
+                value: 'passthrough',
                 child: Text('Original packet export'),
               ),
               DropdownMenuItem(
