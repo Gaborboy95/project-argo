@@ -12,11 +12,13 @@ impl Drop for Probe {
     }
 }
 pub struct Capture {
+    _physical_owner: std::fs::File,
     pipeline: gst::Pipeline,
     sink: AppSink,
 }
 impl Capture {
     pub fn start(node: &str) -> Result<Self, String> {
+        let physical_owner = physical_lock(node)?;
         let source = gst::ElementFactory::make("v4l2src")
             .property("device", node)
             .build()
@@ -79,7 +81,11 @@ impl Capture {
             .ok_or("Missing sink")?
             .downcast::<AppSink>()
             .map_err(|_| "Invalid sink")?;
-        let capture = Self { pipeline, sink };
+        let capture = Self {
+            _physical_owner: physical_owner,
+            pipeline,
+            sink,
+        };
         capture
             .pipeline
             .set_state(gst::State::Playing)
@@ -192,4 +198,36 @@ mod tests {
         assert!(!h.failed(now));
         assert!(!Health::new(now + Duration::from_secs(99)).stale(now + Duration::from_secs(99)));
     }
+}
+
+/// Cooperative exclusion with standalone surround-camerad. No service ownership.
+fn physical_lock(node: &str) -> Result<std::fs::File, String> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    };
+    let rdev = std::fs::metadata(node).map_err(|e| e.to_string())?.rdev();
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .ok_or("XDG_RUNTIME_DIR required for physical capture ownership")?;
+    let dir = std::path::PathBuf::from(runtime).join("surround-camera-device-locks");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let metadata = std::fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("capture lock directory ownership mismatch".into());
+    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(format!("{rdev:x}.lock")))
+        .map_err(|e| e.to_string())?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("physical adapter owned by legacy/standalone capture".into());
+    }
+    Ok(file)
 }

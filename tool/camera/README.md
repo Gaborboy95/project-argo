@@ -207,3 +207,14 @@ physical scale-bar verification. Native previews display pixels; Flutter carries
 only corner locations, quality metadata and measured coordinates. Frozen
 calibration previews are labelled as captures. Metric geometry validation does
 not validate a depth model. Missing cameras may be saved as incomplete coverage.
+
+### Physical capture ownership across rollout
+
+Current source builds of legacy camerad and surround-camerad acquire the same
+uid-private `$XDG_RUNTIME_DIR/surround-camera-device-locks/<rdev>.lock` flock
+before opening a physical capture pipeline. The lock follows the opened device
+number only for the current process lifetime; assignments still use stable IDs.
+This rejects simultaneous old/new capture ownership without stopping either
+service. Historical pre-lock binaries cannot participate: stop legacy capture
+before selecting external mode or rolling back. V4L2 rejection remains an
+additional guard, not a substitute for coordinated release selection.
