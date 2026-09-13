@@ -84,6 +84,29 @@ class DeploymentTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hash mismatch'):
             self.d.validate(self.source)
 
+    def test_external_camera_mode_and_legacy_rollback(self):
+        manifest = a.read(self.source / 'argo-release.json')
+        view = self.source / 'lib/libargo_camera_view.so'
+        view.write_text('external native presentation')
+        manifest['sha256']['lib/libargo_camera_view.so'] = a.digest(view)
+        manifest.update(camera_mode='external', camera_view_contract=2,
+                        camera_api={'major': 1, 'min_minor': 0, 'max_minor': 0})
+        a.save(self.source / 'argo-release.json', manifest)
+        self.d.validate(self.source)
+        external = self.d.stage(self.source, 'external-camera')
+        self.d.select(external)
+        self.d.select(self.first)
+        self.assertEqual(self.d.current.resolve(), self.first)
+        self.assertFalse(any('surround-camerad' in str(op) for op in self.d.operations))
+        (self.source / 'bin/argo-camerad').write_text('conflicting legacy owner')
+        with self.assertRaisesRegex(ValueError, 'External Camera'):
+            self.d.validate(self.source)
+        (self.source / 'bin/argo-camerad').unlink()
+        manifest['camera_api']['major'] = 2
+        a.save(self.source / 'argo-release.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'API range'):
+            self.d.validate(self.source)
+
     def test_ipc7_requires_view_contract_and_retains_ipc6_rollback(self):
         m = a.read(self.source / 'argo-release.json')
         m['ipc'] = 7

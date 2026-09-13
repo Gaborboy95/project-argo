@@ -20,6 +20,7 @@ def main():
     p.add_argument('kind', choices=['daemon', 'bundle'])
     p.add_argument('path', type=Path)
     p.add_argument('--ihs-prefix', type=Path)
+    p.add_argument('--camera-mode', choices=['legacy', 'external'], default='legacy')
     args = p.parse_args()
     ipc = (ROOT / 'native/projection/argo-projectiond/src/ipc.rs').read_text()
     version = int(re.search(r'pub const VERSION: u16 = (\d+);', ipc)[1])
@@ -37,10 +38,16 @@ def main():
         if args.ihs_prefix is None:
             p.error('Bundle records require the known matched --ihs-prefix')
         camera = [(args.path / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
-        if any(camera) and not all(camera):
-            p.error('Camera bundles require both camerad and camera-view')
-        if all(camera):
-            record['camera_contract'] = 1
+        if args.camera_mode == 'external':
+            if camera[0] or not camera[1]:
+                p.error('External Camera requires camera-view and no app-owned camerad binary')
+            record.update(camera_mode='external', camera_view_contract=2,
+                          camera_api={'major': 1, 'min_minor': 0, 'max_minor': 0})
+        else:
+            if any(camera) and not all(camera):
+                p.error('Camera bundles require both camerad and camera-view')
+            if all(camera):
+                record['camera_contract'] = 1
         record['managed_control'] = 1
         if version >= 7:
             record['native_view_contract'] = 1  # ARVW negotiated crop parameters

@@ -118,10 +118,21 @@ class Deployment:
         if manifest.get('ipc') == 7 and manifest.get('native_view_contract') != 1:
             raise ValueError('IPC7 requires the matched ARVW native View Area contract v1')
         camera = [(bundle / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
-        if any(camera) and (not all(camera) or manifest.get('camera_contract') != 1):
-            raise ValueError('Camera requires both assets and camera_contract=1')
-        if manifest.get('camera_contract') is not None and (manifest['camera_contract'] != 1 or not all(camera)):
-            raise ValueError('Invalid camera contract or missing camera assets')
+        external = manifest.get('camera_mode') == 'external'
+        if external:
+            if manifest.get('camera_contract') is not None or camera[0] or not camera[1]:
+                raise ValueError('External Camera requires only camera-view, without app-owned camerad')
+            if manifest.get('camera_api') != {'major': 1, 'min_minor': 0, 'max_minor': 0}:
+                raise ValueError('External Camera requires explicit compatible API range 1.0')
+            if manifest.get('camera_view_contract') != 2:
+                raise ValueError('External Camera requires native presentation contract 2')
+        else:
+            if manifest.get('camera_mode') not in (None, 'legacy'):
+                raise ValueError('Unknown Camera deployment mode')
+            if any(camera) and (not all(camera) or manifest.get('camera_contract') != 1):
+                raise ValueError('Camera requires both assets and camera_contract=1')
+            if manifest.get('camera_contract') is not None and (manifest['camera_contract'] != 1 or not all(camera)):
+                raise ValueError('Invalid camera contract or missing camera assets')
         _, ihs = self.ihs()
         if manifest.get('ihs_sha256') != ihs:
             raise ValueError('Installed IHS differs from the recorded matched build')

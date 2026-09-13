@@ -264,3 +264,25 @@ or stops the independent provider. It shows units, input age, source sequence,
 model/calibration revision and reported coverage/uncertainty. Relative depth is
 never labelled metres. Results expire independently of camera imagery, including
 when provider status polling stalls. Missing weights remain unavailable.
+
+## Independent release staging
+
+Fresh external-camera bundles use `camera_mode: external`,
+`camera_view_contract: 2` and explicit `camera_api` 1.0 compatibility in
+`argo-release.json`. Build with the existing matched Flutter/Engine/IHS toolchain,
+include `lib/libargo_camera_view.so`, omit `bin/argo-camerad`, and record with:
+
+```bash
+python3 tool/deployment/record-build.py bundle "$ARGO_NEW_BUNDLE" \
+  --ihs-prefix "$IHS_PREFIX" --camera-mode external
+python3 -m unittest discover -s tool/deployment -p 'test_*.py'
+```
+
+`argoctl` validates these bundles and continues to accept historical
+`camera_contract: 1` paired bundles and camera-less releases. Its managed units
+remain the existing Argo application and projection daemon; it does not start,
+stop or restart the independent surround recorder. New release directories are
+staged for review. Selecting a live Mu release or installing the optional
+`surround-camerad.service` requires deployment authorization. The standalone
+[deployment runbook](/home/phaeton/dev/surround-camera/docs/deployment.md) records
+build, run, stage, stop/disable, update and rollback commands.
