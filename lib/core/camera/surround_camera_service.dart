@@ -4,9 +4,12 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:ffi/ffi.dart';
+
 import '../settings/app_setting_keys.dart';
 import '../settings/settings_service.dart';
 import 'camera_service.dart';
+import 'surround_jobs.dart';
 
 /// Reconnecting metadata client. Closing Argo never stops the external engine.
 final class SurroundCameraService
@@ -23,21 +26,26 @@ final class SurroundCameraService
   final _pending = <int, Completer<Map<String, dynamic>>>{};
   CameraSnapshot _current = const CameraSnapshot(external: true);
   Socket? _socket;
-  Timer? _retry, _poll;
+  Timer? _retry, _poll, _renderTimer;
+  final _renderLeases = <int>[];
+  bool _rendering = false;
+  int _viewEpoch = 0;
+  int? _renderWidth, _renderHeight;
   Future<void>? _connecting;
   Future<void> _tail = Future.value();
   CameraRole? _desired;
-  String? _lease;
+  int? _lease;
   int _id = 0, _epoch = 0;
   bool _closed = false, _polling = false;
   DynamicLibrary? _library;
   void Function(int)? _nativeRole;
+  int Function(Pointer<Utf8>, int, int)? _nativeImage;
   @override
   CameraSnapshot get current => _current;
   @override
   Stream<CameraSnapshot> get changes => _events.stream;
   String get _directory =>
-      _environment['SURROUND_CAMERA_RUNTIME'] ??
+      _environment['SURROUND_RUNTIME_DIR'] ??
       '${_environment['XDG_RUNTIME_DIR'] ?? '/run/user/invalid'}/surround-camera';
 
   Future<void> initialize() =>
@@ -71,6 +79,27 @@ final class SurroundCameraService
             .lookupFunction<Void Function(Uint32), void Function(int)>(
               'argo_surround_camera_view_set_role',
             );
+        _nativeImage = _library!
+            .lookupFunction<
+              Int32 Function(Pointer<Utf8>, Uint64, Uint32),
+              int Function(Pointer<Utf8>, int, int)
+            >('argo_surround_camera_view_set_image');
+      }
+      if (registerNative) {
+        final runtime = _directory.toNativeUtf8();
+        try {
+          if (_library!.lookupFunction<
+                Int32 Function(Pointer<Utf8>),
+                int Function(Pointer<Utf8>)
+              >('argo_surround_camera_runtime_check')(runtime) !=
+              0) {
+            throw StateError(
+              'Surround-camera runtime must be private and owned by this account',
+            );
+          }
+        } finally {
+          calloc.free(runtime);
+        }
       }
       final socket = await Socket.connect(
         InternetAddress(
@@ -191,7 +220,37 @@ final class SurroundCameraService
     Map<String, Object?> arguments = const {},
     bool administration = false,
   ]) async {
-    if (administration) return _admin(operation, arguments);
+    if (operation == 'present') {
+      if (_nativeImage == null) {
+        throw StateError('Native presentation unavailable');
+      }
+      _renderWidth = arguments['width'] as int?;
+      _renderHeight = arguments['height'] as int?;
+      final path = ('${arguments['path'] ?? ''}').toNativeUtf8();
+      try {
+        if (_nativeImage!(
+              path,
+              arguments['capture_ns'] as int? ?? 0,
+              arguments['timeline'] == 'replay' ? 1 : 0,
+            ) !=
+            0) {
+          throw StateError('Invalid completed image path');
+        }
+      } finally {
+        calloc.free(path);
+      }
+      return {'queued': true, 'native_submission': 'unverified'};
+    }
+    if (administration) {
+      final result = await _admin(operation, arguments);
+      if (operation == 'recording' || operation == 'perception') {
+        if (result['ok'] == false) throw StateError('${result['error']}');
+        if (result['result'] is Map) {
+          return Map<String, dynamic>.from(result['result'] as Map);
+        }
+      }
+      return result;
+    }
     final socket = _socket;
     if (socket == null || _closed) {
       throw StateError('Surround-camera unavailable');
@@ -296,8 +355,8 @@ final class SurroundCameraService
       state: _desired == null
           ? CameraStreamState.idle
           : state ?? CameraStreamState.starting,
-      width: frame['width'] as int?,
-      height: frame['height'] as int?,
+      width: _renderWidth ?? frame['width'] as int?,
+      height: _renderHeight ?? frame['height'] as int?,
       stride: frame['stride'] as int?,
       sequence: frame['sequence'] as int? ?? 0,
       error: frame['error'] as String?,
@@ -323,6 +382,7 @@ final class SurroundCameraService
   });
   Future<void> _subscribe(CameraRole role) async {
     _nativeRole?.call(role.index);
+    _renderWidth = _renderHeight = null;
     if (_lease != null) {
       await command('unsubscribe', {'subscription_id': _lease});
     }
@@ -334,26 +394,39 @@ final class SurroundCameraService
       'delivery': 'latest',
       'max_outstanding': 1,
     });
-    if (epoch == _epoch) _lease = '${result['subscription_id']}';
+    if (epoch == _epoch) _lease = result['subscription_id'] as int;
     await _refresh();
   }
 
   @override
   Future<void> start(CameraRole role) {
     _desired = role;
+    _renderTimer?.cancel();
+    ++_viewEpoch;
     return _serialize(() async {
       await initialize();
       if (_socket != null && _desired == role && _lease == null) {
         await _subscribe(role);
-      } else if (_socket != null && _desired == role)
+      } else if (_socket != null && _desired == role) {
         await _subscribe(role);
+      }
     });
   }
 
   @override
   Future<void> stop() {
     _desired = null;
+    _renderTimer?.cancel();
+    ++_viewEpoch;
     return _serialize(() async {
+      for (final lease in _renderLeases) {
+        if (_socket != null) {
+          await command('unsubscribe', {'subscription_id': lease});
+        }
+      }
+      _renderLeases.clear();
+      _nativeRole?.call((_desired ?? CameraRole.rear).index);
+      _renderWidth = _renderHeight = null;
       final lease = _lease;
       _lease = null;
       if (_socket != null && lease != null) {
@@ -372,8 +445,115 @@ final class SurroundCameraService
     }
   });
   @override
-  Future<void> selectView(String mode, {String? group}) async {
-    await command('view', {'mode': mode, 'group': group});
+  Future<void> selectView(
+    String mode, {
+    String? group,
+    int? width,
+    int? height,
+  }) async {
+    _renderTimer?.cancel();
+    final epoch = ++_viewEpoch;
+    _nativeRole?.call((_desired ?? CameraRole.rear).index);
+    _renderWidth = _renderHeight = null;
+    for (final lease in _renderLeases) {
+      await command('unsubscribe', {'subscription_id': lease});
+    }
+    _renderLeases.clear();
+    if (mode == 'direct') return;
+    if (!{'rectified', 'top_down', 'bowl', 'split'}.contains(mode)) {
+      throw ArgumentError('Unsupported view mode');
+    }
+    final ids = group == null
+        ? _current.assignments.values.toSet().toList()
+        : _current.groups[group] ?? <String>[];
+    for (final id in ids) {
+      final lease = await command('subscribe', {
+        'camera_id': id,
+        'formats': ['BGRx'],
+        'consumer': 'display',
+        'delivery': 'latest',
+        'max_outstanding': 1,
+      });
+      _renderLeases.add(lease['subscription_id'] as int);
+    }
+    Map<String, dynamic>? cachedCalibration;
+    String? cachedRevision;
+    Future<void> render() async {
+      if (_rendering || _closed || epoch != _viewEpoch) return;
+      _rendering = true;
+      try {
+        final revision = _current.details['active_calibration'] as String?;
+        if (cachedCalibration == null || cachedRevision != revision) {
+          final inspected = await SurroundJob(this)
+              .run('calibration', {'op': 'inspect'});
+          cachedCalibration = inspected['calibration'] == null
+              ? null
+              : Map<String, dynamic>.from(inspected['calibration'] as Map);
+          cachedRevision = revision;
+        }
+        final calibration = cachedCalibration;
+        if (calibration == null)
+          throw StateError('Calibrate a rig before surround rendering');
+        final frames = <Map<String, dynamic>>[];
+        for (final id in ids) {
+          try {
+            final snapshot = await command('snapshot', {
+              'camera_id': id,
+              'ephemeral': true,
+            }, true);
+            final frame = Map<String, dynamic>.from(snapshot['frame'] as Map);
+            frames.add({
+              ...frame,
+              'path': snapshot['path'],
+              'pixel_format': 'image',
+              'signal_validity': frame['signal'] ?? 'unknown',
+            });
+          } on Object {
+            /* Renderer marks the absent camera coverage explicitly. */
+          }
+        }
+        if (frames.isEmpty) {
+          throw StateError('No fresh source frames for surround view');
+        }
+        final output =
+            '${File(frames.first['path'] as String).parent.path}/argo-surround-$pid.png';
+        final rendered = await SurroundJob(this).run('render', {
+          'op': 'render',
+          'calibration': calibration,
+          'frames': frames,
+          'view': mode,
+          'camera_id': _current.assignments[_desired],
+          'output': output,
+          'width': (width ?? _current.width ?? 640).clamp(64, 3840),
+          'height': (height ?? _current.height ?? 480).clamp(64, 2160),
+          'timeline': 'live',
+          'backend': 'software',
+        });
+        if (epoch == _viewEpoch && !_closed) {
+          final stamps = frames.map((f) => f['capture_ns'] as int).toList()
+            ..sort();
+          await command('present', {
+            'path': rendered['output'],
+            'capture_ns': stamps.first,
+            'timeline': 'live',
+            'width': rendered['width'],
+            'height': rendered['height'],
+          });
+        }
+      } on Object catch (error) {
+        if (epoch == _viewEpoch) _unavailable(error);
+      } finally {
+        _rendering = false;
+      }
+    }
+
+    await render();
+    if (epoch == _viewEpoch && !_closed) {
+      _renderTimer = Timer.periodic(
+        const Duration(milliseconds: 100),
+        (_) => unawaited(render()),
+      );
+    }
   }
 
   @override

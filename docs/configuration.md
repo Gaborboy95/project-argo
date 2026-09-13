@@ -399,7 +399,7 @@ API 1.0 service. It is the default for new releases; bundles marked
 `ARGO_CAMERA_BACKEND=legacy` is the explicit rollback switch. The external engine
 must be stopped before starting legacy capture of the same hardware.
 
-`SURROUND_CAMERA_RUNTIME` overrides `$XDG_RUNTIME_DIR/surround-camera` for both
+`SURROUND_RUNTIME_DIR` overrides `$XDG_RUNTIME_DIR/surround-camera` for both
 Dart and native clients. It must be an absolute private directory; local socket
 paths must fit Linux's Unix socket limit. `ARGO_CAMERA_VIEW_LIBRARY` overrides the
 external presentation library, otherwise it comes from the selected bundle.

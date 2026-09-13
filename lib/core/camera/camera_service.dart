@@ -77,5 +77,10 @@ abstract interface class SurroundCameraControl {
     Map<String, Object?> arguments = const {},
     bool administration = false,
   ]);
-  Future<void> selectView(String mode, {String? group});
+  Future<void> selectView(
+    String mode, {
+    String? group,
+    int? width,
+    int? height,
+  });
 }

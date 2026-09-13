@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <gbm.h>
+#include <gst/app/gstappsink.h>
+#include <gst/video/video.h>
 #include <ihs/platform_view.h>
 #include <mutex>
 #include <poll.h>
@@ -23,6 +25,36 @@ namespace {
 constexpr const char *kType = "argo.camera.view";
 constexpr const char *kSurroundType = "argo.surround.view";
 std::atomic<std::uint32_t> selected_role{0};
+struct PresentedImage { std::string path; std::uint64_t capture_ns = 0, revision = 0; bool replay = false; };
+std::mutex image_mutex;
+PresentedImage selected_image;
+bool DecodeImage(const std::string &path, camera::Frame &frame) {
+  GError *error = nullptr;
+  GstElement *pipeline = gst_parse_launch("filesrc name=source ! decodebin ! videoconvert ! video/x-raw,format=BGRx ! appsink name=sink sync=false max-buffers=1 drop=true", &error);
+  if (!pipeline || error) { if (error) g_error_free(error); if (pipeline) gst_object_unref(pipeline); return false; }
+  GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "source");
+  GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
+  g_object_set(source, "location", path.c_str(), nullptr);
+  gst_element_set_state(pipeline, GST_STATE_PLAYING);
+  GstSample *sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 500 * GST_MSECOND);
+  GstVideoInfo info{}; GstVideoFrame mapped{};
+  bool success = false;
+  if (sample && gst_video_info_from_caps(&info, gst_sample_get_caps(sample)) &&
+      info.width > 0 && info.height > 0 && info.width <= 8192 && info.height <= 8192 &&
+      info.stride[0] >= info.width * 4 && info.size <= surround::kMaxAllocation &&
+      gst_video_frame_map(&mapped, &info, gst_sample_get_buffer(sample), GST_MAP_READ)) {
+    frame.width = info.width; frame.height = info.height; frame.stride = info.width * 4;
+    frame.pixels.resize(static_cast<std::size_t>(frame.stride) * frame.height);
+    const auto *data = static_cast<const std::uint8_t *>(GST_VIDEO_FRAME_PLANE_DATA(&mapped, 0));
+    for (std::uint32_t row = 0; row < frame.height; ++row)
+      std::memcpy(frame.pixels.data() + row * frame.stride, data + row * info.stride[0], frame.stride);
+    gst_video_frame_unmap(&mapped); success = true;
+  }
+  if (sample) gst_sample_unref(sample);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline);
+  return success;
+}
 std::uint64_t Now() {
   timespec t{};
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -224,14 +256,30 @@ struct View {
     bool black = false;
     std::uint64_t presented = 0;
     std::uint32_t subscribed_role = 99;
+    std::uint64_t image_revision = 0;
+    camera::Frame cached_image;
     camera::Frame blank;
     blank.width = 16; blank.height = 9; blank.stride = 64; blank.pixels.resize(576);
     auto disconnect = [&] { if (socket >= 0) close(socket); socket = -1; };
     while (!stopping) {
+      PresentedImage image;
+      { std::lock_guard lock(image_mutex); image = selected_image; }
+      if (!image.path.empty()) {
+        disconnect();
+        if (image.revision != image_revision) {
+          if (DecodeImage(image.path, cached_image)) { image_revision = image.revision; black = false; }
+          else cached_image.pixels.clear();
+        }
+        const bool fresh = image.replay || (Now() >= image.capture_ns && Now() - image.capture_ns < camera::kStaleNs);
+        if (!cached_image.pixels.empty() && fresh) { if (Submit(cached_image)) black = false; }
+        else if (!black) black = Submit(blank, true);
+        poll(nullptr, 0, 25);
+        continue;
+      }
       const auto wanted = selected_role.load();
       if (wanted != subscribed_role) { disconnect(); black = false; presented = 0; }
       if (socket < 0) {
-        const char *explicit_runtime = std::getenv("SURROUND_CAMERA_RUNTIME");
+        const char *explicit_runtime = std::getenv("SURROUND_RUNTIME_DIR");
         const char *runtime = std::getenv("XDG_RUNTIME_DIR");
         const std::string path = explicit_runtime ? std::string(explicit_runtime) + "/media.sock" :
           runtime ? std::string(runtime) + "/surround-camera/media.sock" : "";
@@ -273,7 +321,7 @@ struct View {
             constexpr int seals = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
             const bool valid = memory >= 0 && surround::Layout(message["frame"], frame, generation, allocation, offset, Now()) &&
               fstat(memory, &info) == 0 && info.st_size == static_cast<off_t>(allocation) &&
-              (fcntl(memory, F_GET_SEALS) & seals) == seals;
+              (fcntl(memory, F_GET_SEALS) >= 0 && (fcntl(memory, F_GET_SEALS) & seals) == seals);
             if (valid) {
               void *map = mmap(nullptr, allocation, PROT_READ, MAP_SHARED, memory, 0);
               if (map != MAP_FAILED) {
@@ -480,9 +528,26 @@ argo_camera_view_unregister() {
 
 extern "C" __attribute__((visibility("default"))) int
 argo_surround_camera_view_register() {
+  gst_init(nullptr, nullptr);
   return ihs_pv_register_factory(kSurroundType, Create, reinterpret_cast<void *>(1));
 }
 extern "C" __attribute__((visibility("default"))) void
 argo_surround_camera_view_set_role(std::uint32_t role) {
   if (role < 4) selected_role.store(role);
+  std::lock_guard lock(image_mutex); selected_image.path.clear();
+}
+
+extern "C" __attribute__((visibility("default"))) int
+argo_surround_camera_view_set_image(const char *path, std::uint64_t capture_ns, std::uint32_t replay) {
+  if (!path || strnlen(path, 4097) > 4096 || (path[0] != '/' && path[0] != '\0')) return -1;
+  std::lock_guard lock(image_mutex);
+  selected_image.path = path; selected_image.capture_ns = capture_ns;
+  selected_image.replay = replay == 1; ++selected_image.revision;
+  return 0;
+}
+
+extern "C" __attribute__((visibility("default"))) int
+argo_surround_camera_runtime_check(const char *path) {
+  struct stat info{};
+  return path && lstat(path, &info) == 0 && S_ISDIR(info.st_mode) && info.st_uid == getuid() && (info.st_mode & 0077) == 0 ? 0 : -1;
 }

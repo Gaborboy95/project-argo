@@ -218,3 +218,33 @@ This rejects simultaneous old/new capture ownership without stopping either
 service. Historical pre-lock binaries cannot participate: stop legacy capture
 before selecting external mode or rolling back. V4L2 rejection remains an
 additional guard, not a substitute for coordinated release selection.
+
+## External scene presentation and replay
+
+The native adapter accepts completed private PNG frames from the standalone
+renderer and presents them through the same PlatformViewLayer. The current Argo
+surround branch uses the software reference renderer, snapshots and atomic PNG
+publication; it is a functional fallback with CPU copies, file I/O and image
+conversion, not an accelerated or zero-copy path. Capture dimensions remain
+independent from the measured physical viewport used for output. The engine
+also supplies separately selectable GL/libxcam paths; their host acceptance is
+documented in the standalone backend matrix.
+
+Live rendering retains each contributing source timestamp and independently
+blanks at 750 ms in native code. Rendering a vehicle model does not renew camera
+age. Captured calibration previews and intentionally paused recorded replay are
+labelled separately and retain their own timeline. Direct rear media subscription
+remains available if calibration or surround processing fails.
+
+Run the actual Rust/Dart protocol integration with explicitly synthetic sources:
+
+```bash
+SURROUND_TEST_DAEMON="$HOME/dev/surround-camera/target/debug/surround-camerad" \
+SURROUND_ROOT="$HOME/dev/surround-camera" \
+SURROUND_PYTHON="$HOME/dev/surround-camera/.venv/bin/python3" \
+flutter test test/core/camera/surround_camera_test.dart
+```
+
+This opens an isolated test daemon and verifies discovery, numeric leases,
+snapshot production, a calibration collection session and recorder status. It
+does not open physical devices or establish visible-frame acceptance.

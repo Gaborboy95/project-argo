@@ -15,14 +15,19 @@ class WorkerControl implements SurroundCameraControl {
     operations.add(op);
     if (op == 'worker') {
       expect(admin, isTrue);
-      return {'job_id': 'solve-1'};
+      return {'job_id': 1};
     }
     if (op == 'job_status') return {'state': 'complete', 'result': result};
     return {};
   }
 
   @override
-  Future<void> selectView(String mode, {String? group}) async {}
+  Future<void> selectView(
+    String mode, {
+    String? group,
+    int? width,
+    int? height,
+  }) async {}
 }
 
 void main() {

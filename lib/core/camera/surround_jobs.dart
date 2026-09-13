@@ -6,7 +6,7 @@ import 'camera_service.dart';
 final class SurroundJob {
   SurroundJob(this.control);
   final SurroundCameraControl control;
-  String? id;
+  int? id;
   bool cancelled = false;
   Future<Map<String, dynamic>> run(
     String worker,
@@ -18,7 +18,7 @@ final class SurroundJob {
       'worker': worker,
       'request': request,
     }, true);
-    id = '${started['job_id']}';
+    id = started['job_id'] as int;
     final deadline = Stopwatch()..start();
     while (!cancelled && deadline.elapsed < const Duration(minutes: 5)) {
       final state = await control.command('job_status', {'job_id': id});
