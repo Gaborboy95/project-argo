@@ -102,6 +102,14 @@ final class CameraPresentationPolicy {
   Duration _lastCandidate = Duration.zero;
   String? _suppressed;
   bool _slow = false;
+  void invalidate() {
+    reverse = pdc = left = right = null;
+    speed = null;
+    _active = null;
+    _suppressed = null;
+    _slow = false;
+  }
+
   void manualSelection() {
     _suppressed = _active?.owner;
     _active = null;
@@ -202,6 +210,8 @@ final class CameraPresentationService {
   CameraSignalValue<double>? _steering;
   CameraSignalValue<List<Map<String, dynamic>>>? _pdc;
   Map<String, dynamic> get renderingMeasurements {
+    if (_closed) return {};
+    _checkClock();
     const age = Duration(milliseconds: 250);
     final now = _clock.elapsed;
     return {
@@ -227,6 +237,8 @@ final class CameraPresentationService {
   );
   final _sequences = <String, int>{};
   Timer? _timer;
+  int? _clockOffset;
+  bool _closed = false;
   CameraPresentationRequest? current;
   Stream<CameraPresentationRequest?> get changes => _events.stream;
   void _watch<T>(
@@ -248,7 +260,20 @@ final class CameraPresentationService {
     );
   }
 
+  void _checkClock() {
+    final offset =
+        DateTime.now().microsecondsSinceEpoch - _clock.elapsedMicroseconds;
+    if (_clockOffset != null && (offset - _clockOffset!).abs() > 100000) {
+      policy.invalidate();
+      _steering = null;
+      _pdc = null;
+    }
+    _clockOffset = offset;
+  }
+
   void _evaluate() {
+    if (_closed) return;
+    _checkClock();
     final next = policy.evaluate(_clock.elapsed);
     if (next?.owner == current?.owner && next?.role == current?.role) return;
     current = next;
@@ -261,6 +286,11 @@ final class CameraPresentationService {
   }
 
   Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    policy.invalidate();
+    _steering = null;
+    _pdc = null;
     _timer?.cancel();
     for (final subscription in _subscriptions) {
       await subscription.cancel();

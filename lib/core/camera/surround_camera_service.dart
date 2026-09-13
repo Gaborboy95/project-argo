@@ -688,8 +688,9 @@ final class SurroundControlDecoder {
       );
     }
     if (value.containsKey('ok')) {
-      if (value['ok'] is! bool)
+      if (value['ok'] is! bool) {
         throw const FormatException('Invalid response status');
+      }
     } else if (value['op'] is! String || value['args'] is! Map) {
       throw const FormatException('Invalid request envelope');
     }

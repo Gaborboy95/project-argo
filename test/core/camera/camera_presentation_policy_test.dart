@@ -5,6 +5,17 @@ import 'package:flutter_test/flutter_test.dart';
 CameraSignalValue<T> value<T>(T value, int ms) =>
     CameraSignalValue(value, Duration(milliseconds: ms));
 void main() {
+  test('clock discontinuity invalidation cancels held ownership and stale measurements', () {
+    final policy = CameraPresentationPolicy()
+      ..reverse = value(true, 0)
+      ..speed = value(0.0, 0);
+    expect(policy.evaluate(Duration.zero)?.owner, 'reverse');
+    policy.invalidate();
+    expect(policy.evaluate(const Duration(milliseconds: 1)), isNull);
+    expect(policy.reverse, isNull);
+    expect(policy.speed, isNull);
+  });
+
   test('reverse has priority over PDC and both indicators', () {
     final policy = CameraPresentationPolicy(sideViews: true)
       ..reverse = value(true, 0)
