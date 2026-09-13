@@ -28,35 +28,58 @@ class CameraControls implements SurroundCameraControl {
 }
 
 void main() {
-  testWidgets(
-    'recording UI starts selected independent tracks and leaving never stops recorder',
-    (tester) async {
-      final camera = CameraFixture(), control = CameraControls();
-      tester.view.physicalSize = const Size(1280, 1200);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: CameraRecordingsPage(service: camera, control: control),
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byType(TextField).first,
-        '/private/recordings',
-      );
-      await tester.tap(find.text('Start recording'));
-      await tester.pumpAndSettle();
-      final start = control.calls.singleWhere((c) => c['action'] == 'start');
-      expect(start['destination'], '/private/recordings');
-      expect(start['camera_ids'], ['by-path:port']);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpAndSettle();
-      expect(control.calls.any((c) => c['action'] == 'stop'), isFalse);
-      await camera.close();
-    },
-  );
+  for (final encoded in [false, true]) {
+    testWidgets(
+      'recording UI starts independent tracks (MJPEG=$encoded) and leaving never stops recorder',
+      (tester) async {
+        final camera = CameraFixture(), control = CameraControls();
+        tester.view.physicalSize = const Size(1280, 1200);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CameraRecordingsPage(service: camera, control: control),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byType(TextField).first,
+          '/private/recordings',
+        );
+        if (encoded) {
+          await tester.tap(find.text('Original encoded packets'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Budgeted MJPEG').last);
+          await tester.pumpAndSettle();
+        }
+        await tester.ensureVisible(find.text('Start recording'));
+        await tester.tap(find.text('Start recording'));
+        await tester.pumpAndSettle();
+        final start = control.calls.singleWhere((c) => c['action'] == 'start');
+        expect(start['destination'], '/private/recordings');
+        expect(start['camera_ids'], ['by-path:port']);
+        expect(
+          start['encoding_policy'],
+          encoded
+              ? {
+                  'mode': 'mjpeg',
+                  'quality': 60,
+                  'max_fps_per_camera': 10,
+                  'threads': 1,
+                  'max_pixels_per_second': 80000000,
+                  'queue_bytes': 33554432,
+                  'timeout_ms': 750,
+                }
+              : {'mode': 'passthrough'},
+        );
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpAndSettle();
+        expect(control.calls.any((c) => c['action'] == 'stop'), isFalse);
+        await camera.close();
+      },
+    );
+  }
   testWidgets(
     'wizard requires physical measurements and never activates an empty candidate',
     (tester) async {

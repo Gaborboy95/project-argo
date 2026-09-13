@@ -258,6 +258,12 @@ replay, play/pause/seek/speed and original or H.264 Matroska export. Recording
 continues when the page is closed; only its explicit Stop button stops it.
 Playback uses the recording's immutable calibration and never writes to the
 live vehicle bus. Playback and export run as independent bounded engine jobs.
+Recording defaults to original encoded packet preservation. The explicit Budgeted MJPEG option
+recompresses individual tracks at selected quality (30–90) and maximum frame rate
+(1–15 fps) while retaining source resolution/timing. Its isolated encoder uses
+one thread, a 32 MiB queue, 80 million input pixels/second admission and a 750 ms
+per-frame timeout; exhaustion affects recording, not live display. This option
+adds decode/re-encode work and is not passthrough.
 
 The parking perception card loads an explicit local model manifest and starts
 or stops the independent provider. It shows units, input age, source sequence,

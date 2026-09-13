@@ -28,6 +28,8 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
   Map<String, dynamic>? _session;
   String? _camera, _error;
   String _view = 'direct', _exportPolicy = 'passthrough';
+  String _encodingPolicy = 'passthrough';
+  int _quality = 60, _recordingFps = 10;
   bool _busy = false, _playing = false;
   int _position = 0;
   double _speed = 1;
@@ -159,6 +161,45 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(labelText: 'Loop quota (GiB)'),
         ),
+        DropdownButtonFormField<String>(
+          initialValue: _encodingPolicy,
+          decoration: const InputDecoration(labelText: 'Recording encoding'),
+          items: const [
+            DropdownMenuItem(
+              value: 'passthrough',
+              child: Text('Original encoded packets'),
+            ),
+            DropdownMenuItem(value: 'mjpeg', child: Text('Budgeted MJPEG')),
+          ],
+          onChanged: _busy
+              ? null
+              : (value) => setState(() => _encodingPolicy = value!),
+        ),
+        if (_encodingPolicy == 'mjpeg') ...[
+          const Text(
+            'Recompress separate camera tracks for lower storage use. Resolution stays unchanged; quality and frame-rate limits apply only to recording.',
+          ),
+          Text('JPEG quality $_quality'),
+          Slider(
+            value: _quality.toDouble(),
+            min: 30,
+            max: 90,
+            divisions: 60,
+            onChanged: _busy
+                ? null
+                : (value) => setState(() => _quality = value.round()),
+          ),
+          Text('Maximum $_recordingFps recording frames/s per camera'),
+          Slider(
+            value: _recordingFps.toDouble(),
+            min: 1,
+            max: 15,
+            divisions: 14,
+            onChanged: _busy
+                ? null
+                : (value) => setState(() => _recordingFps = value.round()),
+          ),
+        ],
         for (final camera in widget.service.current.devices)
           CheckboxListTile(
             value: _selected.contains(camera.stableId),
@@ -186,6 +227,17 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
                 'destination': _destination.text,
                 'camera_ids': _selected.toList(),
                 'quota_bytes': (quota * 1024 * 1024 * 1024).round(),
+                'encoding_policy': _encodingPolicy == 'passthrough'
+                    ? {'mode': 'passthrough'}
+                    : {
+                        'mode': 'mjpeg',
+                        'quality': _quality,
+                        'max_fps_per_camera': _recordingFps,
+                        'threads': 1,
+                        'max_pixels_per_second': 80000000,
+                        'queue_bytes': 33554432,
+                        'timeout_ms': 750,
+                      },
               });
             }),
             button('Stop recording', () async {
