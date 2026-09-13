@@ -3,8 +3,10 @@ import 'package:argo/core/camera/surround_jobs.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class WorkerControl implements SurroundCameraControl {
-  WorkerControl(this.result);
+  WorkerControl(this.result, {this.state = 'complete', this.error});
   final Map<String, dynamic> result;
+  final String state;
+  final String? error;
   final operations = <String>[];
   @override
   Future<Map<String, dynamic>> command(
@@ -17,7 +19,9 @@ class WorkerControl implements SurroundCameraControl {
       expect(admin, isTrue);
       return {'job_id': 1};
     }
-    if (op == 'job_status') return {'state': 'complete', 'result': result};
+    if (op == 'job_status') {
+      return {'state': state, 'result': result, 'error': error};
+    }
     return {};
   }
 
@@ -45,6 +49,39 @@ void main() {
       expect(control.operations, isNot(contains('activate')));
     },
   );
+  test('failed daemon job preserves nested worker error', () async {
+    final control = WorkerControl(
+      {'ok': false, 'error': 'underconstrained fisheye observations'},
+      state: 'failed',
+    );
+    await expectLater(
+      SurroundJob(control).run('calibration', {'op': 'solve_intrinsics'}),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'underconstrained fisheye observations',
+        ),
+      ),
+    );
+  });
+  test('top-level daemon error takes precedence over nested worker error', () async {
+    final control = WorkerControl(
+      {'ok': false, 'error': 'worker detail'},
+      state: 'failed',
+      error: 'worker exceeded 120 seconds',
+    );
+    await expectLater(
+      SurroundJob(control).run('calibration', {'op': 'solve_intrinsics'}),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'worker exceeded 120 seconds',
+        ),
+      ),
+    );
+  });
   test(
     'successful job exposes solver result; cancellation uses owning job',
     () async {
