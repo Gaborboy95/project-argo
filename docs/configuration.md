@@ -390,3 +390,24 @@ requiring both camera assets and `camera_contract=1` in the manifest. Missing
 camera assets leave the rest of the app usable. No new environment opt-in or
 systemd camera unit is needed. Runtime sockets are private under XDG_RUNTIME_DIR;
 see [camera configuration and ownership](../tool/camera/README.md).
+
+## Surround-camera client
+
+`ARGO_CAMERA_BACKEND=external` selects the independently managed surround-camera
+API 1.0 service. It is the default for new releases; bundles marked
+`camera_contract=1` retain the legacy manual rear path unless explicitly overridden.
+`ARGO_CAMERA_BACKEND=legacy` is the explicit rollback switch. The external engine
+must be stopped before starting legacy capture of the same hardware.
+
+`SURROUND_CAMERA_RUNTIME` overrides `$XDG_RUNTIME_DIR/surround-camera` for both
+Dart and native clients. It must be an absolute private directory; local socket
+paths must fit Linux's Unix socket limit. `ARGO_CAMERA_VIEW_LIBRARY` overrides the
+external presentation library, otherwise it comes from the selected bundle.
+The external client reconnects every two seconds, polls metadata every 500 ms,
+and closes only its subscriptions at navigation/shutdown. The external process
+is never launched, killed or stopped by Argo. Administration uses `admin.sock`;
+ordinary subscriptions use `control.sock` and native `media.sock`.
+
+Legacy `camera.rear` migrates through an engine compare-and-set assignment;
+Argo clears that setting only after a durable acknowledgement. Existing engine
+assignments take precedence. Failed migration retains the old preference.

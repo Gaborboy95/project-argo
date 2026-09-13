@@ -1,4 +1,5 @@
 #include "contract.h"
+#include "surround_transport.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <cmath>
@@ -20,6 +21,8 @@
 #include <vulkan/vulkan.h>
 namespace {
 constexpr const char *kType = "argo.camera.view";
+constexpr const char *kSurroundType = "argo.surround.view";
+std::atomic<std::uint32_t> selected_role{0};
 std::uint64_t Now() {
   timespec t{};
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -28,6 +31,7 @@ std::uint64_t Now() {
 struct View {
   double width = 0, height = 0;
   std::uint32_t role = 0;
+  bool external = false;
   IhsPlatformView *view = nullptr;
   IhsPvGrant grant{};
   gbm_device *allocator = nullptr;
@@ -215,6 +219,84 @@ struct View {
     }
     return result == IHS_PV_OK;
   }
+  void RunExternal() {
+    int socket = -1;
+    bool black = false;
+    std::uint64_t presented = 0;
+    std::uint32_t subscribed_role = 99;
+    camera::Frame blank;
+    blank.width = 16; blank.height = 9; blank.stride = 64; blank.pixels.resize(576);
+    auto disconnect = [&] { if (socket >= 0) close(socket); socket = -1; };
+    while (!stopping) {
+      const auto wanted = selected_role.load();
+      if (wanted != subscribed_role) { disconnect(); black = false; presented = 0; }
+      if (socket < 0) {
+        const char *explicit_runtime = std::getenv("SURROUND_CAMERA_RUNTIME");
+        const char *runtime = std::getenv("XDG_RUNTIME_DIR");
+        const std::string path = explicit_runtime ? std::string(explicit_runtime) + "/media.sock" :
+          runtime ? std::string(runtime) + "/surround-camera/media.sock" : "";
+        sockaddr_un address{}; address.sun_family = AF_UNIX;
+        if (!path.empty() && path.size() < sizeof(address.sun_path)) {
+          std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+          socket = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+          if (socket >= 0 && connect(socket, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0) {
+            ucred peer{}; socklen_t length = sizeof(peer);
+            if (getsockopt(socket, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0 || peer.uid != getuid()) {
+              disconnect();
+            } else {
+              fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) & ~O_NONBLOCK);
+              timeval timeout{0, 150000};
+              setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+              setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+              const char *roles[]{"rear", "front", "left", "right"};
+              rapidjson::Document reply;
+              const std::string request = "{\"major\":1,\"minor\":0,\"id\":1,\"op\":\"subscribe\",\"args\":{\"role\":\"" +
+                std::string(roles[wanted < 4 ? wanted : 0]) + "\",\"formats\":[\"BGRx\"],\"consumer\":\"display\",\"delivery\":\"latest\",\"max_outstanding\":2}}";
+              if (!surround::Send(socket, request) || !surround::Receive(socket, reply) ||
+                  !reply.HasMember("ok") || !reply["ok"].IsBool() || !reply["ok"].GetBool()) disconnect();
+              else subscribed_role = wanted;
+            }
+          } else disconnect();
+        }
+      }
+      if (socket >= 0) {
+        pollfd event{socket, POLLIN | POLLHUP, 0};
+        poll(&event, 1, 25);
+        if (event.revents & POLLIN) {
+          rapidjson::Document message;
+          if (!surround::Receive(socket, message) || !message.HasMember("frame")) { disconnect(); }
+          else {
+            const int memory = surround::Descriptor(socket);
+            camera::Frame frame;
+            std::uint64_t generation = 0, allocation = 0, offset = 0;
+            struct stat info{};
+            constexpr int seals = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+            const bool valid = memory >= 0 && surround::Layout(message["frame"], frame, generation, allocation, offset, Now()) &&
+              fstat(memory, &info) == 0 && info.st_size == static_cast<off_t>(allocation) &&
+              (fcntl(memory, F_GET_SEALS) & seals) == seals;
+            if (valid) {
+              void *map = mmap(nullptr, allocation, PROT_READ, MAP_SHARED, memory, 0);
+              if (map != MAP_FAILED) {
+                frame.pixels.resize(static_cast<std::size_t>(frame.stride) * frame.height);
+                std::memcpy(frame.pixels.data(), static_cast<const std::uint8_t *>(map) + offset, frame.pixels.size());
+                munmap(map, allocation);
+                if (Submit(frame)) { presented = frame.time; black = false; }
+              }
+            }
+            if (memory >= 0) close(memory);
+            if (!valid) disconnect();
+            else if (!surround::Send(socket, "{\"major\":1,\"minor\":0,\"id\":2,\"op\":\"release\",\"args\":{\"generation\":" +
+              std::to_string(generation) + ",\"sequence\":" + std::to_string(frame.sequence) + "}}")) disconnect();
+          }
+        }
+        if (event.revents & (POLLHUP | POLLERR | POLLNVAL)) disconnect();
+      } else { poll(nullptr, 0, 50); }
+      if (!black && (socket < 0 || presented == 0 || Now() < presented || Now() - presented >= camera::kStaleNs)) {
+        black = Submit(blank, true);
+      }
+    }
+    disconnect();
+  }
   void Run() {
     int socket = -1, event = -1, memory = -1;
     const std::uint8_t *ring = nullptr;
@@ -358,7 +440,7 @@ void Renegotiate(void *data) {
     std::fprintf(stderr, "Camera renegotiation failed\n");
 }
 void Dispose(void *data) { delete static_cast<View *>(data); }
-int Create(const IhsPvCreateInfo *args, void *, IhsPlatformView *view,
+int Create(const IhsPvCreateInfo *args, void *factory_data, IhsPlatformView *view,
            IhsPvCallbacks *callbacks, void **user_data) {
   std::uint32_t role = 0;
   if (!args || !callbacks || !user_data ||
@@ -369,6 +451,7 @@ int Create(const IhsPvCreateInfo *args, void *, IhsPlatformView *view,
   v->width = args->width;
   v->height = args->height;
   v->role = role;
+  v->external = factory_data != nullptr;
   v->view = view;
   if (!v->Negotiate()) {
     std::fprintf(stderr, "Camera native view: no compatible GBM/IHS grant\n");
@@ -382,7 +465,7 @@ int Create(const IhsPvCreateInfo *args, void *, IhsPlatformView *view,
   callbacks->renegotiate = Renegotiate;
   callbacks->dispose = Dispose;
   *user_data = v;
-  v->worker = std::thread([v] { v->Run(); });
+  v->worker = std::thread([v] { if (v->external) v->RunExternal(); else v->Run(); });
   return IHS_PV_OK;
 }
 } // namespace
@@ -393,4 +476,13 @@ argo_camera_view_register() {
 extern "C" __attribute__((visibility("default"))) void
 argo_camera_view_unregister() {
   ihs_pv_unregister_factory(kType);
+}
+
+extern "C" __attribute__((visibility("default"))) int
+argo_surround_camera_view_register() {
+  return ihs_pv_register_factory(kSurroundType, Create, reinterpret_cast<void *>(1));
+}
+extern "C" __attribute__((visibility("default"))) void
+argo_surround_camera_view_set_role(std::uint32_t role) {
+  if (role < 4) selected_role.store(role);
 }

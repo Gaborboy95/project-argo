@@ -37,8 +37,14 @@ class CameraSnapshot {
     this.sequence = 0,
     this.lastFrame,
     this.error,
+    this.external = false,
+    this.groups = const {},
+    this.details = const {},
   });
   final bool available;
+  final bool external;
+  final Map<String, List<String>> groups;
+  final Map<String, dynamic> details;
   final List<CameraDevice> devices;
   final Map<CameraRole, String> assignments;
   final CameraRole? activeRole;
@@ -61,4 +67,15 @@ abstract interface class CameraService {
   Future<void> stop();
   Future<void> refresh();
   Future<void> close();
+}
+
+/// Extended administration belongs to the independently managed engine.
+/// Values contain metadata only; frames never cross this interface.
+abstract interface class SurroundCameraControl {
+  Future<Map<String, dynamic>> command(
+    String operation, [
+    Map<String, Object?> arguments = const {},
+    bool administration = false,
+  ]);
+  Future<void> selectView(String mode, {String? group});
 }

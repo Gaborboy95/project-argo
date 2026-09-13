@@ -85,9 +85,10 @@ class CameraPage extends StatelessWidget {
                 child: Center(
                   child: AspectRatio(
                     aspectRatio: aspect,
-                    child: const IgnorePointer(
+                    child: IgnorePointer(
                       child: IhsCameraSurface(
-                        key: ValueKey('rear-camera-native-view'),
+                        key: const ValueKey('rear-camera-native-view'),
+                        external: camera.external,
                       ),
                     ),
                   ),

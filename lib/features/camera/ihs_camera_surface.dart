@@ -15,10 +15,12 @@ class IhsCameraSurface extends StatefulWidget {
     super.key,
     this.role = CameraRole.rear,
     this.diagnostics = false,
+    this.external = false,
   });
 
   final CameraRole role;
-  final String viewType = 'argo.camera.view';
+  final bool external;
+  String get viewType => external ? 'argo.surround.view' : 'argo.camera.view';
   final bool diagnostics;
 
   @override

@@ -1,7 +1,19 @@
 #include "../src/contract.h"
+#include "../src/surround_transport.h"
 #include <cassert>
 #include <cmath>
 int main() {
+  rapidjson::Document descriptor;
+  descriptor.Parse(R"({"format":"BGRx","width":640,"height":480,"generation":1,"sequence":2,"capture_ns":100,"allocation_size":1228800,"planes":[{"offset":0,"stride":2560,"size":1228800}]})");
+  camera::Frame immutable;
+  std::uint64_t generation, allocation, offset;
+  assert(surround::Layout(descriptor, immutable, generation, allocation, offset, 101));
+  descriptor["planes"][0]["offset"].SetUint64(1228800);
+  assert(!surround::Layout(descriptor, immutable, generation, allocation, offset, 101));
+  descriptor["planes"][0]["offset"].SetUint64(0);
+  descriptor["planes"][0]["stride"].SetUint64(UINT64_MAX);
+  assert(!surround::Layout(descriptor, immutable, generation, allocation, offset, 101));
+
   std::uint8_t bytes[12]{'A', 'R', 'C', 'V', 1, 0, 0, 0, 0, 0, 0, 0};
   std::uint32_t role = 99;
   assert(camera::Parse(bytes, 12, role) && role == 0);

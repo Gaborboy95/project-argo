@@ -2,6 +2,10 @@ import 'dart:async';
 
 import '../core/camera/camera_service.dart';
 import '../core/camera/native_camera_service.dart';
+import '../core/camera/surround_camera_service.dart';
+
+import 'dart:convert';
+
 import 'climate_composition.dart';
 import '../core/lifecycle/managed_application.dart';
 import '../core/lifecycle/application_exit_service.dart';
@@ -137,17 +141,44 @@ Future<Widget> bootstrapArgoApplication({
       shutdown: settings.close,
     );
 
-    final camera = NativeCameraService(
-      settings: settings,
-      environment: processEnvironment,
-    );
+    // Existing paired releases keep their manual regression path. New external
+    // releases connect to the engine and never acquire its process lifetime.
+    var cameraBackend = processEnvironment['ARGO_CAMERA_BACKEND'];
+    if (cameraBackend == null) {
+      final bundle = processEnvironment['ARGO_WIRELESS_BUNDLE'];
+      if (bundle != null) {
+        try {
+          final manifest = jsonDecode(
+            await File('$bundle/argo-release.json').readAsString(),
+          ) as Map;
+          if (manifest['camera_contract'] == 1) cameraBackend = 'legacy';
+        } on Object {
+          /* Camera absence must not prevent application startup. */
+        }
+      }
+    }
+    final CameraService camera;
+    if (cameraBackend == 'legacy') {
+      final legacy = NativeCameraService(
+        settings: settings,
+        environment: processEnvironment,
+      );
+      camera = legacy;
+      unawaited(legacy.initialize());
+    } else {
+      final external = SurroundCameraService(
+        settings: settings,
+        environment: processEnvironment,
+      );
+      camera = external;
+      unawaited(external.initialize());
+    }
     services.register<CameraService>(camera);
     lifecycle.registerShutdown(
       name: 'camera',
       phase: AppShutdownPhase.stopActivity,
       shutdown: camera.close,
     );
-    unawaited(camera.initialize());
 
     final veloceConfiguration = VeloceRuntimeConfiguration.fromEnvironment(
       environment: processEnvironment,

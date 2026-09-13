@@ -1,4 +1,10 @@
-# Manual native camera
+# Camera adapters
+
+New releases use the independent [surround-camera client](../../docs/configuration.md#surround-camera-client). The external native factory keeps immutable sealed frame allocations until its CPU copy completes, then explicitly releases each frame. Each native subscription has independent delivery state and 750 ms stale blanking. It copies final BGRx into GBM for IHS; this is not a zero-copy claim. RapidJSON headers are required to build the external adapter; set `RAPIDJSON_ROOT` to an existing checkout when they are not installed.
+
+The rest of this runbook documents the retained `camera_contract=1` manual regression and rollback path.
+
+## Legacy manual camera
 
 Camera is a manual dashboard destination. Open **Apps → Camera**, select a
 capture device and assign it as Rear. No device is assigned implicitly. With a
