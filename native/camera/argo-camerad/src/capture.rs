@@ -182,24 +182,6 @@ impl Health {
         true
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn stale_bounded_recovery_and_fresh_start() {
-        let now = Instant::now();
-        let mut h = Health::new(now);
-        assert!(!h.stale(now + Duration::from_millis(749)));
-        assert!(h.stale(now + STALE));
-        assert!(h.restart_due(now + RESTART));
-        for _ in 0..3 {
-            assert!(h.failed(now));
-        }
-        assert!(!h.failed(now));
-        assert!(!Health::new(now + Duration::from_secs(99)).stale(now + Duration::from_secs(99)));
-    }
-}
-
 /// Cooperative exclusion with standalone surround-camerad. No service ownership.
 fn physical_lock(node: &str) -> Result<std::fs::File, String> {
     use std::os::{
@@ -230,4 +212,22 @@ fn physical_lock(node: &str) -> Result<std::fs::File, String> {
         return Err("physical adapter owned by legacy/standalone capture".into());
     }
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stale_bounded_recovery_and_fresh_start() {
+        let now = Instant::now();
+        let mut h = Health::new(now);
+        assert!(!h.stale(now + Duration::from_millis(749)));
+        assert!(h.stale(now + STALE));
+        assert!(h.restart_due(now + RESTART));
+        for _ in 0..3 {
+            assert!(h.failed(now));
+        }
+        assert!(!h.failed(now));
+        assert!(!Health::new(now + Duration::from_secs(99)).stale(now + Duration::from_secs(99)));
+    }
 }
