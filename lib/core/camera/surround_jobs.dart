@@ -8,6 +8,27 @@ final class SurroundJob {
   final SurroundCameraControl control;
   int? id;
   bool cancelled = false;
+
+  static String? _errorText(Object? value) {
+    if (value == null) return null;
+    final text = '$value'.trim();
+    return text.isEmpty || text == 'null' ? null : text;
+  }
+
+  static String _failureMessage(
+    Map<String, dynamic> state, {
+    required String fallback,
+  }) {
+    final direct = _errorText(state['error']);
+    if (direct != null) return direct;
+    final result = state['result'];
+    if (result is Map) {
+      final worker = _errorText(result['error']);
+      if (worker != null) return worker;
+    }
+    return fallback;
+  }
+
   Future<Map<String, dynamic>> run(
     String worker,
     Map<String, Object?> request, {
@@ -33,8 +54,13 @@ final class SurroundJob {
               ? Map<String, dynamic>.from(result['result'] as Map)
               : result;
         case 'failed':
+          throw StateError(
+            _failureMessage(state, fallback: 'Worker job failed'),
+          );
         case 'cancelled':
-          throw StateError('${state['error'] ?? state['state']}');
+          throw StateError(
+            _failureMessage(state, fallback: 'Job cancelled'),
+          );
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
