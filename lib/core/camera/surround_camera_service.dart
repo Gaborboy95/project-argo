@@ -546,15 +546,25 @@ final class SurroundCameraService
         (group == null
             ? _current.assignments.values.toSet().toList()
             : _current.groups[group] ?? <String>[]);
-    for (final id in ids) {
-      final lease = await command('subscribe', {
-        'camera_id': id,
-        'formats': ['BGRx'],
-        'consumer': 'display',
-        'delivery': 'latest',
-        'max_outstanding': 1,
-      });
-      _renderLeases.add(lease['subscription_id'] as int);
+    try {
+      for (final id in ids) {
+        final lease = await command('subscribe', {
+          'camera_id': id,
+          'formats': ['BGRx'],
+          'consumer': 'display',
+          'delivery': 'latest',
+          'max_outstanding': 1,
+        });
+        _renderLeases.add(lease['subscription_id'] as int);
+      }
+    } on Object {
+      // A rejected group must not leave partial capture leases consuming the
+      // budget and preventing a subsequent individual-camera preview.
+      for (final lease in _renderLeases.toList()) {
+        await command('unsubscribe', {'subscription_id': lease});
+        _renderLeases.remove(lease);
+      }
+      rethrow;
     }
     Map<String, dynamic>? cachedCalibration;
     String? cachedRevision;

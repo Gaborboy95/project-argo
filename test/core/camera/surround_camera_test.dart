@@ -94,6 +94,20 @@ void main() {
         await service.stop();
         final status = await service.command('status');
         expect(status['subscriptions'], 0);
+        // Four default 1080p30 streams exceed the default admission budget.
+        // Failure must release the successful prefix so direct preview recovers.
+        final ids = service.current.devices
+            .take(4)
+            .map((d) => d.stableId)
+            .toList();
+        for (var i = 0; i < ids.length; i++) {
+          await service.assign(CameraRole.values[i], ids[i]);
+        }
+        await expectLater(service.selectView('multi_camera'), throwsStateError);
+        expect((await service.command('status'))['subscriptions'], 0);
+        await service.start(CameraRole.rear);
+        expect((await service.command('status'))['subscriptions'], 1);
+        await service.stop();
         final recorder = await service.command('recording', {
           'action': 'status',
         }, true);

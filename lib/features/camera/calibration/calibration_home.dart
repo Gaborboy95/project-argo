@@ -7,7 +7,7 @@ import '../../../core/camera/camera_service.dart';
 import '../../../core/camera/calibration_manager.dart';
 import '../../../core/camera/surround_jobs.dart';
 import '../calibration_wizard.dart';
-import '../ihs_camera_surface.dart';
+import 'calibration_preview.dart';
 import 'bench_lens_calibration_page.dart';
 import 'camera_assignment_step.dart';
 import 'calibration_fields.dart';
@@ -440,7 +440,7 @@ class _HomeState extends State<CalibrationHome> {
       }),
     ],
     5 => [
-      const SizedBox(height: 360, child: IhsCameraSurface(external: true)),
+      CalibrationPreview(service: _manager.service),
       _button('Render captured surround preview', _preview),
       _button('Show captured original views', _captureAll),
       for (final e in cameras.entries)

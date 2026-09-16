@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/camera/calibration_manager.dart';
 import '../../../core/camera/camera_service.dart';
-import '../ihs_camera_surface.dart';
+import 'calibration_preview.dart';
 import 'calibration_fields.dart';
 
 class BenchLensCalibrationPage extends StatefulWidget {
@@ -153,10 +153,7 @@ class _BenchState extends State<BenchLensCalibrationPage> {
             Text(
               'Camera: ${_bench!['camera_id']} • ${_bench!['lens_model']}\n${observations.length} accepted observations',
             ),
-            SizedBox(
-              height: 280,
-              child: IhsCameraSurface(external: true, role: _role),
-            ),
+            CalibrationPreview(service: widget.manager.service, height: 280),
             Wrap(
               spacing: 8,
               children: [

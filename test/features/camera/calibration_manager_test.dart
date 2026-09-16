@@ -1,3 +1,5 @@
+import 'package:argo/features/camera/calibration/calibration_preview.dart';
+import 'package:argo/features/camera/ihs_camera_surface.dart';
 import 'package:argo/features/camera/calibration/marker_review_view.dart';
 import 'package:argo/core/camera/calibration_manager.dart';
 import 'package:argo/core/camera/camera_service.dart';
@@ -71,6 +73,57 @@ class Engine implements SurroundCameraControl {
 }
 
 void main() {
+  testWidgets(
+    'calibration native preview fits live and static image sizes without recreating the view',
+    (tester) async {
+      final camera = CameraFixture();
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform_views,
+        (call) async {
+          calls.add(call);
+          return call.method == 'create' ? (call.arguments as Map)['id'] : null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform_views,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [CalibrationPreview(service: camera)],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final size in [
+        const Size(1920, 1080),
+        const Size(640, 480),
+        const Size(256, 256),
+      ]) {
+        camera.current = CameraSnapshot(
+          available: true,
+          width: size.width.toInt(),
+          height: size.height.toInt(),
+        );
+        camera.events.add(camera.current);
+        await tester.pumpAndSettle();
+        final viewport = tester.getSize(find.byType(IhsCameraSurface));
+        expect(viewport.aspectRatio, closeTo(size.aspectRatio, .00001));
+        expect(viewport.height, lessThanOrEqualTo(360));
+      }
+      expect(calls.where((c) => c.method == 'create'), hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      await camera.close();
+    },
+  );
+
   test('mode uses daemon stream list without guessing a missing mode', () {
     final camera = CameraFixture();
     camera.current = const CameraSnapshot(

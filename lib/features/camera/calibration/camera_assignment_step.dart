@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/camera/calibration_manager.dart';
 import '../../../core/camera/camera_service.dart';
-import '../ihs_camera_surface.dart';
+import 'calibration_preview.dart';
 
 class CameraAssignmentStep extends StatelessWidget {
   const CameraAssignmentStep({
@@ -116,10 +116,22 @@ class CameraAssignmentStep extends StatelessWidget {
           );
         },
       ),
-      const SizedBox(height: 360, child: IhsCameraSurface(external: true)),
+      CalibrationPreview(service: manager.service),
       TextButton(
-        onPressed: () =>
-            manager.control.selectView('multi_camera', width: 640, height: 480),
+        onPressed: () async {
+          try {
+            await manager.control.selectView(
+              'multi_camera',
+              width: 640,
+              height: 480,
+            );
+          } catch (error) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('$error')));
+            }
+          }
+        },
         child: const Text('Show all live camera views'),
       ),
       TextButton(

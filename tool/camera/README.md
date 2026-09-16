@@ -364,3 +364,13 @@ The real Mu must still pass the ≥30-second frozen-preview memory test, additio
 captures, return to live, native loupe/touch alignment, camera-role checks and
 physical mat calibration. Synthetic/widget/native state tests do not establish
 those physical outcomes. No live deployment or push is part of this code change.
+
+Calibration configuration pages fit the native viewport to current live or captured
+image dimensions, including changes between camera, grid and loupe aspect ratios.
+The native adapter intentionally rejects mismatched viewport shapes rather than
+stretching imagery. A rejected multi-camera admission releases partial display
+leases and reports the failure so individual-camera preview remains available.
+Four default 1080p30 streams require about 1.99 GB/s under the conservative broker
+accounting; the default 1.5 GB/s admission budget cannot admit all four. Configure
+an explicit host-validated budget (2.5 GB/s on the tested four-adapter setup) or
+lower supported capture modes; admission is not a measurement of USB bandwidth.
