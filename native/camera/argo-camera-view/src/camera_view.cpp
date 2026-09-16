@@ -1,4 +1,5 @@
 #include "contract.h"
+#include "static_image_state.h"
 #include "surround_transport.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -198,6 +199,10 @@ struct View {
   }
   bool Submit(const camera::Frame &f, bool blank = false) {
     std::lock_guard lock(mutex);
+    return SubmitLocked(f, blank);
+  }
+  // Caller holds mutex, including static refresh consumption and submission.
+  bool SubmitLocked(const camera::Frame &f, bool blank = false) {
     if (suspended)
       return true;
     // Metadata and resize notifications can trail a new native frame. Blank
@@ -263,7 +268,7 @@ struct View {
     bool black = false;
     std::uint64_t presented = 0;
     std::uint32_t subscribed_role = 99;
-    std::uint64_t image_revision = 0;
+    camera::StaticImageState image_state;
     camera::Frame cached_image;
     camera::Frame blank;
     blank.width = 16; blank.height = 9; blank.stride = 64; blank.pixels.resize(576);
@@ -273,24 +278,56 @@ struct View {
       if (camera::ClockDiscontinuity(previous_offset, offset)) {
         disconnect(); presented = 0;
         { std::lock_guard lock(image_mutex);
-          if (!selected_image.replay) { selected_image.path.clear(); cached_image.pixels.clear(); image_revision = 0; }
+          if (!selected_image.replay) { selected_image.path.clear(); cached_image = {}; image_state.Reset(); }
         }
         black = Submit(blank, true);
+        refresh = true;
       }
       previous_offset = offset;
       PresentedImage image;
       { std::lock_guard lock(image_mutex); image = selected_image; }
       if (!image.path.empty()) {
         disconnect();
-        if (image.revision != image_revision) {
-          if (DecodeImage(image.path, cached_image)) { image_revision = image.revision; black = false; }
-          else cached_image.pixels.clear();
+        bool paused;
+        {
+          std::lock_guard lock(mutex);
+          paused = suspended;
         }
-        const bool fresh = image.replay || (Now() >= image.capture_ns && Now() - image.capture_ns < camera::kStaleNs);
-        if (!cached_image.pixels.empty() && fresh) { if (Submit(cached_image)) black = false; }
-        else if (!black) black = Submit(blank, true);
+        if (paused) {
+          poll(nullptr, 0, 25);
+          continue;
+        }
+        if (image_state.DecodeRevision(image.revision)) {
+          cached_image = {};
+          if (!DecodeImage(image.path, cached_image))
+            cached_image = {};
+        }
+        {
+          std::lock_guard lock(mutex);
+          // Do not consume refresh while suspended. Holding the same lock as
+          // callbacks prevents losing a resize/resume between decision and submit.
+          if (!stopping) {
+            const auto now = Now();
+            const bool fresh = image.replay ||
+                (now >= image.capture_ns && now - image.capture_ns < camera::kStaleNs);
+            const auto action = image_state.Present(
+                !cached_image.pixels.empty(), fresh, suspended, refresh);
+            if (action == camera::StaticImageState::Action::Image) {
+              if (SubmitLocked(cached_image))
+                black = false;
+            } else if (action == camera::StaticImageState::Action::Blank) {
+              black = SubmitLocked(blank, true);
+            }
+          }
+        }
         poll(nullptr, 0, 25);
         continue;
+      }
+      if (image_state.active()) {
+        image_state.Reset();
+        cached_image = {};
+        presented = 0;
+        black = false;
       }
       const auto wanted = selected_role.load();
       if (wanted != subscribed_role) { disconnect(); black = false; presented = 0; }

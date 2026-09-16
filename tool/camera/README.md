@@ -236,6 +236,18 @@ age. Captured calibration previews and intentionally paused recorded replay are
 labelled separately and retain their own timeline. Direct rear media subscription
 remains available if calibration or surround processing fails.
 
+Static native previews decode once per selected image revision, including failed
+decode attempts. They submit once, then reuse cached pixels only for an explicit
+resize, renegotiation or resume refresh. Suspended views do not consume that
+refresh or submit buffers. Non-replay images transition to black once on expiry;
+replay images remain visible. Failed submissions wait for a lifecycle refresh
+rather than repeatedly allocating GBM buffers. Returning to live positioning
+releases the single cached image and reconnects the normal media subscription.
+Physical acceptance requires leaving a frozen preview visible for at least
+30 seconds, checking stable memory across further captures, and verifying return
+to live positioning on the LattePanda Mu; native decision tests alone cannot
+establish compositor buffer reclamation.
+
 Run the actual Rust/Dart protocol integration with explicitly synthetic sources:
 
 ```bash
