@@ -1,3 +1,4 @@
+import '../../core/camera/parking_model_service.dart';
 import '../../core/camera/camera_service.dart';
 import '../../features/camera/camera_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
@@ -82,6 +83,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          models: services.contains<ParkingModelService>()
+              ? services.get<ParkingModelService>()
+              : null,
           exit: services.contains<ApplicationExitService>()
               ? services.get<ApplicationExitService>()
               : null,

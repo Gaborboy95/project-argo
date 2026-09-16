@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'parking_perception_panel.dart';
 import 'recordings_page.dart';
-import 'calibration_wizard.dart';
+import 'calibration/calibration_home.dart';
 
 import 'package:flutter/material.dart';
 
@@ -123,14 +123,14 @@ class CameraPage extends StatelessWidget {
                   TextButton.icon(
                     onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(
-                        builder: (_) => CalibrationWizard(
+                        builder: (_) => CalibrationHome(
                           service: service!,
                           control: service! as SurroundCameraControl,
                         ),
                       ),
                     ),
                     icon: const Icon(Icons.straighten),
-                    label: const Text('Calibrate camera rig'),
+                    label: const Text('Calibrate 360°'),
                   ),
                 TextButton.icon(
                   onPressed: service!.refresh,
@@ -330,10 +330,10 @@ class CameraPage extends StatelessWidget {
                       ),
                     if (camera.external && service is SurroundCameraControl)
                       IconButton(
-                        tooltip: 'Calibrate camera rig',
+                        tooltip: 'Calibrate 360°',
                         onPressed: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
-                            builder: (_) => CalibrationWizard(
+                            builder: (_) => CalibrationHome(
                               service: service!,
                               control: service! as SurroundCameraControl,
                             ),

@@ -233,6 +233,19 @@ final class SurroundCameraService
     Map<String, Object?> arguments = const {},
     bool administration = false,
   ]) async {
+    if (operation == 'preview_camera') {
+      final id = arguments['camera_id'] as String?;
+      if (id == null || !_current.devices.any((d) => d.stableId == id)) {
+        throw ArgumentError('Choose an available camera');
+      }
+      await _selectView(
+        'multi_camera',
+        cameraIds: [id],
+        width: 640,
+        height: 480,
+      );
+      return {'camera_id': id, 'preview': true};
+    }
     if (operation == 'orbit') {
       final azimuth = arguments['azimuth_rad'] as num?,
           elevation = arguments['elevation_rad'] as num?,
@@ -277,7 +290,9 @@ final class SurroundCameraService
     }
     if (administration) {
       final result = await _admin(operation, arguments);
-      if (operation == 'recording' || operation == 'perception') {
+      if (operation == 'recording' ||
+          operation == 'perception' ||
+          operation == 'models') {
         if (result['ok'] == false) throw StateError('${result['error']}');
         if (result['result'] is Map) {
           return Map<String, dynamic>.from(result['result'] as Map);
@@ -499,6 +514,14 @@ final class SurroundCameraService
     String? group,
     int? width,
     int? height,
+  }) => _selectView(mode, group: group, width: width, height: height);
+
+  Future<void> _selectView(
+    String mode, {
+    String? group,
+    int? width,
+    int? height,
+    List<String>? cameraIds,
   }) async {
     _renderTimer?.cancel();
     final epoch = ++_viewEpoch;
@@ -509,12 +532,20 @@ final class SurroundCameraService
     }
     _renderLeases.clear();
     if (mode == 'direct') return;
-    if (!{'rectified', 'top_down', 'bowl', 'split'}.contains(mode)) {
+    if (!{
+      'rectified',
+      'top_down',
+      'bowl',
+      'split',
+      'multi_camera',
+    }.contains(mode)) {
       throw ArgumentError('Unsupported view mode');
     }
-    final ids = group == null
-        ? _current.assignments.values.toSet().toList()
-        : _current.groups[group] ?? <String>[];
+    final ids =
+        cameraIds ??
+        (group == null
+            ? _current.assignments.values.toSet().toList()
+            : _current.groups[group] ?? <String>[]);
     for (final id in ids) {
       final lease = await command('subscribe', {
         'camera_id': id,
@@ -532,7 +563,8 @@ final class SurroundCameraService
       _rendering = true;
       try {
         final revision = _current.details['active_calibration'] as String?;
-        if (cachedCalibration == null || cachedRevision != revision) {
+        if (mode != 'multi_camera' &&
+            (cachedCalibration == null || cachedRevision != revision)) {
           final inspected = await SurroundJob(this)
               .run('calibration', {'op': 'inspect'});
           cachedCalibration = inspected['calibration'] == null
@@ -540,7 +572,9 @@ final class SurroundCameraService
               : Map<String, dynamic>.from(inspected['calibration'] as Map);
           cachedRevision = revision;
         }
-        final calibration = cachedCalibration;
+        final calibration = mode == 'multi_camera'
+            ? <String, dynamic>{'cameras': <String, dynamic>{}}
+            : cachedCalibration;
         if (calibration == null) {
           throw StateError('Calibrate a rig before surround rendering');
         }
@@ -596,6 +630,17 @@ final class SurroundCameraService
           'calibration': calibration,
           'frames': frames,
           'view': mode,
+          if (mode == 'multi_camera')
+            'camera_roles': {
+              for (final id in ids)
+                id:
+                    _current.assignments.entries
+                        .where((e) => e.value == id)
+                        .firstOrNull
+                        ?.key
+                        .name ??
+                    id,
+            },
           'orbit': _orbit,
           if (measurements['reverse'] is bool)
             'reverse': measurements['reverse'],

@@ -1,3 +1,5 @@
+import '../core/camera/parking_model_service.dart';
+
 import 'dart:async';
 
 import '../core/camera/camera_service.dart';
@@ -175,6 +177,11 @@ Future<Widget> bootstrapArgoApplication({
       unawaited(external.initialize());
     }
     services.register<CameraService>(camera);
+    if (camera is SurroundCameraControl) {
+      services.register<ParkingModelService>(
+        ParkingModelService(camera as SurroundCameraControl),
+      );
+    }
     lifecycle.registerShutdown(
       name: 'camera',
       phase: AppShutdownPhase.stopActivity,

@@ -14,7 +14,9 @@ class CalibrationWizard extends StatefulWidget {
     super.key,
     required this.service,
     required this.control,
+    this.metricOnly = false,
   });
+  final bool metricOnly;
   final CameraService service;
   final SurroundCameraControl control;
   @override
@@ -36,6 +38,44 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
   List<dynamic> _corners = [];
   List<double>? _pixel;
   Map<String, dynamic>? _intrinsics, _extrinsics, _metric, _captureDescriptor;
+  @override
+  void initState() {
+    super.initState();
+    if (widget.metricOnly) {
+      _step = 5;
+      unawaited(
+        run(() async {
+          final result = await solve({'op': 'inspect'});
+          final rig = result['calibration'] as Map?;
+          if (rig == null) {
+            throw StateError(
+              'Activate a visual calibration before metric validation.',
+            );
+          }
+          final cameras = rig['cameras'] as Map;
+          for (final e in cameras.entries) {
+            _cameras['${e.key}'] = Map<String, dynamic>.from(e.value as Map);
+          }
+          _camera = widget.service.current.assignments[_role];
+          final selected = _cameras[_camera];
+          if (selected == null) {
+            throw StateError(
+              'Rear camera has no active installed calibration.',
+            );
+          }
+          _intrinsics = Map<String, dynamic>.from(selected);
+          _extrinsics = Map<String, dynamic>.from(selected);
+          for (final e in (rig['vehicle'] as Map).entries) {
+            field('${e.key}').text = '${e.value}';
+          }
+          field('mount_state').text = '${selected['mount_state']}';
+          _revision = rig['revision'] as String?;
+          await widget.service.start(_role);
+        }),
+      );
+    }
+  }
+
   TextEditingController field(String name) =>
       _values.putIfAbsent(name, TextEditingController.new);
   double number(String name, {bool positive = true}) {
@@ -163,6 +203,89 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
       child: Text(label),
     ),
   );
+  Widget pointList(
+    List<Map<String, dynamic>> points, {
+    required bool validation,
+  }) {
+    final coordinate = validation ? 'measured_vehicle_m' : 'point';
+    final xKey = validation ? 'validation_x' : 'target_x';
+    final yKey = validation ? 'validation_y' : 'target_y';
+    return Column(
+      children: [
+        for (var i = 0; i < points.length; i++)
+          ListTile(
+            title: Text(
+              'Point ${i + 1} • ${validation ? 'validation' : 'fit'} • ${points[i]['camera_id'] ?? _camera}',
+            ),
+            subtitle: Text(
+              'Pixel ${points[i]['pixel']} • vehicle ${points[i][coordinate]}',
+            ),
+            trailing: Wrap(
+              children: [
+                IconButton(
+                  tooltip: 'Show point',
+                  icon: const Icon(Icons.visibility),
+                  onPressed: () => setState(
+                    () => _pixel = (points[i]['pixel'] as List)
+                        .map((n) => (n as num).toDouble())
+                        .toList(),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Edit point',
+                  icon: const Icon(Icons.edit),
+                  onPressed: () => setState(() {
+                    final p = points.removeAt(i);
+                    _pixel = (p['pixel'] as List)
+                        .map((n) => (n as num).toDouble())
+                        .toList();
+                    field(xKey).text = '${p[coordinate][0]}';
+                    field(yKey).text = '${p[coordinate][1]}';
+                    _metric = null;
+                    if (!validation) _extrinsics = null;
+                    _notices.add(
+                      'Edit the coordinates, then add the point again.',
+                    );
+                  }),
+                ),
+                IconButton(
+                  tooltip: 'Remove point',
+                  icon: const Icon(Icons.delete),
+                  onPressed: () => setState(() {
+                    points.removeAt(i);
+                    _metric = null;
+                    if (!validation) _extrinsics = null;
+                  }),
+                ),
+              ],
+            ),
+          ),
+        Wrap(
+          children: [
+            TextButton(
+              onPressed: points.isEmpty
+                  ? null
+                  : () => setState(() {
+                      points.removeLast();
+                      _metric = null;
+                      if (!validation) _extrinsics = null;
+                    }),
+              child: const Text('Undo last point'),
+            ),
+            TextButton(
+              onPressed: () => setState(() {
+                points.clear();
+                _metric = null;
+                if (!validation) _extrinsics = null;
+              }),
+              child: const Text('Clear all points'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget preview({bool pick = false}) {
     final camera = widget.service.current;
     final width = camera.width, height = camera.height;
@@ -389,6 +512,24 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
           'Accepted ${_observations.length}; blur ${observed['blur']}, coverage ${observed['coverage']}; ${observed['reason'] ?? ''}',
         );
       }),
+      for (var index = 0; index < _observations.length; index++)
+        ListTile(
+          title: Text('Observation ${index + 1}'),
+          trailing: IconButton(
+            tooltip: 'Remove observation',
+            icon: const Icon(Icons.delete),
+            onPressed: () => run(() async {
+              await solve({
+                'op': 'remove_observation',
+                'session_id': _session,
+                'camera_id': _camera,
+                'index': index,
+              });
+              _observations.removeAt(index);
+              _intrinsics = null;
+            }),
+          ),
+        ),
       action('Solve fisheye intrinsics', () async {
         if (_session == null) {
           throw StateError('Collect or resume an observation session first.');
@@ -437,6 +578,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
       action('Add ground target', () async {
         if (_pixel == null) throw StateError('Tap a target first.');
         _targets.add({
+          'camera_id': _camera,
           'pixel': List<double>.from(_pixel!),
           'point': [
             number('target_x', positive: false),
@@ -447,6 +589,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
         _pixel = null;
         _notices.add('${_targets.length} surveyed targets collected.');
       }),
+      pointList(_targets, validation: false),
       action('Solve mounting pose', () async {
         if (_intrinsics == null) {
           throw StateError('Solve or import intrinsics first.');
@@ -547,6 +690,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
           throw StateError('Tap an independent measured point.');
         }
         _validation.add({
+          'camera_id': _camera,
           'pixel': List<double>.from(_pixel!),
           'measured_vehicle_m': [
             number('validation_x', positive: false),
@@ -557,6 +701,7 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
         _pixel = null;
         _notices.add('${_validation.length} independent points collected.');
       }),
+      pointList(_validation, validation: true),
       action('Validate metric geometry', () async {
         _metric = await solve({
           'op': 'validate_metric',

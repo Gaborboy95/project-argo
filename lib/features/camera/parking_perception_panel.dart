@@ -1,3 +1,6 @@
+import '../../core/camera/parking_model_service.dart';
+import '../settings/models/model_manager_page.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -21,11 +24,23 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
   Timer? _timer;
   bool _pending = false;
   Map<String, dynamic> _status = {};
-  final _manifest = TextEditingController();
+  late final _models = ParkingModelService(widget.control);
+  String _selected = 'No parking-perception model installed';
   Stopwatch _received = Stopwatch();
   @override
   void initState() {
     super.initState();
+    unawaited(
+      _models.request('status').then((s) {
+        if (mounted) {
+          setState(
+            () => _selected =
+                s['selected'] as String? ??
+                'No parking-perception model installed',
+          );
+        }
+      }),
+    );
     _timer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (mounted) setState(() {});
       unawaited(request({'action': 'status'}));
@@ -35,7 +50,7 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
   @override
   void dispose() {
     _timer?.cancel();
-    _manifest.dispose();
+
     super.dispose();
   }
 
@@ -103,27 +118,57 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
           const Text(
             'Absence of detections does not establish clearance. Ground geometry and model metric accuracy require independent validation.',
           ),
-          TextField(
-            controller: _manifest,
-            decoration: const InputDecoration(
-              labelText: 'Local model manifest path',
-            ),
-          ),
+          Text('Selected model: $_selected'),
           Wrap(
             spacing: 8,
             children: [
               TextButton(
-                onPressed: () =>
-                    request({'action': 'load', 'manifest': _manifest.text}),
-                child: const Text('Load model'),
+                onPressed: () async {
+                  final camera = await _models.camera(widget.cameraId);
+                  if (!context.mounted) return;
+                  await Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => Scaffold(
+                        appBar: AppBar(title: const Text('AI & Models')),
+                        body: SingleChildScrollView(
+                          padding: const EdgeInsets.all(16),
+                          child: ModelManagerPage(
+                            service: _models,
+                            camera: camera,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                  final state = await _models.request('status');
+                  if (mounted) {
+                    setState(
+                      () => _selected =
+                          state['selected'] as String? ??
+                          'No parking-perception model installed',
+                    );
+                  }
+                },
+                child: const Text('Manage models'),
               ),
               TextButton(
                 onPressed: widget.cameraId == null
                     ? null
-                    : () => request({
-                        'action': 'start',
-                        'camera_id': widget.cameraId,
-                      }),
+                    : () async {
+                        try {
+                          await _models.start(widget.cameraId!);
+                        } catch (e) {
+                          if (mounted) {
+                            setState(
+                              () => _status = {
+                                'state': 'Incompatible',
+                                'error': '$e',
+                              },
+                            );
+                          }
+                        }
+                      },
                 child: const Text('Start parking perception'),
               ),
               TextButton(

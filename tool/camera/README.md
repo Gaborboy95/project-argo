@@ -277,8 +277,7 @@ one thread, a 32 MiB queue, 80 million input pixels/second admission and a 750 m
 per-frame timeout; exhaustion affects recording, not live display. This option
 adds decode/re-encode work and is not passthrough.
 
-The parking perception card loads an explicit local model manifest and starts
-or stops the independent provider. It shows units, input age, source sequence,
+The parking perception card starts or stops the selected engine-managed model; Settings → AI & Models manages downloads and selection. It shows units, input age, source sequence,
 model/calibration revision and reported coverage/uncertainty. Relative depth is
 never labelled metres. Results expire independently of camera imagery, including
 when provider status polling stalls. Missing weights remain unavailable.
@@ -304,3 +303,64 @@ staged for review. Selecting a live Mu release or installing the optional
 `surround-camerad.service` requires deployment authorization. The standalone
 [deployment runbook](/home/phaeton/dev/surround-camera/docs/deployment.md) records
 build, run, stage, stop/disable, update and rollback commands.
+
+## Lens profiles, checkerboard mats and AI & Models
+
+**Camera → Calibrate 360°** now opens the installed-rig workflow rather than the
+combined engineering wizard. Check role assignments and the original multi-camera
+live grid, select a reusable optical profile, enter retained vehicle dimensions and
+your actual checkerboard-mat measurements, detect/review anchors, solve fixed-intrinsic
+poses, preview and save/activate. Checkerboards need an explicit point-1/direction
+check. Drag/select anchors, magnify a native crop, reset or disable points, and reset
+only the affected camera. Manual anchors must be placed before solving. Capture-set
+skew above 250 ms is rejected; this is not hardware synchronization.
+
+**Advanced → Bench lens calibration** supports an unassigned spare camera without
+changing vehicle role bindings. The camera stays fixed while the board moves/tilts.
+The engine resumes the collection, maintains a 12-region coverage map, rejects bad
+observations and supports view/remove/undo/clear and Save as lens profile. New optics
+use OpenCV Mei (`opencv_omnidir`); legacy fisheye remains available. Profiles validate
+resolution/format/orientation/crop when applied across checked cameras. A shared
+profile assumes equivalent hardware; manufacturing tolerances still need checking.
+
+**Advanced → Metric validation / diagnostics** retains surveyed target tooling.
+Rows show pixel, measured vehicle coordinate, source camera and purpose; they have
+show/edit/remove, undo and clear actions. The dedicated entry loads active camera
+geometry. Metric validation remains separate from a useful visual surround fit.
+
+Drafts, captures, profiles, import/export inboxes and immutable rigs belong to the
+standalone engine. Normal screens do not require session IDs or absolute-path input.
+Full rig exports include referenced profiles. Imports remain inactive until an
+explicit activation. Capture cleanup retains referenced/recent images. Completed
+previews go through the existing native IHS path; thumbnails/rectification math and
+model network I/O do not run inside Dart widgets. Configuration-step transitions
+stop the live contact-grid renderer. No decoded full-resolution collection is held
+in Flutter.
+
+**Settings → AI & Models** uses a registered `ParkingModelService`, separate focused
+model-manager widget, and engine-owned catalog/download/selection/benchmark state.
+Camera parking controls show the selected model and Start/Stop/Manage models.
+Relative depth is not metres, unknown coverage is not clear, and no output actuates
+the vehicle. The downloadable Small model's measured Intel N100 CPU median inference
+was 1668 ms, so a responsive parking-overlay claim would be incorrect. See the engine
+[workflow guide](/home/phaeton/dev/surround-camera/docs/calibration-workflows.md) and
+[verified artifact/benchmark](/home/phaeton/dev/surround-camera/docs/model-manager.md).
+
+Validation commands for this change (matched Flutter SDK; no IHS/Engine rebuild):
+
+```sh
+FLUTTER=/home/phaeton/dev/infotainment/flutter/bin/flutter
+"$FLUTTER" analyze --no-pub
+"$FLUTTER" test --no-pub test/core/camera test/features/camera test/features/settings
+SURROUND_TEST_DAEMON=/home/phaeton/dev/surround-camera/target/debug/surround-camerad \
+  "$FLUTTER" test --no-pub test/core/camera/surround_camera_test.dart
+"$FLUTTER" build bundle --no-pub --target-platform linux-x64
+cmake --build native/camera/argo-camera-view/build -j2
+ctest --test-dir native/camera/argo-camera-view/build --output-on-failure
+python3 -m unittest discover -s tool/deployment -p 'test_*.py'
+```
+
+The real Mu must still pass the ≥30-second frozen-preview memory test, additional
+captures, return to live, native loupe/touch alignment, camera-role checks and
+physical mat calibration. Synthetic/widget/native state tests do not establish
+those physical outcomes. No live deployment or push is part of this code change.

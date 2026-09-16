@@ -1,3 +1,5 @@
+import '../../core/camera/parking_model_service.dart';
+import 'models/model_manager_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
 import '../calls/calls_page.dart';
 import 'application_settings_card.dart';
@@ -20,8 +22,10 @@ class SettingsPage extends StatefulWidget {
     this.settings,
     this.connectivity,
     this.exit,
+    this.models,
     super.key,
   });
+  final ParkingModelService? models;
   final ApplicationExitService? exit;
   final AudioService audio;
   final ProjectionSettingsService? projectionSettings;
@@ -67,6 +71,12 @@ class _SettingsPageState extends State<SettingsPage> {
           'Appearance',
           Icons.palette_outlined,
           AppearanceSettingsCard(settings: widget.settings!),
+        ),
+      if (widget.models != null)
+        (
+          'AI & Models',
+          Icons.model_training,
+          ModelManagerPage(service: widget.models!),
         ),
     ];
     if (widget.exit != null) {
