@@ -44,8 +44,8 @@ microphone-owner reporting, shared UI primitives, resumable setup and a read-onl
 doctor. Model polling no longer drops foreground actions; guided mat forms are
 template-specific. See [the exact implementation limits](standard-edition.md).
 
-Full integration/error migration, physical setup hardware tests, calibration/model
-workflow completion and reproducible package acceptance remain open. No new
+Physical setup/camera/model acceptance and public-release qualification remain
+open. Some legacy optional diagnostic views retain their original layout. No new
 physical acceptance follows from these changes. The Veloce concurrency/crash
 assumptions above remain in force.
 

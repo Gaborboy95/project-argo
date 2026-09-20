@@ -48,7 +48,7 @@ recovery guidance. CarPlay adapters/settings and the projection multiplexer
 preserve original causes. Expandable Details retains the full cause locally.
 Copied diagnostics export only allowlisted categories: arbitrary backend text,
 phone content, identities, credentials, MFi and vehicle integration content are
-omitted. Other integrations still need migration to this failure representation.
+omitted. Audio configuration and camera status also expose complete causes through shared recovery controls; some legacy integration diagnostics retain their original representation.
 
 Failed projection switching remains closed and offers explicit Retry/Return.
 The action token expires on subsequent navigation, activation or hide; ended

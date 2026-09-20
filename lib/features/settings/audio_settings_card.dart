@@ -180,11 +180,12 @@ class _AudioSettingSliderState extends State<AudioSettingSlider> {
       );
       failedValue = value;
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           saving = false;
           preview = null;
         });
+      }
     }
   }
 
