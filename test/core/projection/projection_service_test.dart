@@ -1,4 +1,8 @@
+import 'dart:async';
+
+import 'package:argo/core/projection/projection_backend.dart';
 import 'package:argo/core/audio/audio_service.dart';
+import 'package:argo/core/audio/audio_snapshot.dart';
 import 'package:argo/core/audio/audio_types.dart';
 import 'package:argo/core/audio/in_memory_audio_backend.dart';
 import 'package:argo/core/diagnostics/diagnostics_service.dart';
@@ -70,6 +74,132 @@ void main() {
     },
   );
 
+  test('gain failure cannot suppress authoritative projection state', () async {
+    final gains = _ControlledGains()..failure = StateError('gain unavailable');
+    final fixture = await _Fixture.start(gains: gains);
+    final snapshot = _snapshot(audioRole: ProjectionAudioRole.speech);
+    fixture.backend.emit(snapshot);
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.projection.current.sessions, snapshot.sessions);
+    expect(fixture.projection.current.activeSessionId, 'session');
+    expect(
+      fixture.projection.current.audioFailure,
+      ProjectionAudioFailure.gain,
+    );
+    await fixture.close();
+  });
+
+  test(
+    'stalled gains do not queue obsolete snapshots or delay shutdown',
+    () async {
+      final gains = _ControlledGains()..pending = Completer<void>();
+      final fixture = await _Fixture.start(gains: gains);
+      fixture.backend.emit(_snapshot(audioRole: ProjectionAudioRole.speech));
+      await Future<void>.delayed(Duration.zero);
+      expect(gains.calls, ['session/speech']);
+      for (var i = 0; i < 100; i++) {
+        fixture.backend.emit(
+          _snapshot(
+            audioRole: ProjectionAudioRole.media,
+            sessionId: 'replacement-$i',
+          ),
+        );
+      }
+      final empty = ProjectionSnapshot(backendAvailable: true);
+      fixture.backend.emit(empty);
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.projection.current.sessions, isEmpty);
+      expect(fixture.audio.current.focusSources, isEmpty);
+      expect(gains.calls, ['session/speech']);
+      await fixture.close().timeout(const Duration(seconds: 1));
+      gains.pending!.complete();
+      await Future<void>.delayed(Duration.zero);
+      expect(gains.calls, ['session/speech']);
+    },
+  );
+
+  test('gain deadline remains bounded and retries the newest state', () async {
+    final gains = _ControlledGains()..pending = Completer<void>();
+    final fixture = await _Fixture.start(gains: gains);
+    final timedOut = fixture.projection.changes.firstWhere(
+      (state) => state.audioFailure == ProjectionAudioFailure.timeout,
+    );
+    fixture.backend.emit(_snapshot(audioRole: ProjectionAudioRole.media));
+    await timedOut.timeout(const Duration(seconds: 5));
+    for (var i = 0; i < 100; i++) {
+      fixture.backend.emit(
+        _snapshot(audioRole: ProjectionAudioRole.media, sessionId: 'latest-$i'),
+      );
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(gains.calls, ['session/speech']);
+    expect(fixture.projection.current.activeSessionId, 'latest-99');
+    final recovered = fixture.projection.changes.firstWhere(
+      (state) => state.audioFailure == null,
+    );
+    gains.pending!.complete();
+    await recovered.timeout(const Duration(seconds: 5));
+    expect(gains.calls.last, 'latest-99/speech');
+    expect(
+      gains.calls.every(
+        (id) => id == 'session/speech' || id == 'latest-99/speech',
+      ),
+      isTrue,
+    );
+    await fixture.close().timeout(const Duration(seconds: 1));
+  });
+
+  test('failed gain retries without another backend snapshot', () async {
+    final gains = _ControlledGains()..failure = StateError('gain unavailable');
+    final fixture = await _Fixture.start(gains: gains);
+    final failed = fixture.projection.changes.firstWhere(
+      (state) => state.audioFailure == ProjectionAudioFailure.gain,
+    );
+    fixture.backend.emit(_snapshot(audioRole: ProjectionAudioRole.media));
+    await failed;
+    gains.failure = null;
+    await fixture.projection.changes
+        .firstWhere((state) => state.audioFailure == null)
+        .timeout(const Duration(seconds: 5));
+    await fixture.close().timeout(const Duration(seconds: 1));
+  });
+
+  test('one failing cleanup cannot retain another obsolete owner', () async {
+    final focus = _ControlledAudio();
+    final fixture = await _Fixture.start(focus: focus);
+    final first = _snapshot(audioRole: ProjectionAudioRole.speech);
+    final second = _snapshot(
+      audioRole: ProjectionAudioRole.media,
+      sessionId: 'second',
+    );
+    fixture.backend.emit(
+      ProjectionSnapshot(
+        backendAvailable: true,
+        sessions: [...first.sessions, ...second.sessions],
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    focus.failRelease = 'projection.session.speech';
+    focus.failUnregister = 'projection.session.speech';
+    fixture.backend.emit(ProjectionSnapshot(backendAvailable: true));
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      focus.unregistered,
+      containsAll(['projection.session.speech', 'projection.second.speech']),
+    );
+    expect(
+      fixture.audio.current.focusSources,
+      isNot(contains('projection.second.speech')),
+    );
+    expect(
+      fixture.projection.current.audioFailure,
+      ProjectionAudioFailure.focus,
+    );
+    focus.failRelease = focus.failUnregister = null;
+    await fixture.close();
+    expect(focus.delegate.current.focusSources, isEmpty);
+  });
+
   test('duplicate semantic backend snapshots are suppressed', () async {
     final fixture = await _Fixture.start();
     var count = 0;
@@ -87,7 +217,10 @@ void main() {
   });
 }
 
-ProjectionSnapshot _snapshot({required ProjectionAudioRole audioRole}) {
+ProjectionSnapshot _snapshot({
+  required ProjectionAudioRole audioRole,
+  String sessionId = 'session',
+}) {
   const device = ProjectionDevice(
     id: 'phone',
     displayName: 'Phone',
@@ -99,13 +232,13 @@ ProjectionSnapshot _snapshot({required ProjectionAudioRole audioRole}) {
     devices: const [device],
     sessions: [
       ProjectionSession(
-        id: 'session',
+        id: sessionId,
         device: device,
         state: ProjectionSessionState.streaming,
         audioStreams: [
           ProjectionAudioStream(
             id: 'speech',
-            sessionId: 'session',
+            sessionId: sessionId,
             role: audioRole,
             active: true,
             hasFocus: true,
@@ -113,7 +246,7 @@ ProjectionSnapshot _snapshot({required ProjectionAudioRole audioRole}) {
         ],
       ),
     ],
-    activeSessionId: 'session',
+    activeSessionId: sessionId,
   );
 }
 
@@ -126,7 +259,10 @@ final class _Fixture {
     this.projection,
   );
 
-  static Future<_Fixture> start() async {
+  static Future<_Fixture> start({
+    _ControlledGains? gains,
+    _ControlledAudio? focus,
+  }) async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),
       store: _MemoryStore(),
@@ -138,9 +274,11 @@ final class _Fixture {
       diagnostics: DiagnosticsService(),
     );
     final backend = InMemoryProjectionBackend();
+    if (gains != null) gains.delegate = backend;
+    if (focus != null) focus.delegate = audio;
     final projection = await DefaultProjectionService.start(
-      backend: backend,
-      audio: audio,
+      backend: gains ?? backend,
+      audio: focus ?? audio,
       diagnostics: DiagnosticsService(),
     );
     return _Fixture(settings, audioBackend, audio, backend, projection);
@@ -166,4 +304,70 @@ final class _MemoryStore implements SettingsStore {
   @override
   Future<void> write(SettingsDocument document) async =>
       this.document = document;
+}
+
+class _ControlledGains extends Fake implements ProjectionBackend {
+  late InMemoryProjectionBackend delegate;
+  Completer<void>? pending;
+  Object? failure;
+  final calls = <String>[];
+  @override
+  ProjectionSnapshot get current => delegate.current;
+  @override
+  Stream<ProjectionSnapshot> get changes => delegate.changes;
+  @override
+  Future<void> start() => delegate.start();
+  @override
+  Future<void> close() => delegate.close();
+  @override
+  Future<void> setAudioGain(
+    String sessionId,
+    String streamId,
+    double gain,
+  ) async {
+    calls.add('$sessionId/$streamId');
+    if (failure case final error?) throw error;
+    await pending?.future;
+  }
+}
+
+class _ControlledAudio extends Fake implements AudioService {
+  late AudioService delegate;
+  String? failRelease, failUnregister;
+  final unregistered = <String>[];
+  @override
+  AudioSnapshot get current => delegate.current;
+  @override
+  Stream<AudioSnapshot> get changes => delegate.changes;
+  @override
+  Future<void> registerSource(AudioSource source) =>
+      delegate.registerSource(source);
+  @override
+  Future<void> setSourceActive(String id, bool active) =>
+      delegate.setSourceActive(id, active);
+  @override
+  Future<AudioFocusHandle> requestFocus(
+    String id, {
+    double? duckingGain,
+  }) async => _ControlledHandle(
+    await delegate.requestFocus(id, duckingGain: duckingGain),
+    () => failRelease == id,
+  );
+  @override
+  Future<void> unregisterSource(String id) async {
+    unregistered.add(id);
+    if (failUnregister == id) throw StateError('unregister failed');
+    await delegate.unregisterSource(id);
+  }
+}
+
+class _ControlledHandle implements AudioFocusHandle {
+  _ControlledHandle(this.delegate, this.fail);
+  final AudioFocusHandle delegate;
+  final bool Function() fail;
+  @override
+  Future<void> release() async {
+    if (fail()) throw StateError('release failed');
+    await delegate.release();
+  }
 }

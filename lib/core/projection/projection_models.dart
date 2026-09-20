@@ -218,6 +218,20 @@ final class ProjectionSession {
   );
 }
 
+enum ProjectionAudioFailure {
+  focus(
+    'Projection audio focus is degraded. Audio synchronization will retry.',
+  ),
+  gain('Projection audio gain is degraded. Audio synchronization will retry.'),
+  timeout(
+    'Projection audio is not responding. Reconnect if it does not recover.',
+  );
+
+  const ProjectionAudioFailure(this.message);
+  final String message;
+  bool get retryable => true;
+}
+
 final class ProjectionSnapshot {
   ProjectionSnapshot({
     required this.backendAvailable,
@@ -225,6 +239,7 @@ final class ProjectionSnapshot {
     Iterable<ProjectionSession> sessions = const [],
     this.activeSessionId,
     this.failureMessage,
+    this.audioFailure,
   }) : devices = UnmodifiableListView(List.of(devices)),
        sessions = UnmodifiableListView(List.of(sessions));
 
@@ -233,13 +248,15 @@ final class ProjectionSnapshot {
       devices = const [],
       sessions = const [],
       activeSessionId = null,
-      failureMessage = null;
+      failureMessage = null,
+      audioFailure = null;
 
   final bool backendAvailable;
   final List<ProjectionDevice> devices;
   final List<ProjectionSession> sessions;
   final String? activeSessionId;
   final String? failureMessage;
+  final ProjectionAudioFailure? audioFailure;
 
   ProjectionSession? get activeSession {
     final id = activeSessionId;
@@ -254,6 +271,7 @@ final class ProjectionSnapshot {
   bool operator ==(Object other) =>
       other is ProjectionSnapshot &&
       backendAvailable == other.backendAvailable &&
+      audioFailure == other.audioFailure &&
       activeSessionId == other.activeSessionId &&
       failureMessage == other.failureMessage &&
       _listEquals(devices, other.devices) &&
@@ -262,6 +280,7 @@ final class ProjectionSnapshot {
   @override
   int get hashCode => Object.hash(
     backendAvailable,
+    audioFailure,
     activeSessionId,
     failureMessage,
     Object.hashAll(devices),

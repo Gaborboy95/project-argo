@@ -56,6 +56,22 @@ class ProjectionPage extends StatelessWidget {
                       geometryDiagnostics: geometryDiagnostics,
                     ),
             ),
+            if (snapshot.audioFailure case final failure?)
+              Positioned(
+                top: 12,
+                left: 24,
+                right: 24,
+                child: IgnorePointer(
+                  child: Material(
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(failure.message, textAlign: TextAlign.center),
+                    ),
+                  ),
+                ),
+              ),
             if (!usable)
               Center(
                 child: Padding(

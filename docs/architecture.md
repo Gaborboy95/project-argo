@@ -44,6 +44,18 @@ no visible PlatformViewLayer: Home shows centered connection status above the do
 The renderer diagnostic uses the same dashboard and native composition path; stop
 it from its launcher terminal.
 
+Projection connection/video snapshots publish independently of audio focus and
+native gain synchronization. Audio failure is a separate typed, retryable status
+shown over the retained projection surface and recorded in diagnostics. Focus
+reconciliation coalesces replacements; gain synchronization keeps one call in
+flight and one replaceable latest target. A two-second gain deadline reports
+unresponsive audio without spawning overlapping calls. Completed failures retry
+after one second; obsolete generations cannot send further gains or populate the
+current gain cache. Shutdown releases focus owners independently and closes the
+backend without waiting for a stalled gain call. The native backend remains
+responsible for cancelling its outstanding transport requests and rejecting stale
+session IDs; a Dart timeout cannot retract a command already sent to a phone.
+
 ## Dashboard geometry and controls
 
 [DashboardGeometry](../lib/app/shell/dashboard_geometry.dart) allocates logical

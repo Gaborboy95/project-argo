@@ -410,6 +410,26 @@ void main() {
           .whereType<PlatformViewLayer>()
           .single
           .viewId;
+      backend.emit(
+        _liveSnapshot(
+          stream: streamAt(1),
+          metadata: metadata,
+          audioFailure: ProjectionAudioFailure.gain,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(ProjectionAudioFailure.gain.message), findsOneWidget);
+      expect(
+        tester.layers.whereType<PlatformViewLayer>().single.viewId,
+        nativeId,
+      );
+      backend.emit(_liveSnapshot(stream: streamAt(1), metadata: metadata));
+      await tester.pumpAndSettle();
+      expect(find.text(ProjectionAudioFailure.gain.message), findsNothing);
+      expect(
+        tester.layers.whereType<PlatformViewLayer>().single.viewId,
+        nativeId,
+      );
       expect(tester.layers.whereType<TextureLayer>(), isEmpty);
       final fitted = ProjectionViewGeometry(
         width: 800,
@@ -957,9 +977,11 @@ ProjectionSnapshot _liveSnapshot({
   ProjectionSessionMetadata? metadata,
   ProjectionSessionState state = ProjectionSessionState.streaming,
   int hostReturnRevision = 0,
+  ProjectionAudioFailure? audioFailure,
 }) => ProjectionSnapshot(
   backendAvailable: true,
   activeSessionId: 'session',
+  audioFailure: audioFailure,
   sessions: [
     ProjectionSession(
       id: 'session',
