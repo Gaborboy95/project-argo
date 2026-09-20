@@ -15,8 +15,19 @@ import 'ihs_camera_surface.dart';
 class SurroundCameraPage extends StatelessWidget {
   const SurroundCameraPage({super.key, required this.service});
   final CameraService? service;
+  Future<void> _open(BuildContext context, Widget page) async {
+    final previous = service!.current.activeRole ?? CameraRole.rear;
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => page));
+    if (context.mounted &&
+        CameraActivityScope.activeOf(context) &&
+        CameraActivityScope.manualSelection(context)) {
+      await service!.start(previous);
+    }
+  }
+
   Future<void> _showOrbit(BuildContext context, BoxConstraints viewport) async {
-    CameraActivityScope.manualSelection(context);
+    if (!CameraActivityScope.manualSelection(context)) return;
     final control = service! as SurroundCameraControl;
     var azimuth = -2.3, elevation = .9, distance = 9.0;
     await control.selectView(
@@ -123,12 +134,11 @@ class SurroundCameraPage extends StatelessWidget {
                 ),
                 if (camera.external && service is SurroundCameraControl)
                   TextButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => CalibrationHome(
-                          service: service!,
-                          control: service! as SurroundCameraControl,
-                        ),
+                    onPressed: () => _open(
+                      context,
+                      CalibrationHome(
+                        service: service!,
+                        control: service! as SurroundCameraControl,
                       ),
                     ),
                     icon: const Icon(Icons.straighten),
@@ -257,7 +267,9 @@ class SurroundCameraPage extends StatelessWidget {
                         tooltip: 'Camera view',
                         icon: const Icon(Icons.view_in_ar, color: Colors.white),
                         onSelected: (value) async {
-                          CameraActivityScope.manualSelection(context);
+                          if (!CameraActivityScope.manualSelection(context)) {
+                            return;
+                          }
                           if (CameraRole.values.any(
                             (role) => role.name == value,
                           )) {
@@ -321,24 +333,22 @@ class SurroundCameraPage extends StatelessWidget {
                           Icons.video_library,
                           color: Colors.white,
                         ),
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => CameraRecordingsPage(
-                              service: service!,
-                              control: service! as SurroundCameraControl,
-                            ),
+                        onPressed: () => _open(
+                          context,
+                          CameraRecordingsPage(
+                            service: service!,
+                            control: service! as SurroundCameraControl,
                           ),
                         ),
                       ),
                     if (camera.external && service is SurroundCameraControl)
                       IconButton(
                         tooltip: 'Calibrate 360°',
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => CalibrationHome(
-                              service: service!,
-                              control: service! as SurroundCameraControl,
-                            ),
+                        onPressed: () => _open(
+                          context,
+                          CalibrationHome(
+                            service: service!,
+                            control: service! as SurroundCameraControl,
                           ),
                         ),
                         icon: const Icon(Icons.straighten, color: Colors.white),

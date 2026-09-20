@@ -356,6 +356,14 @@ void main() {
       await tester.tap(find.text('Reset point'));
       await tester.pump();
       expect((observation['manual_required'] as List).contains(0), true);
+      await tester.ensureVisible(find.text('Undo correction'));
+      await tester.tap(find.text('Undo correction'));
+      await tester.pump();
+      expect((observation['manual_required'] as List).contains(0), false);
+      await tester.ensureVisible(find.text('Reset camera points'));
+      await tester.tap(find.text('Reset camera points'));
+      await tester.pump();
+      expect((observation['manual_required'] as List).contains(0), true);
       await tester.pumpWidget(const SizedBox());
       await camera.close();
     },

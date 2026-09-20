@@ -6,12 +6,26 @@ import 'package:argo/core/diagnostics/diagnostics_service.dart';
 import 'package:argo/core/settings/app_setting_keys.dart';
 import 'package:argo/core/settings/settings_service.dart';
 import 'package:argo/features/setup/setup_assistant.dart';
+import 'package:argo/features/setup/touch_check.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../core/camera/camera_test.dart' show MemoryCameraSettings;
 
 void main() {
+  testWidgets('touch test reaches all four viewport corners', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: TouchCheck()));
+    for (var i = 0; i < 4; i++) {
+      final target = find.byKey(ValueKey('touch-corner-$i'));
+      final centre = tester.getCenter(target);
+      expect(centre.dx, i.isEven ? lessThan(100) : greaterThan(700));
+      expect(centre.dy, i < 2 ? lessThan(100) : greaterThan(500));
+      await tester.tap(target);
+      await tester.pump();
+    }
+    expect(find.text('4 of 4 confirmed'), findsOneWidget);
+  });
+
   testWidgets(
     'setup persists progress, resumes and permits absent optional hardware',
     (tester) async {

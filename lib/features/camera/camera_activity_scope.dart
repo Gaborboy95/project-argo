@@ -9,11 +9,13 @@ class CameraActivityScope extends InheritedWidget {
     required super.child,
   });
   final bool active;
-  final VoidCallback? onManualSelection;
-  static void manualSelection(BuildContext context) => context
-      .dependOnInheritedWidgetOfExactType<CameraActivityScope>()
-      ?.onManualSelection
-      ?.call();
+  final bool Function()? onManualSelection;
+  static bool manualSelection(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<CameraActivityScope>()
+          ?.onManualSelection
+          ?.call() ??
+      true;
   static bool activeOf(BuildContext context) =>
       context
           .dependOnInheritedWidgetOfExactType<CameraActivityScope>()

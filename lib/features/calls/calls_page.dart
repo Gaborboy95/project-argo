@@ -1,3 +1,5 @@
+import '../../core/diagnostics/service_failure.dart';
+import '../shared/status_panel.dart';
 import '../../core/audio/microphone_ownership.dart';
 import '../shared/argo_components.dart';
 
@@ -305,11 +307,47 @@ class MicrophoneCard extends StatelessWidget {
             onChanged: (v) => _command(context, 'microphoneMute', accept: v),
           ),
           Text(voice?['detail'] as String? ?? 'Microphone service unavailable'),
+          if (voice?['test_error'] case final String error)
+            ArgoStatusPanel(
+              status: ArgoStatus.failed,
+              summary: 'Microphone input test failed',
+              failure: ServiceFailure(
+                feature: 'audio',
+                operation: 'configure',
+                kind: FailureKind.unavailableDevice,
+                summary: 'Microphone input test failed',
+                cause: error,
+                retryable: true,
+              ),
+              onRetry: owner.isEmpty && !ownership.occupied
+                  ? () => _command(context, 'microphoneTest')
+                  : null,
+            ),
+          if (voice?['testing'] == true) ...[
+            LinearProgressIndicator(
+              value: (voice?['test_peak'] as num? ?? 0).toDouble().clamp(0, 1),
+            ),
+            TextButton(
+              onPressed: () => _command(context, 'microphoneTestStop'),
+              child: const Text('Stop input test'),
+            ),
+          ] else
+            TextButton(
+              onPressed:
+                  owner.isNotEmpty || ownership.occupied || selected == null
+                  ? null
+                  : () => _command(context, 'microphoneTest'),
+              child: const Text('Test input level for 3 seconds'),
+            ),
+          const Text(
+            'Only a level meter is shown; microphone audio is not saved.',
+          ),
           if (owner.isNotEmpty)
             Text(
               'Microphone owner: ${switch (owner) {
                 'androidAuto' => 'Android Auto',
                 'bluetoothCall' => 'Bluetooth call',
+                'setupTest' => 'Input level test',
                 _ => owner,
               }}',
             ),

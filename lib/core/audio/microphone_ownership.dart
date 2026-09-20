@@ -4,6 +4,7 @@ enum MicrophoneOwnership {
   androidAuto,
   bluetoothCall,
   localAssistant,
+  setupTest,
   unavailable,
   failed;
 
@@ -13,6 +14,7 @@ enum MicrophoneOwnership {
     'owned-by-android-auto' => androidAuto,
     'owned-by-bluetooth-call' => bluetoothCall,
     'owned-by-local-assistant' => localAssistant,
+    'owned-by-setup-test' => setupTest,
     'failed' => failed,
     _ => unavailable,
   };
@@ -22,6 +24,7 @@ enum MicrophoneOwnership {
     androidAuto => 'Microphone currently in use by Android Auto',
     bluetoothCall => 'Microphone currently in use by Bluetooth call',
     localAssistant => 'Microphone currently in use by local assistant',
+    setupTest => 'Microphone input test in progress',
     unavailable => 'Microphone ownership is unavailable',
     failed => 'Microphone ownership could not be checked',
   };

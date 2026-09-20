@@ -350,3 +350,23 @@ remain valid rollback targets. Camerad is an application-owned subprocess, not
 an additional systemd unit. Install the current `argoctl` with the existing
 idempotent command before staging camera bundles. The [camera guide](../tool/camera/README.md)
 contains build commands, V4L2 permissions, explicit assignment and manual checks.
+
+
+### In-application setup checks
+
+Settings → System → Setup assistant resumes the saved step. Display/touch offers
+four full-screen corner targets and the existing appearance scale; choosing a
+physical monitor remains a desktop-session action. Audio discovers PipeWire sinks
+and selects a stable node name, with technical identity in Details. The explicit
+two-second test tone uses 3% signal amplitude and preserves host volume/mute.
+Host-managed PipeWire startup also preserves those controls. The microphone test
+runs for three seconds in the projection daemon, displays only a bounded level,
+and shares the normal exclusive voice capture lease. It never saves microphone
+audio. End an active phone voice session before testing; there is no force release.
+
+The basic-camera step discovers devices, assigns Rear, previews and exposes mode,
+rotation/mirror/flip controls. Reverse has priority over setup, and late preview
+cleanup cannot stop the replacement automatic view. Optional surround setup can
+be deferred to the Camera destination. Every optional step can be skipped.
+A successful on-screen confirmation is the user's observation, not an automatic
+hardware or vehicle certification.

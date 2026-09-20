@@ -56,3 +56,14 @@ final class DisabledAudioBackend implements AudioBackend {
   @override
   Future<void> close() async {}
 }
+
+/// Optional setup controls. Discovery never changes the system output or volume.
+abstract interface class AudioOutputSetup {
+  Future<List<AudioOutputDevice>> discoverOutputs();
+  Future<void> testOutput();
+}
+
+final class AudioOutputDevice {
+  const AudioOutputDevice({required this.id, required this.name});
+  final String id, name;
+}

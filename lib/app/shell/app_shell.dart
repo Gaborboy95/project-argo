@@ -133,6 +133,7 @@ class _AppShellState extends State<AppShell> {
               settings: _settings,
               audio: widget.environment.services.get<AudioService>(),
               camera: _camera,
+              presentation: _automaticCamera,
               connectivity:
                   widget.environment.services.contains<ConnectivityService>()
                   ? widget.environment.services.get<ConnectivityService>()
@@ -615,12 +616,13 @@ class _AppShellState extends State<AppShell> {
     if (index >= 0) _selectModule(index);
   }
 
-  void _manualCameraSelection() {
-    if (_reverseOwnsPresentation) return;
+  bool _manualCameraSelection() {
+    if (_reverseOwnsPresentation) return false;
     _automaticCamera?.manualSelection();
     _automaticOwner = null;
     _automaticPreviousIndex = null;
     _automaticPreviousRole = null;
+    return true;
   }
 
   void _selectModule(

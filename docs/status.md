@@ -44,7 +44,7 @@ microphone-owner reporting, shared UI primitives, resumable setup and a read-onl
 doctor. Model polling no longer drops foreground actions; guided mat forms are
 template-specific. See [the exact implementation limits](standard-edition.md).
 
-Full integration/error migration, full setup hardware tests, calibration/model
+Full integration/error migration, physical setup hardware tests, calibration/model
 workflow completion and reproducible package acceptance remain open. No new
 physical acceptance follows from these changes. The Veloce concurrency/crash
 assumptions above remain in force.
@@ -164,3 +164,10 @@ Climate has automated manifest, provenance, command/feedback, timeout, debounce 
 dashboard coverage. Real vehicle actuation requires an external integration with
 climate metadata, normalized feedback and permitted writes; no hardware climate
 integration has been validated by this pass.
+
+The continuation also implements selected-camera model readiness, interruptible
+model download/benchmark, native benchmark/capture admission, calibration job
+generations, per-camera review/undo and protected collection cleanup. Setup now
+includes stable output selection, a quiet tone, native microphone level test,
+full-screen corner targets and reverse-aware camera preview. Synthetic/Flutter
+checks cover these paths; no new physical acceptance is implied.

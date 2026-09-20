@@ -55,11 +55,6 @@ class _CameraRecordingsPageState extends State<CameraRecordingsPage> {
     _destination.dispose();
     _export.dispose();
     _quota.dispose();
-    unawaited(
-      widget.service.start(
-        widget.service.current.activeRole ?? CameraRole.rear,
-      ),
-    );
     super.dispose();
   }
 

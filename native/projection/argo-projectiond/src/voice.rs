@@ -21,17 +21,22 @@ pub struct Snapshot {
     pub owner: String,
     pub ownership: String,
     pub detail: String,
+    pub testing: bool,
+    pub test_peak: f64,
+    pub test_error: Option<String>,
 }
 #[derive(Clone)]
 pub struct Voice {
     pub state: watch::Sender<Snapshot>,
     lease: Arc<Semaphore>,
+    test_cancel: watch::Sender<u64>,
 }
 impl Default for Voice {
     fn default() -> Self {
         Self {
             state: watch::channel(Snapshot::default()).0,
             lease: Arc::new(Semaphore::new(1)),
+            test_cancel: watch::channel(0).0,
         }
     }
 }
@@ -68,6 +73,18 @@ fn pulse_inputs(bytes: &[u8]) -> Result<Vec<Input>, String> {
         .take(32)
         .collect())
 }
+fn pcm_peak(bytes: &[u8]) -> f64 {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| {
+            (i16::from_le_bytes([sample[0], sample[1]]) as i32).unsigned_abs() as f64 / 32768.0
+        })
+        .fold(0.0, f64::max)
+        .clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 #[test]
 fn pulse_fallback_excludes_speaker_monitors_and_bluetooth_inputs() {
@@ -148,6 +165,72 @@ impl Voice {
         self.state.send_modify(|s| s.selected = name.into());
         Ok(())
     }
+    pub fn stop_test(&self) {
+        self.test_cancel
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+    pub async fn stop_test_and_wait(&self) -> Result<(), String> {
+        self.stop_test();
+        let mut state = self.state.subscribe();
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while state.borrow_and_update().testing {
+                state
+                    .changed()
+                    .await
+                    .map_err(|_| "Microphone test state closed")?;
+            }
+            if state.borrow().owner == "cleanup uncertain" {
+                return Err("Microphone capture cleanup is unconfirmed");
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| "Microphone test cleanup timed out".to_string())?
+        .map_err(str::to_string)
+    }
+    pub async fn start_test(&self) -> Result<(), String> {
+        let mut cancel = self.test_cancel.subscribe();
+        let mut capture = Capture::open_for(self, "setupTest").await?;
+        let voice = self.clone();
+        voice.state.send_modify(|s| {
+            s.test_error = None;
+            s.testing = true;
+            s.test_peak = 0.0;
+            s.detail = "Three-second input level test; audio is not stored".into();
+        });
+        tokio::spawn(async move {
+            let deadline = tokio::time::sleep(Duration::from_secs(3));
+            tokio::pin!(deadline);
+            let mut last_update = tokio::time::Instant::now();
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    _ = cancel.changed() => break,
+                    frame = capture.frame() => match frame {
+                        Ok(bytes) => {
+                            if last_update.elapsed() >= Duration::from_millis(100) {
+                                let peak=pcm_peak(&bytes);
+                                voice.state.send_modify(|s| s.test_peak=peak);
+                                last_update=tokio::time::Instant::now();
+                            }
+                        }
+                        Err(error) => { voice.state.send_modify(|s| s.test_error=Some(error)); break; }
+                    }
+                }
+            }
+            if let Err(error) = capture.close().await {
+                voice.state.send_modify(|s| {
+                    s.test_error = Some(format!("Microphone test cleanup failed: {error}"))
+                });
+            }
+            voice.state.send_modify(|s| {
+                s.testing = false;
+                s.test_peak = 0.0;
+            });
+        });
+        Ok(())
+    }
+
     pub async fn claim(&self, owner: &str) -> Result<Lease, String> {
         let permit = self
             .lease
@@ -157,6 +240,7 @@ impl Voice {
         let process_lease = argo_audio_ownership::MicrophoneLease::acquire_for(match owner {
             "androidAuto" => argo_audio_ownership::Owner::AndroidAuto,
             "bluetoothCall" => argo_audio_ownership::Owner::BluetoothCall,
+            "setupTest" => argo_audio_ownership::Owner::SetupTest,
             _ => argo_audio_ownership::Owner::LocalAssistant,
         })
         .map_err(|e| e.to_string())?;
@@ -221,7 +305,10 @@ impl Drop for Capture {
 }
 impl Capture {
     pub async fn open(voice: &Voice) -> Result<Self, String> {
-        let lease = voice.claim("androidAuto").await?;
+        Self::open_for(voice, "androidAuto").await
+    }
+    async fn open_for(voice: &Voice, owner: &str) -> Result<Self, String> {
+        let lease = voice.claim(owner).await?;
         let mut child=process("pw-cat").args(["--record","--raw","--rate","16000","--channels","1","--channel-map","MONO","--format","s16","--latency","20ms","--target",&lease.source,"--properties",
             &json!({"node.name":"argo.aa.microphone","media.role":"Communication","node.dont-reconnect":true,"stream.capture.sink":false}).to_string(),"-"])
             .stdout(Stdio::piped()).spawn().map_err(|e|format!("Cannot open PipeWire microphone: {e}"))?;
@@ -333,6 +420,14 @@ impl<R: AsyncRead + Unpin> PcmReader<R> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn setup_meter_exports_only_bounded_levels() {
+        assert_eq!(super::pcm_peak(&[]), 0.0);
+        assert_eq!(super::pcm_peak(&[0, 0, 0]), 0.0);
+        assert_eq!(super::pcm_peak(&i16::MIN.to_le_bytes()), 1.0);
+        assert_eq!(super::pcm_peak(&16384i16.to_le_bytes()), 0.5);
+    }
+
     use super::*;
     use futures_util::FutureExt;
     use tokio::io::AsyncWriteExt;

@@ -147,6 +147,15 @@ final class DefaultAudioService implements AudioService {
   Future<void> _restoreBackend() async {
     if (!backend.current.available) return;
     final capabilities = backend.current.capabilities;
+    // Host-managed setup must not overwrite the desktop volume/mute on launch
+    // or transfer an old output's volume to a newly selected output.
+    if (backend is AudioOutputSetup) {
+      if (_current.selectedOutput != null) {
+        await backend.selectOutput(_current.selectedOutput);
+      }
+      _onBackendChanged(backend.current);
+      return;
+    }
     if (capabilities.masterVolume) {
       await backend.setMasterVolume(_current.masterVolume);
     }
@@ -521,4 +530,14 @@ final class _DefaultAudioFocusHandle implements AudioFocusHandle {
 
   @override
   Future<void> release() => _future ??= _release();
+}
+
+extension AudioSetupAccess on AudioService {
+  AudioOutputSetup? get outputSetup {
+    final service = this;
+    if (service is DefaultAudioService && service.backend is AudioOutputSetup) {
+      return service.backend as AudioOutputSetup;
+    }
+    return null;
+  }
 }

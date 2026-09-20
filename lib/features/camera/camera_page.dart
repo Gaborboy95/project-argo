@@ -61,7 +61,8 @@ class CameraPage extends StatelessWidget {
                               device.stableId,
                             );
                             if (context.mounted &&
-                                CameraActivityScope.activeOf(context)) {
+                                CameraActivityScope.activeOf(context) &&
+                                CameraActivityScope.manualSelection(context)) {
                               await service!.start(CameraRole.rear);
                             }
                           },
@@ -135,14 +136,17 @@ class CameraPage extends StatelessWidget {
                         tooltip: 'Capture and orientation',
                         icon: const Icon(Icons.tune, color: Colors.white),
                         onPressed: () async {
-                          CameraActivityScope.manualSelection(context);
+                          if (!CameraActivityScope.manualSelection(context)) {
+                            return;
+                          }
                           await showBasicCameraSettings(
                             context,
                             service!,
                             control,
                           );
                           if (context.mounted &&
-                              CameraActivityScope.activeOf(context)) {
+                              CameraActivityScope.activeOf(context) &&
+                              CameraActivityScope.manualSelection(context)) {
                             await service!.start(CameraRole.rear);
                           }
                         },

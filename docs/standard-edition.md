@@ -67,15 +67,21 @@ the user to end the active session; it never force-releases another owner.
 Shared page, section, device-choice, status, setup-step and confirmation widgets
 use common spacing, touch sizes and Material semantic colors. Theme seed, scale
 and light/dark choices remain. Camera selection, microphone/CarPlay/model status,
-mat forms and setup use these components; migration of every major screen is
-not yet complete.
+mat forms, calibration review/storage and setup use these components. Some older
+optional diagnostic views still use their original interaction layout.
 
 Model commands are not dropped behind polling. Foreground commands serialize,
 late poll results are discarded, and cancel bypasses the command queue. Removal
 requires confirmation and selected models cannot be removed from this UI.
 Benchmarking requires explicit parked acknowledgement and is disabled while the
 camera provider has an active role. This is a conservative UI gate, not verified
-stationary state or complete engine-side benchmark cancellation/readiness work.
+stationary state. The engine rejects benchmarks with capture/recording subscriptions
+or perception active. A new capture request cancels and waits for a benchmark child
+to exit before granting its lease. Model readiness uses an explicitly selected
+camera's lens parameters, actual mode, crop/orientation and runtime provider;
+there is no first-rig-camera fallback. Download cancellation interrupts a blocked
+read and removes temporary data; benchmark cancellation terminates/reaps its child
+and prevents late result publication. These paths have synthetic regressions.
 
 Front/rear mat templates show two required mat forms. Guided layout uses measured
 bumper/body-to-inner-corner-row distance and centre offset; coordinates and yaw
@@ -85,15 +91,27 @@ import/export use an application-owned home-folder browser, bounded to 2 MiB JSO
 files and 2048 directory entries. Links are excluded, export never overwrites,
 and import never activates. Engine schema/hash validation remains authoritative.
 The same-user filesystem and engine inbox remain trusted; this is not a sandbox
-against a concurrent filesystem attacker. Complete manual review tools, protected
-collection storage explanations and job-generation work remain open.
+against a concurrent filesystem attacker. Per-camera states preserve independent
+success/failure. Marker review includes point reset, camera reset, undo, magnifier,
+previous/next and re-detection. View-owned jobs cancel on close and reject late
+results; old draft generations cannot overwrite a replacement workflow.
+Storage shows used/limit/protected/reclaimable MiB and retaining collections.
+Confirmed removal refuses active or referenced collections; shared images stay
+protected. Cleanup coordinates with session writes through a shared/exclusive lock.
 
 The first-run assistant persists its current step, resumes and can be reopened
 under Settings → System. Optional steps can be skipped. It reuses current audio,
-microphone, connectivity and camera assignment controls. Dedicated output
-inventory/test tone, microphone level test, physical corner/display validation
-and an ownership-safe in-wizard camera preview remain unfinished. Camera preview
-continues through the Camera destination.
+microphone, connectivity and camera controls. PipeWire output discovery uses stable
+node identities, friendly names and explicit selection. A two-second tone at 3%
+amplitude respects the existing output volume/mute; setup and launch never copy
+persisted volume onto a host-managed output. The native three-second microphone
+meter shares the exclusive capture lease and exports levels only, with no saved
+PCM. Its stop action remains available while testing. The full-screen touch check
+places targets at all four viewport corners; desktop settings retain output
+management. Basic camera setup previews the assigned device and offers capture,
+rotation and mirror/flip controls. Leaving the step releases its preview unless
+automatic presentation has taken ownership. These are implemented and automated-
+tested controls, not physical display, microphone, speaker or camera acceptance.
 
 `tool/deployment/argoctl doctor [--json] [--release PATH]` runs read-only manifest,
 loader, session, GStreamer, service/process and camera-access checks without

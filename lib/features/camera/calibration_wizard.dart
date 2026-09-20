@@ -181,7 +181,6 @@ class _CalibrationWizardState extends State<CalibrationWizard> {
     }
     // Jobs are restartable in the engine; closing the wizard cancels its current solve.
     if (_busy) unawaited(_job.cancel());
-    unawaited(widget.service.start(_role));
     super.dispose();
   }
 

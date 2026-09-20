@@ -1,4 +1,5 @@
 import '../shared/argo_components.dart';
+import 'audio_output_setup.dart';
 
 import 'package:flutter/material.dart';
 
@@ -24,10 +25,10 @@ class AudioSettingsCard extends StatelessWidget {
               const ArgoSection(title: 'Sound', children: []),
               const SizedBox(height: 8),
               Text(
-                s.backendAvailable
-                    ? 'Output · ${s.selectedOutput == null || s.selectedOutput == '@DEFAULT_AUDIO_SINK@' ? 'System default' : s.selectedOutput}'
-                    : 'Host audio is unavailable. Check the desktop audio service, then retry.',
+                s.backendAvailable ? 'System audio output' : 'Host audio is unavailable. Check the desktop audio service, then retry.',
               ),
+              if (audio.outputSetup case final setup?)
+                AudioOutputSetupCard(audio: audio, setup: setup),
               const SizedBox(height: 20),
               AudioSettingSlider(
                 label: 'Volume',

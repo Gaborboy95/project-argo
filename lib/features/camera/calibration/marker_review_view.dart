@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/camera/calibration_manager.dart';
@@ -19,6 +21,8 @@ class MarkerReviewView extends StatefulWidget {
 }
 
 class _MarkerReviewState extends State<MarkerReviewView> {
+  final _undo = <Map<String, dynamic>>[];
+  late final Map<String, dynamic> _baseline;
   int _selected = 0;
   bool _zoom = false, _showing = false;
   List<num> _origin = [0, 0];
@@ -35,6 +39,8 @@ class _MarkerReviewState extends State<MarkerReviewView> {
   @override
   void initState() {
     super.initState();
+    _baseline =
+        jsonDecode(jsonEncode(widget.observation)) as Map<String, dynamic>;
     widget.observation['corners'] = List<dynamic>.from(
       widget.observation['corners'] as List,
     );
@@ -73,6 +79,23 @@ class _MarkerReviewState extends State<MarkerReviewView> {
     if (mounted) setState(() => _showing = false);
   }
 
+  void _remember() {
+    _undo.add(
+      jsonDecode(jsonEncode(widget.observation)) as Map<String, dynamic>,
+    );
+    if (_undo.length > 32) _undo.removeAt(0);
+  }
+
+  void _restore(Map<String, dynamic> snapshot) {
+    setState(() {
+      widget.observation
+        ..clear()
+        ..addAll(jsonDecode(jsonEncode(snapshot)) as Map<String, dynamic>);
+    });
+    widget.changed();
+    if (_zoom) _show();
+  }
+
   void _move(Offset local, Size size) {
     setState(
       () => points[_selected] = [
@@ -107,7 +130,10 @@ class _MarkerReviewState extends State<MarkerReviewView> {
               behavior: HitTestBehavior.opaque,
               onPanStart: _showing
                   ? null
-                  : (d) => _move(d.localPosition, bounds.biggest),
+                  : (d) {
+                      _remember();
+                      _move(d.localPosition, bounds.biggest);
+                    },
               onPanUpdate: _showing
                   ? null
                   : (d) => _move(d.localPosition, bounds.biggest),
@@ -115,6 +141,7 @@ class _MarkerReviewState extends State<MarkerReviewView> {
               onTapUp: (d) {
                 if (_showing) return;
                 if (_zoom) {
+                  _remember();
                   _move(d.localPosition, bounds.biggest);
                   widget.changed();
                 } else {
@@ -205,68 +232,98 @@ class _MarkerReviewState extends State<MarkerReviewView> {
             child: Text(_zoom ? 'Full image' : 'Magnify'),
           ),
           TextButton(
-            onPressed: () {
-              setState(
-                () => points[_selected] = List<dynamic>.from(
-                  widget.observation['original_corners'][_selected] as List,
-                ),
-              );
-              if (widget.observation['manual_seed'] == true) {
-                final pending = widget.observation['manual_required'] as List;
-                if (!pending.contains(_selected)) pending.add(_selected);
-              }
-              widget.changed();
-            },
+            onPressed: _showing
+                ? null
+                : () {
+                    _remember();
+                    setState(
+                      () => points[_selected] = List<dynamic>.from(
+                        widget.observation['original_corners'][_selected]
+                            as List,
+                      ),
+                    );
+                    if (widget.observation['manual_seed'] == true) {
+                      final pending =
+                          widget.observation['manual_required'] as List;
+                      if (!pending.contains(_selected)) pending.add(_selected);
+                    }
+                    widget.changed();
+                  },
             child: const Text('Reset point'),
           ),
           TextButton(
-            onPressed: () {
-              setState(() {
-                if (disabled.contains(_selected)) {
-                  disabled.remove(_selected);
-                } else if (points.length - disabled.length > 6) {
-                  disabled.add(_selected);
-                }
-              });
-              widget.changed();
-            },
+            onPressed: _showing
+                ? null
+                : () {
+                    _remember();
+                    setState(() {
+                      if (disabled.contains(_selected)) {
+                        disabled.remove(_selected);
+                      } else if (points.length - disabled.length > 6) {
+                        disabled.add(_selected);
+                      }
+                    });
+                    widget.changed();
+                  },
             child: const Text('Disable / enable point'),
           ),
           TextButton(
-            onPressed: () {
-              setState(() {
-                final count = points.length;
-                widget.observation['corners'] = points.reversed.toList();
-                widget.observation['original_corners'] =
-                    (widget.observation['original_corners'] as List).reversed
-                        .toList();
-                widget.observation['disabled'] = disabled
-                    .map((i) => count - 1 - (i as int))
-                    .toList();
-                if (widget.observation['manual_required'] is List) {
-                  widget.observation['manual_required'] =
-                      (widget.observation['manual_required'] as List)
+            onPressed: _showing
+                ? null
+                : () {
+                    _remember();
+                    setState(() {
+                      final count = points.length;
+                      widget.observation['corners'] = points.reversed.toList();
+                      widget.observation['original_corners'] =
+                          (widget.observation['original_corners'] as List)
+                              .reversed
+                              .toList();
+                      widget.observation['disabled'] = disabled
                           .map((i) => count - 1 - (i as int))
                           .toList();
-                }
-                widget.observation['ordering_confirmed'] = false;
-              });
-              widget.changed();
-            },
+                      if (widget.observation['manual_required'] is List) {
+                        widget.observation['manual_required'] =
+                            (widget.observation['manual_required'] as List)
+                                .map((i) => count - 1 - (i as int))
+                                .toList();
+                      }
+                      widget.observation['ordering_confirmed'] = false;
+                    });
+                    widget.changed();
+                  },
             child: const Text('Reverse corner order'),
           ),
           TextButton(
-            onPressed: widget.redetect,
+            onPressed: _showing || _undo.isEmpty
+                ? null
+                : () => _restore(_undo.removeLast()),
+            child: const Text('Undo correction'),
+          ),
+          TextButton(
+            onPressed: _showing
+                ? null
+                : () {
+                    _remember();
+                    _restore(_baseline);
+                  },
+            child: const Text('Reset camera points'),
+          ),
+          TextButton(
+            onPressed: _showing ? null : widget.redetect,
             child: const Text('Re-detect camera'),
           ),
         ],
       ),
       CheckboxListTile(
         value: widget.observation['ordering_confirmed'] == true,
-        onChanged: (v) {
-          setState(() => widget.observation['ordering_confirmed'] = v);
-          widget.changed();
-        },
+        onChanged: _showing
+            ? null
+            : (v) {
+                _remember();
+                setState(() => widget.observation['ordering_confirmed'] = v);
+                widget.changed();
+              },
         title: const Text(
           'Point 1 and row direction match my measured mat placement',
         ),

@@ -12,13 +12,13 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Owner { CarPlay, AndroidAuto, BluetoothCall, LocalAssistant, Unknown }
+pub enum Owner { CarPlay, AndroidAuto, BluetoothCall, LocalAssistant, SetupTest, Unknown }
 impl Owner {
     pub fn code(self) -> &'static str {
-        match self { Self::CarPlay => "owned-by-carplay", Self::AndroidAuto => "owned-by-android-auto", Self::BluetoothCall => "owned-by-bluetooth-call", Self::LocalAssistant => "owned-by-local-assistant", Self::Unknown => "unavailable" }
+        match self { Self::CarPlay => "owned-by-carplay", Self::AndroidAuto => "owned-by-android-auto", Self::BluetoothCall => "owned-by-bluetooth-call", Self::LocalAssistant => "owned-by-local-assistant", Self::SetupTest => "owned-by-setup-test", Self::Unknown => "unavailable" }
     }
     fn parse(bytes: &[u8]) -> Self {
-        [Self::CarPlay, Self::AndroidAuto, Self::BluetoothCall, Self::LocalAssistant].into_iter().find(|v| v.code().as_bytes() == bytes).unwrap_or(Self::Unknown)
+        [Self::CarPlay, Self::AndroidAuto, Self::BluetoothCall, Self::LocalAssistant, Self::SetupTest].into_iter().find(|v| v.code().as_bytes() == bytes).unwrap_or(Self::Unknown)
     }
 }
 /// Read-only advisory state. Actual acquisition always uses the exclusion lock.

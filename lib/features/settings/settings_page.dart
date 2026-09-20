@@ -1,3 +1,4 @@
+import '../../core/camera/camera_presentation_policy.dart';
 import '../../core/camera/camera_service.dart';
 import '../setup/setup_assistant.dart';
 import '../shared/argo_components.dart';
@@ -33,10 +34,12 @@ class SettingsPage extends StatefulWidget {
     this.exit,
     this.modelsPage,
     this.camera,
+    this.cameraPresentation,
     super.key,
   });
   final Widget? modelsPage;
   final CameraService? camera;
+  final CameraPresentationService? cameraPresentation;
   final ApplicationExitService? exit;
   final AudioService audio;
   final ProjectionSettingsService? projectionSettings;
@@ -129,6 +132,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     settings: widget.settings!,
                     audio: widget.audio,
                     camera: widget.camera,
+                    presentation: widget.cameraPresentation,
                     connectivity: widget.connectivity,
                   ),
                 ),

@@ -5,7 +5,9 @@ import '../../core/camera/camera_service.dart';
 import '../../core/connectivity/connectivity_service.dart';
 import '../../core/settings/app_setting_keys.dart';
 import '../../core/settings/settings_service.dart';
-import '../camera/camera_page.dart';
+import '../../core/camera/camera_presentation_policy.dart';
+import 'setup_camera.dart';
+import 'touch_check.dart';
 import '../calls/calls_page.dart';
 import '../settings/audio_settings_card.dart';
 import '../settings/appearance_settings_card.dart';
@@ -18,11 +20,13 @@ class SetupAssistant extends StatefulWidget {
     required this.settings,
     required this.audio,
     this.camera,
+    this.presentation,
     this.connectivity,
   });
   final SettingsService settings;
   final AudioService audio;
   final CameraService? camera;
+  final CameraPresentationService? presentation;
   final ConnectivityService? connectivity;
   @override
   State<SetupAssistant> createState() => _SetupAssistantState();
@@ -43,7 +47,7 @@ class _SetupAssistantState extends State<SetupAssistant> {
   late int _step;
   bool _pending = false;
   String? _error;
-  final _touches = <int>{};
+  bool _touchConfirmed = false;
   @override
   void initState() {
     super.initState();
@@ -98,27 +102,24 @@ class _SetupAssistantState extends State<SetupAssistant> {
             ),
             1 => Column(
               children: [
-                const Text(
-                  'Touch each target to check reach and response. Display output selection remains with your desktop session.',
+                Text(
+                  'Current display ${View.of(context).display.id + 1} · ${MediaQuery.sizeOf(context).width.round()} × ${MediaQuery.sizeOf(context).height.round()} logical pixels',
                 ),
-                Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  children: [
-                    for (var i = 0; i < 4; i++)
-                      SizedBox(
-                        width: 100,
-                        height: 72,
-                        child: OutlinedButton(
-                          onPressed: () => setState(() => _touches.add(i)),
-                          child: Text(
-                            _touches.contains(i)
-                                ? 'Confirmed'
-                                : 'Target ${i + 1}',
-                          ),
-                        ),
-                      ),
-                  ],
+                const Text(
+                  'Use the desktop display settings to move Argo to another output. Confirm that controls are comfortable at the chosen scale.',
+                ),
+                OutlinedButton(
+                  onPressed: () async {
+                    final confirmed = await Navigator.of(context).push<bool>(
+                      MaterialPageRoute(builder: (_) => const TouchCheck()),
+                    );
+                    if (mounted && confirmed == true) {
+                      setState(() => _touchConfirmed = true);
+                    }
+                  },
+                  child: Text(
+                    _touchConfirmed ? 'Touch confirmed' : 'Test screen corners',
+                  ),
                 ),
                 AppearanceSettingsCard(settings: widget.settings),
               ],
@@ -147,12 +148,9 @@ class _SetupAssistantState extends State<SetupAssistant> {
                   ? const Text(
                       'No camera provider is installed. You can continue without a camera.',
                     )
-                  : SizedBox(
-                      height: 420,
-                      child: CameraActivityScope(
-                        active: false,
-                        child: CameraPage(service: widget.camera),
-                      ),
+                  : SetupCamera(
+                      camera: widget.camera!,
+                      presentation: widget.presentation,
                     ),
             7 => const Text(
               'Vehicle integration is optional. Automatic reverse needs fresh normalized vehicle signals. Without them, manual camera preview remains available. Configure a supported integration in Vehicle settings; no vehicle signals are invented by setup.',

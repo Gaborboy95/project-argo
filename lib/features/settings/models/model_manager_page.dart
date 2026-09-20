@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/camera/parking_model_service.dart';
+import '../../../core/camera/camera_service.dart';
 import '../../shared/argo_components.dart';
 import '../../shared/status_panel.dart';
 import '../../../core/diagnostics/service_failure.dart';
@@ -13,8 +14,10 @@ class ModelManagerPage extends StatefulWidget {
     required this.service,
     this.camera,
     this.canBenchmark,
+    this.cameras,
   });
   final ParkingModelService service;
+  final CameraService? cameras;
   final bool Function()? canBenchmark;
   final Map<String, dynamic>? camera;
   @override
@@ -28,7 +31,7 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
   bool get _pending => _foreground > 0;
   Future<void> _commands = Future.value();
   Map<String, dynamic> _state = {};
-  String? _error;
+  String? _error, _cameraId;
   @override
   void initState() {
     super.initState();
@@ -63,7 +66,9 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
         final value = await widget.service.request(
           action,
           id: id,
-          camera: widget.camera,
+          camera: _cameraId == null
+              ? widget.camera
+              : await widget.service.camera(_cameraId),
         );
         if (mounted && revision == _revision) {
           setState(() {
@@ -94,6 +99,30 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
     }
   }
 
+  Future<void> _selectCamera(String? id) async {
+    if (id == null) return;
+    setState(() {
+      _foreground++;
+      _revision++;
+      _cameraId = id;
+    });
+    try {
+      final camera = await widget.service.camera(id);
+      if (mounted && _cameraId == id) {
+        setState(() {
+          _error = camera == null
+              ? 'Calibrate the selected camera before using inference'
+              : null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _foreground--);
+    }
+    if (mounted) await _request('status');
+  }
+
   @override
   Widget build(BuildContext context) {
     final progress = _state['progress'] as Map? ?? {};
@@ -104,6 +133,22 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
         const Text(
           'Depth estimates do not establish clearance. Unknown coverage stays unknown. Benchmarks measure speed, not accuracy.',
         ),
+        if (widget.cameras case final cameras?)
+          DropdownButton<String>(
+            hint: const Text('Select inference camera'),
+            value: cameras.current.devices.any((d) => d.stableId == _cameraId)
+                ? _cameraId
+                : null,
+            isExpanded: true,
+            items: [
+              for (final device in cameras.current.devices)
+                DropdownMenuItem(
+                  value: device.stableId,
+                  child: Text(device.displayName),
+                ),
+            ],
+            onChanged: _pending ? null : _selectCamera,
+          ),
         if (_pending) const LinearProgressIndicator(),
         if (_error != null)
           ArgoStatusPanel(
@@ -120,8 +165,27 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
             onRetry: () => _request('status'),
           ),
         if (progress['state'] != null)
-          Text(
-            '${progress['state']} • ${progress['received_bytes'] ?? 0} / ${progress['total_bytes'] ?? 0} bytes\n${progress['error'] ?? ''}',
+          Text(switch (progress['state']) {
+            'downloading' =>
+              'Downloading · ${((progress['received_bytes'] as num? ?? 0) / 1048576).toStringAsFixed(1)} / ${((progress['total_bytes'] as num? ?? 0) / 1048576).toStringAsFixed(1)} MiB',
+            'benchmarking' => 'Measuring model latency…',
+            'cancelled' => 'Operation cancelled',
+            'installed' => 'Download verified and installed',
+            'failed' => 'Model operation failed',
+            _ => 'Model operation finished',
+          }),
+        if (progress['error'] case final String error)
+          ArgoStatusPanel(
+            status: ArgoStatus.failed,
+            summary: 'Could not complete the model operation',
+            failure: ServiceFailure(
+              feature: 'models',
+              operation: 'command',
+              kind: FailureKind.rejected,
+              summary: 'Could not complete the model operation',
+              cause: error,
+              retryable: true,
+            ),
           ),
         for (final model in (_state['models'] as List? ?? []).cast<Map>())
           Card(
@@ -135,10 +199,15 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   Text(
-                    '${model['installed'] == true ? 'Installed' : 'Not installed'} • ${model['version']} • ${((model['size_bytes'] as num) / 1000000).toStringAsFixed(1)} MB • ${model['license']}',
+                    '${ParkingModelState.fromRecord(model).label} • ${model['version']} • ${((model['size_bytes'] as num) / 1000000).toStringAsFixed(1)} MB • ${model['license']}',
                   ),
-                  Text(
-                    '${model['capabilities']} • ${model['output_units']}\nInput: ${model['input_lens_views']} • ${model['input']['shape']}\n${model['compatibility']} • ${model['provider']}',
+                  ExpansionTile(
+                    title: const Text('Model details'),
+                    children: [
+                      Text(
+                        '${model['capabilities']} • ${model['output_units']}\nInput: ${model['input_lens_views']} • ${model['input']['shape']}\n${model['compatibility']} • ${model['provider']}',
+                      ),
+                    ],
                   ),
                   Text('${model['parking_accuracy']}'),
                   for (final benchmark
@@ -159,7 +228,8 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
                                 ),
                           child: const Text('Download'),
                         ),
-                      if (progress['state'] == 'downloading')
+                      if (progress['state'] == 'downloading' ||
+                          progress['state'] == 'benchmarking')
                         TextButton(
                           onPressed: () => _request('cancel'),
                           child: const Text('Cancel'),
@@ -172,7 +242,11 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
                                   'select',
                                   id: model['id'] as String,
                                 ),
-                          child: const Text('Select'),
+                          child: Text(
+                            model['verified'] == false
+                                ? 'Verify and select'
+                                : 'Select',
+                          ),
                         ),
                         TextButton(
                           onPressed: _pending || model['selected'] == true

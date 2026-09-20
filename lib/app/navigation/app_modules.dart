@@ -1,3 +1,4 @@
+import '../../core/camera/camera_presentation_policy.dart';
 import '../../core/projection/carplay_settings_service.dart';
 import '../../core/projection/carplay_link_diagnostics.dart';
 import '../camera_integration.dart';
@@ -85,6 +86,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          cameraPresentation: services.contains<CameraPresentationService>()
+              ? services.get<CameraPresentationService>()
+              : null,
           camera: services.contains<CameraService>()
               ? services.get<CameraService>()
               : null,

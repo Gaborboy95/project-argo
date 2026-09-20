@@ -15,7 +15,9 @@ import 'lens_profile_selector.dart';
 import 'mat_setup_step.dart';
 import 'marker_review_view.dart';
 import 'exchange_browser.dart';
-import '../../shared/argo_components.dart';
+import 'capture_storage_panel.dart';
+import '../../shared/status_panel.dart';
+import '../../../core/diagnostics/service_failure.dart';
 
 class CalibrationHome extends StatefulWidget {
   const CalibrationHome({
@@ -33,6 +35,8 @@ class _HomeState extends State<CalibrationHome> {
   late final _manager = CalibrationManager(widget.service, widget.control);
   Map<String, dynamic>? _draft;
   String _message = '', _review = '', _revision = '';
+  ServiceFailure? _failure;
+  Future<void> Function()? _retry;
   bool _busy = false, _continue = false;
   int _step = 0;
   Timer? _saveTimer;
@@ -55,18 +59,41 @@ class _HomeState extends State<CalibrationHome> {
   @override
   void dispose() {
     _saveTimer?.cancel();
-    if (_draft != null) _persist();
-    unawaited(widget.service.start(CameraRole.rear));
+    unawaited(_manager.close());
+    if (_draft != null) {
+      final snapshot = jsonDecode(jsonEncode(_draft)) as Map<String, dynamic>;
+      final saver = CalibrationManager(widget.service, widget.control);
+      unawaited(
+        saver
+            .call('draft_save', {'draft': snapshot})
+            .then<void>((_) {})
+            .catchError((Object error) {
+              debugPrint('Could not flush calibration draft on exit: $error');
+            })
+            .whenComplete(saver.close),
+      );
+    }
     super.dispose();
   }
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _failure = null;
+    });
     try {
       await action();
     } catch (e) {
-      _message = '$e';
+      _failure = ServiceFailure(
+        feature: 'camera',
+        operation: 'calibration',
+        kind: FailureKind.rejected,
+        summary: 'Could not complete calibration',
+        cause: '$e',
+        retryable: true,
+      );
+      _retry = action;
     }
     if (mounted) setState(() => _busy = false);
   }
@@ -143,6 +170,9 @@ class _HomeState extends State<CalibrationHome> {
   }) async {
     final role = cameras[id]['role'] as String;
     final shot = captured ?? await _manager.capture(id);
+    (_draft!.putIfAbsent('statuses', () => <String, dynamic>{}) as Map)[id] =
+        'Captured';
+    if (mounted) setState(() {});
     final frame = shot['frame'] as Map;
     final signal = frame['signal'];
     if (signal == 'no_signal' || signal == 'missing' || signal == 'invalid') {
@@ -298,6 +328,29 @@ class _HomeState extends State<CalibrationHome> {
     _message = 'Imported candidate. Inspect and preview before activation; active calibration unchanged.';
   }
 
+  Widget _cameraStatus(String id) {
+    final raw = (_draft!['statuses'] as Map?)?[id]?.toString();
+    final state = CalibrationCameraState.resolve(raw, observations[id] as Map?);
+    final role = cameras[id]['role'];
+    if (state == CalibrationCameraState.failed) {
+      final failure = ServiceFailure(
+        feature: 'camera',
+        operation: 'calibration',
+        kind: FailureKind.rejected,
+        summary: 'Could not calibrate the $role camera',
+        cause: raw ?? 'No solver detail returned',
+        retryable: true,
+      );
+      return ArgoStatusPanel(
+        status: ArgoStatus.failed,
+        summary: failure.summary,
+        failure: failure,
+        onRetry: _busy ? null : () => _run(() => _detect(id)),
+      );
+    }
+    return Text('$role • ${state.label}');
+  }
+
   Widget _button(String label, Future<void> Function() action) => TextButton(
     onPressed: _busy ? null : () => _run(action),
     child: Text(label),
@@ -379,35 +432,37 @@ class _HomeState extends State<CalibrationHome> {
       }),
       for (final e in cameras.entries)
         ListTile(
-          title: Text(
-            '${e.value['role']} • ${(_draft!['statuses'] as Map?)?[e.key] ?? observations[e.key]?['status'] ?? 'Not captured'}',
-          ),
+          title: _cameraStatus(e.key),
           trailing: Wrap(
             children: [
               TextButton(
-                onPressed: () => _run(() => _detect(e.key)),
+                onPressed: _busy ? null : () => _run(() => _detect(e.key)),
                 child: const Text('Capture / detect'),
               ),
               TextButton(
-                onPressed: () => _run(() => _detect(e.key, manual: true)),
+                onPressed: _busy
+                    ? null
+                    : () => _run(() => _detect(e.key, manual: true)),
                 child: const Text('Manual anchors'),
               ),
               TextButton(
-                onPressed: observations[e.key] == null
+                onPressed: _busy || observations[e.key] == null
                     ? null
                     : () => setState(() => _review = e.key),
                 child: const Text('Review'),
               ),
               TextButton(
-                onPressed: () => _run(() async {
-                  await _persist();
-                  _draft =
-                      (await _manager.call('draft_reset_camera', {
-                            'camera_id': e.key,
-                          }))['draft']
-                          as Map<String, dynamic>;
-                  _review = '';
-                }),
+                onPressed: _busy
+                    ? null
+                    : () => _run(() async {
+                        await _persist();
+                        _draft =
+                            (await _manager.call('draft_reset_camera', {
+                                  'camera_id': e.key,
+                                }))['draft']
+                                as Map<String, dynamic>;
+                        _review = '';
+                      }),
                 child: const Text('Reset camera'),
               ),
             ],
@@ -426,7 +481,7 @@ class _HomeState extends State<CalibrationHome> {
         _draft =
             (await _manager.call('draft_solve'))['draft']
                 as Map<String, dynamic>;
-        _message = '${_draft!['statuses']}';
+        _message = 'Solve finished. Review each camera’s result above.';
       }),
     ],
     5 => [
@@ -523,24 +578,7 @@ class _HomeState extends State<CalibrationHome> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              _button('Capture storage use', () async {
-                final r = await _manager.call('capture_storage');
-                _message =
-                    '${((r['used_bytes'] as num) / 1048576).toStringAsFixed(1)} MiB / 256 MiB • ${r['protected_count']} referenced captures';
-              }),
-              _button('Clean old unused calibration captures', () async {
-                if (!await confirmArgoAction(
-                  context,
-                  title: 'Clean unused captures?',
-                  explanation: 'Remove unreferenced captures older than one hour. Saved calibrations and referenced captures are preserved.',
-                  action: 'Clean captures',
-                )) {
-                  return;
-                }
-                final r = await _manager.call('capture_storage_clean');
-                _message =
-                    'Reclaimed ${((r['reclaimed_bytes'] as num) / 1048576).toStringAsFixed(1)} MiB; referenced and recent captures kept';
-              }),
+              CaptureStoragePanel(manager: _manager),
               if (!_continue) ...[
                 if (_draft != null)
                   _button('Continue current calibration', () async {
@@ -589,6 +627,13 @@ class _HomeState extends State<CalibrationHome> {
             ],
           ),
         ),
+        if (_failure case final failure?)
+          ArgoStatusPanel(
+            status: ArgoStatus.failed,
+            summary: failure.summary,
+            failure: failure,
+            onRetry: _busy || _retry == null ? null : () => _run(_retry!),
+          ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Text(_message, maxLines: 4, overflow: TextOverflow.ellipsis),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 
 import '../../core/audio/audio_backend.dart';
 import '../../core/audio/audio_types.dart';
@@ -13,7 +14,7 @@ typedef AudioProcessRunner = Future<ProcessResult> Function(
 ///
 /// PCM stays entirely in PipeWire. `wpctl` is invoked directly, never through
 /// a shell, and only with operations selected by this class.
-final class PipeWireAudioBackend implements AudioBackend {
+final class PipeWireAudioBackend implements AudioBackend, AudioOutputSetup {
   PipeWireAudioBackend({AudioProcessRunner? processRunner})
     : _processRunner = processRunner ?? _runProcess;
 
@@ -45,10 +46,11 @@ final class PipeWireAudioBackend implements AudioBackend {
       capabilities: const AudioBackendCapabilities(
         masterVolume: true,
         mute: true,
+        outputSelection: true,
       ),
       masterVolume: parsed.volume,
       muted: parsed.muted,
-      selectedOutput: _sink,
+      selectedOutput: null,
       channels: channels,
     );
     _changes.add(_state);
@@ -81,8 +83,104 @@ final class PipeWireAudioBackend implements AudioBackend {
       Future.error(UnsupportedAudioFeatureException('equalizer'));
 
   @override
-  Future<void> selectOutput(String? outputId) =>
-      Future.error(UnsupportedAudioFeatureException('output selection'));
+  Future<void> selectOutput(String? outputId) async {
+    if (outputId == null) {
+      await _run('clear-default', [
+        '0',
+      ]); // Audio/Sink only; preserve input choice.
+    } else {
+      final nodes = await _outputNodes();
+      final matches = nodes.where((node) => node.$2.id == outputId).toList();
+      if (matches.length != 1) {
+        throw StateError(
+          'The selected output is absent or ambiguous. Reconnect it and refresh outputs.',
+        );
+      }
+      await _run('set-default', [matches.single.$1.toString()]);
+    }
+    // Read the new output level; never copy the old output volume onto it.
+    final level = _parseVolume(
+      (await _run('get-volume', [_sink])).stdout.toString(),
+    );
+    _state = AudioBackendState(
+      available: true,
+      capabilities: _state.capabilities,
+      masterVolume: level.volume,
+      muted: level.muted,
+      selectedOutput: outputId,
+      channels: _parseChannels(
+        (await _run('inspect', [_sink])).stdout.toString(),
+      ),
+    );
+    _changes.add(_state);
+  }
+
+  Future<List<(int, AudioOutputDevice)>> _outputNodes() async {
+    _ensureOpen();
+    final result = await _processRunner('pw-dump', []);
+    if (result.exitCode != 0) {
+      throw StateError('Output discovery failed: ${result.stderr}');
+    }
+    final nodes = jsonDecode(result.stdout.toString()) as List;
+    return [
+      for (final node in nodes)
+        if (node is Map &&
+            node['id'] is int &&
+            node['info'] is Map &&
+            node['info']['props'] is Map &&
+            node['info']['props']['media.class'] == 'Audio/Sink' &&
+            node['info']['props']['node.name'] is String)
+          (
+            node['id'] as int,
+            AudioOutputDevice(
+              id: node['info']['props']['node.name'] as String,
+              name:
+                  (node['info']['props']['node.description'] ??
+                          node['info']['props']['node.nick'] ??
+                          'Audio output')
+                      .toString(),
+            ),
+          ),
+    ];
+  }
+
+  @override
+  Future<List<AudioOutputDevice>> discoverOutputs() async => [
+    for (final node in await _outputNodes()) node.$2,
+  ];
+
+  bool _testing = false;
+  @override
+  Future<void> testOutput() async {
+    _ensureOpen();
+    if (_testing) throw StateError('An output test is already running.');
+    _testing = true;
+    try {
+      // Two seconds at 3% amplitude. PipeWire applies the existing output
+      // volume and mute. No master control or persisted PCM is involved.
+      final result = await _processRunner('gst-launch-1.0', [
+        '-q',
+        'audiotestsrc',
+        'wave=sine',
+        'freq=440',
+        'volume=0.03',
+        'samplesperbuffer=480',
+        'num-buffers=200',
+        '!',
+        'audio/x-raw,rate=48000,channels=2',
+        '!',
+        'audioconvert',
+        '!',
+        'pipewiresink',
+        'sync=true',
+      ]);
+      if (result.exitCode != 0) {
+        throw StateError('Output test failed: ${result.stderr}');
+      }
+    } finally {
+      _testing = false;
+    }
+  }
 
   @override
   Future<void> setSourceGain(String sourceId, double gain) =>
@@ -166,7 +264,45 @@ final class PipeWireAudioBackend implements AudioBackend {
   static Future<ProcessResult> _runProcess(
     String executable,
     List<String> arguments,
-  ) => Process.run(executable, arguments);
+  ) async {
+    final process = await Process.start(executable, arguments);
+    final output = <int>[], errors = <int>[];
+    Object? failure;
+    void collect(List<int> target, List<int> bytes) {
+      if (target.length + bytes.length > 1024 * 1024) {
+        failure ??= StateError('$executable output exceeded 1 MiB');
+        process.kill(ProcessSignal.sigkill);
+      } else {
+        target.addAll(bytes);
+      }
+    }
+
+    final stdoutDone = process.stdout
+        .listen((b) => collect(output, b))
+        .asFuture<void>();
+    final stderrDone = process.stderr
+        .listen((b) => collect(errors, b))
+        .asFuture<void>();
+    final timer = Timer(const Duration(seconds: 6), () {
+      failure ??= TimeoutException(
+        '$executable did not finish within six seconds',
+      );
+      process.kill(ProcessSignal.sigkill);
+    });
+    try {
+      final code = await process.exitCode;
+      await Future.wait([stdoutDone, stderrDone]);
+      if (failure != null) throw failure!;
+      return ProcessResult(
+        process.pid,
+        code,
+        utf8.decode(output, allowMalformed: true),
+        utf8.decode(errors, allowMalformed: true),
+      );
+    } finally {
+      timer.cancel();
+    }
+  }
 }
 
 final class AudioBackendCommandException implements Exception {

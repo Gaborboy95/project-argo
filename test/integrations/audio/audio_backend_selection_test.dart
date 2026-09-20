@@ -1,5 +1,12 @@
 import 'dart:io';
 
+import 'package:argo/core/audio/audio_service.dart';
+import 'package:argo/core/diagnostics/diagnostics_service.dart';
+import 'package:argo/core/settings/app_setting_keys.dart';
+import 'package:argo/core/settings/settings_service.dart';
+
+import '../../core/camera/camera_test.dart' show MemoryCameraSettings;
+
 import 'package:argo/core/audio/audio_backend.dart';
 import 'package:argo/core/audio/audio_backend_type.dart';
 import 'package:argo/integrations/audio/audio_backend_selection.dart';
@@ -75,6 +82,47 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('output discovery and tone never raise volume; selection re-resolves stable identity', () async {
+    final calls = <String>[];
+    var nodeId = 42;
+    final backend = PipeWireAudioBackend(
+      processRunner: (exe, args) async {
+        calls.add('$exe ${args.join(' ')}');
+        return ProcessResult(1, 0, switch (exe) {
+          'pw-dump' =>
+            '[{"id":$nodeId,"info":{"props":{"media.class":"Audio/Sink","node.name":"usb.dac","node.description":"USB sound"}}}]',
+          _ => args.first == 'get-volume' ? 'Volume: 0.07 [MUTED]' : '',
+        }, '');
+      },
+    );
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: MemoryCameraSettings(),
+    );
+    final audio = await DefaultAudioService.start(
+      backend: backend,
+      settings: settings,
+      diagnostics: DiagnosticsService(),
+    );
+    addTearDown(audio.close);
+    addTearDown(settings.close);
+    expect(audio.current.masterVolume, .07);
+    expect(audio.current.muted, isTrue);
+    expect((await backend.discoverOutputs()).single.name, 'USB sound');
+    nodeId = 55;
+    await audio.selectOutput('usb.dac');
+    expect(calls, contains('wpctl set-default 55'));
+    await backend.testOutput();
+    expect(calls.last, contains('volume=0.03'));
+    expect(calls.last, contains('num-buffers=200'));
+    expect(
+      calls.any((c) => c.contains('set-volume') || c.contains('set-mute')),
+      isFalse,
+    );
+    await expectLater(backend.selectOutput('missing'), throwsStateError);
+    expect(calls.where((c) => c.startsWith('wpctl set-default')), hasLength(1));
   });
 
   test('PipeWire command failure includes stderr', () async {

@@ -101,13 +101,16 @@ pub async fn run(
     let mut pairing: Option<JoinHandle<()>> = None;
     let mut commands = host.commands.subscribe();
     let mut client_closed = c.client_closed.subscribe();
+    let mut voice_updates = host.voice.state.subscribe();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => {host.voice.stop_test(); break;},
+            _ = voice_updates.changed() => {c.state.send_modify(|s|s.voice=Some(voice_updates.borrow_and_update().clone()));},
             _ = &mut inventory => {},
             _ = client_closed.changed() => {
+                host.voice.stop_test();
                 host.projection_enabled.send_replace(false);
                 c.calls_cancel.send_modify(|g|*g+=1);
                 let _=call_requests.try_send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});
@@ -144,12 +147,18 @@ pub async fn run(
                     if call_requests.try_send(r).is_err() {c.state.send_modify(|s|s.detail="Call controller busy".into());}
                     continue;
                 }
+                if r.action=="microphoneTest" || r.action=="microphoneTestStop" {
+                    if r.action=="microphoneTestStop" {host.voice.stop_test();}
+                    else if let Err(error)=host.voice.start_test().await {host.voice.state.send_modify(|s|s.test_error=Some(error));}
+                    c.state.send_modify(|s|s.voice=Some(host.voice.state.borrow().clone()));continue;
+                }
                 if r.action=="microphone" || r.action=="microphoneMute" {
                     let result=if r.action=="microphone" {host.voice.select(&r.target)}else {host.voice.state.send_modify(|s|s.muted=r.accept);Ok(())};
                     if let Err(e)=result {host.voice.state.send_modify(|s|s.detail=e);}
                     c.state.send_modify(|s|s.voice=Some(host.voice.state.borrow().clone()));continue;
                 }
                 if r.action=="stopAll" {
+                    host.voice.stop_test();
                     let mut owned_phones=vec![];
                     if let Some(a)=&activity {owned_phones.push(a.peer.clone());}
                     {let s=c.state.borrow();if let Some(m)=&s.music {owned_phones.push(m.device.clone());}
@@ -163,6 +172,7 @@ pub async fn run(
                     if let Some(p)=pairing.take(){p.abort();let _=p.await;}
                     bt.respond(c.state.borrow().prompt.as_ref().map_or(0,|p|p.id),false);
                     let stop = async {
+                        host.voice.stop_test_and_wait().await?;
                         music_requests.send(Request{generation:0,action:"musicDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Music controller unavailable")?;
                         call_requests.send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Call controller unavailable")?;
                         let mut changes=c.state.subscribe();

@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/camera/calibration_manager.dart';
-import '../../../core/camera/camera_service.dart';
 import 'calibration_preview.dart';
 import 'calibration_fields.dart';
+import '../../shared/argo_components.dart';
+import '../../shared/status_panel.dart';
+import '../../../core/diagnostics/service_failure.dart';
 
 class BenchLensCalibrationPage extends StatefulWidget {
   const BenchLensCalibrationPage({super.key, required this.manager});
@@ -15,23 +17,20 @@ class BenchLensCalibrationPage extends StatefulWidget {
 }
 
 class _BenchState extends State<BenchLensCalibrationPage> {
+  late final _manager = widget.manager.fork();
   Map<String, dynamic>? _bench;
   String _model = 'opencv_omnidir', _name = '', _message = '';
-  CameraRole _role = CameraRole.rear;
   String? _cameraId;
   double? _cols, _rows, _square;
   bool _busy = false;
+  ServiceFailure? _failure;
   @override
   void initState() {
     super.initState();
     _run(() async {
-      final r = await widget.manager.call('bench_get');
+      final r = await _manager.call('bench_get');
       _bench = r['bench'] as Map<String, dynamic>?;
       if (_bench != null) {
-        final assigned = widget.manager.service.current.assignments.entries
-            .where((e) => e.value == _bench!['camera_id'])
-            .firstOrNull;
-        if (assigned != null) _role = assigned.key;
         _cameraId = _bench!['camera_id'] as String;
       }
     });
@@ -39,23 +38,33 @@ class _BenchState extends State<BenchLensCalibrationPage> {
 
   @override
   void dispose() {
-    unawaited(widget.manager.service.start(_role));
+    unawaited(_manager.close());
     super.dispose();
   }
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _failure = null;
+    });
     try {
       await action();
     } catch (e) {
-      _message = '$e';
+      _failure = ServiceFailure(
+        feature: 'camera',
+        operation: 'lens_calibration',
+        kind: FailureKind.rejected,
+        summary: 'Could not calibrate this lens',
+        cause: '$e',
+        retryable: true,
+      );
     }
     if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _op(String op, [Map<String, Object?> args = const {}]) async {
-    final r = await widget.manager.call(op, args);
+    final r = await _manager.call(op, args);
     if (r['bench'] != null) {
       _bench = Map<String, dynamic>.from(r['bench'] as Map);
     }
@@ -78,13 +87,19 @@ class _BenchState extends State<BenchLensCalibrationPage> {
           ),
           if (_busy) const LinearProgressIndicator(),
           Text(_message),
+          if (_failure case final failure?)
+            ArgoStatusPanel(
+              status: ArgoStatus.failed,
+              summary: failure.summary,
+              failure: failure,
+            ),
           if (_bench == null) ...[
             DropdownButton<String>(
               value: _cameraId,
               hint: const Text('Choose bench / spare camera'),
               isExpanded: true,
               items: [
-                for (final device in widget.manager.service.current.devices)
+                for (final device in _manager.service.current.devices)
                   DropdownMenuItem(
                     value: device.stableId,
                     child: Text(device.displayName),
@@ -122,38 +137,38 @@ class _BenchState extends State<BenchLensCalibrationPage> {
               changed: (v) => _square = v,
             ),
             FilledButton(
-              onPressed: () => _run(() async {
-                final id = _cameraId;
-                if (id == null ||
-                    _cols == null ||
-                    _rows == null ||
-                    _square == null) {
-                  throw StateError(
-                    'Select an assigned camera and enter board dimensions',
-                  );
-                }
-                await widget.manager.control.command('preview_camera', {
-                  'camera_id': id,
-                });
-                await widget.manager.service.refresh();
-                await _op('bench_start', {
-                  'camera_id': id,
-                  'board': {
-                    'columns': _cols!.toInt(),
-                    'rows': _rows!.toInt(),
-                    'square_m': _square,
-                  },
-                  'lens_model': _model,
-                  'capture_mode': widget.manager.mode(id),
-                });
-              }),
+              onPressed: _busy
+                  ? null
+                  : () => _run(() async {
+                      final id = _cameraId;
+                      if (id == null ||
+                          _cols == null ||
+                          _rows == null ||
+                          _square == null) {
+                        throw StateError(
+                          'Select an assigned camera and enter board dimensions',
+                        );
+                      }
+                      await _manager.control.command('preview_camera', {
+                        'camera_id': id,
+                      });
+                      await _manager.service.refresh();
+                      await _op('bench_start', {
+                        'camera_id': id,
+                        'board': {
+                          'columns': _cols!.toInt(),
+                          'rows': _rows!.toInt(),
+                          'square_m': _square,
+                        },
+                        'lens_model': _model,
+                        'capture_mode': _manager.mode(id),
+                      });
+                    }),
               child: const Text('Start board collection'),
             ),
           ] else ...[
-            Text(
-              'Camera: ${_bench!['camera_id']} • ${_bench!['lens_model']}\n${observations.length} accepted observations',
-            ),
-            CalibrationPreview(service: widget.manager.service, height: 280),
+            Text('${observations.length} accepted observations'),
+            CalibrationPreview(service: _manager.service, height: 280),
             Wrap(
               spacing: 8,
               children: [
@@ -161,26 +176,31 @@ class _BenchState extends State<BenchLensCalibrationPage> {
                   onPressed: _busy
                       ? null
                       : () => _run(() async {
-                          final shot = await widget.manager.capture(
+                          final shot = await _manager.capture(
                             _bench!['camera_id'] as String,
                           );
                           await _op('bench_capture', {'image': shot['path']});
-                          _message = '${_bench!['last_detection']}';
+                          final detection = _bench!['last_detection'] as Map;
+                          _message = detection['accepted'] == true
+                              ? 'Observation accepted'
+                              : 'Observation rejected: ${detection['reason'] ?? 'Board not detected reliably'}';
                         }),
                   child: const Text('Capture observation'),
                 ),
                 TextButton(
-                  onPressed: () => _run(
-                    () => widget.manager.control
-                        .command('preview_camera', {
-                          'camera_id': _bench!['camera_id'],
-                        })
-                        .then((_) {}),
-                  ),
+                  onPressed: _busy
+                      ? null
+                      : () => _run(
+                          () => _manager.control
+                              .command('preview_camera', {
+                                'camera_id': _bench!['camera_id'],
+                              })
+                              .then((_) {}),
+                        ),
                   child: const Text('Live preview / retry'),
                 ),
                 TextButton(
-                  onPressed: observations.isEmpty
+                  onPressed: _busy || observations.isEmpty
                       ? null
                       : () => _run(
                           () => _op('bench_remove', {
@@ -190,11 +210,21 @@ class _BenchState extends State<BenchLensCalibrationPage> {
                   child: const Text('Undo last'),
                 ),
                 TextButton(
-                  onPressed: () => _run(() async {
-                    for (var i = observations.length - 1; i >= 0; i--) {
-                      await _op('bench_remove', {'index': i});
-                    }
-                  }),
+                  onPressed: _busy
+                      ? null
+                      : () => _run(() async {
+                          if (!await confirmArgoAction(
+                            context,
+                            title: 'Clear board observations?',
+                            explanation: 'Remove observations from the current collection. Saved lens profiles are preserved.',
+                            action: 'Clear observations',
+                          )) {
+                            return;
+                          }
+                          for (var i = observations.length - 1; i >= 0; i--) {
+                            await _op('bench_remove', {'index': i});
+                          }
+                        }),
                   child: const Text('Clear observations'),
                 ),
               ],
@@ -225,20 +255,23 @@ class _BenchState extends State<BenchLensCalibrationPage> {
                     IconButton(
                       tooltip: 'View observation',
                       icon: const Icon(Icons.visibility),
-                      onPressed: () => _run(
-                        () => widget.manager.present(
-                          observations[i]['image'] as String,
-                          observations[i]['image_size'][0] as int,
-                          observations[i]['image_size'][1] as int,
-                          isCurrent: () => mounted,
-                        ),
-                      ),
+                      onPressed: _busy
+                          ? null
+                          : () => _run(
+                              () => _manager.present(
+                                observations[i]['image'] as String,
+                                observations[i]['image_size'][0] as int,
+                                observations[i]['image_size'][1] as int,
+                                isCurrent: () => mounted,
+                              ),
+                            ),
                     ),
                     IconButton(
                       tooltip: 'Remove observation',
                       icon: const Icon(Icons.delete),
-                      onPressed: () =>
-                          _run(() => _op('bench_remove', {'index': i})),
+                      onPressed: _busy
+                          ? null
+                          : () => _run(() => _op('bench_remove', {'index': i})),
                     ),
                   ],
                 ),
@@ -256,12 +289,14 @@ class _BenchState extends State<BenchLensCalibrationPage> {
                 onChanged: (s) => _name = s,
               ),
               FilledButton(
-                onPressed: () => _run(() => _op('bench_save', {'name': _name})),
+                onPressed: _busy
+                    ? null
+                    : () => _run(() => _op('bench_save', {'name': _name})),
                 child: const Text('Save as lens profile'),
               ),
             ],
             TextButton(
-              onPressed: () => setState(() => _bench = null),
+              onPressed: _busy ? null : () => setState(() => _bench = null),
               child: const Text('Start new bench calibration'),
             ),
           ],

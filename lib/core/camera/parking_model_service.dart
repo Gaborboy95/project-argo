@@ -1,6 +1,33 @@
 import 'camera_service.dart';
 import 'surround_jobs.dart';
 
+enum ParkingModelState {
+  notInstalled('Not installed'),
+  downloading('Downloading'),
+  installed('Installed'),
+  verified('Verified'),
+  incompatible('Incompatible with selected camera'),
+  ready('Ready'),
+  running('Running'),
+  benchmarking('Benchmarking'),
+  failed('Failed');
+
+  const ParkingModelState(this.label);
+  final String label;
+  static ParkingModelState fromRecord(Map model) => switch (model['state']) {
+    'not_installed' => notInstalled,
+    'downloading' => downloading,
+    'installed' => installed,
+    'verified' => verified,
+    'incompatible' => incompatible,
+    'ready' => ready,
+    'running' => running,
+    'benchmarking' => benchmarking,
+    'failed' => failed,
+    _ => model['installed'] == true ? installed : notInstalled,
+  };
+}
+
 /// Engine owns catalog, files, downloads and benchmark processes.
 final class ParkingModelService {
   ParkingModelService(this.control);
@@ -21,9 +48,23 @@ final class ParkingModelService {
         .run('calibration', {'op': 'inspect'});
     final calibration = state['calibration'] as Map?;
     final cameras = calibration?['cameras'] as Map?;
-    return cameras?[id] is Map
-        ? Map<String, dynamic>.from(cameras![id] as Map)
-        : null;
+    if (cameras?[id] is! Map) return null;
+    final status = await control.command('status');
+    final streams = status['streams'] as List? ?? [];
+    final stream =
+        streams.where((s) => s is Map && s['camera_id'] == id).firstOrNull
+            as Map?;
+    final configured = status['camera_modes'] as Map? ?? {};
+    final mode = Map<String, dynamic>.from(
+      stream?['mode'] as Map? ?? configured[id] as Map? ?? {},
+    );
+    return {
+      ...Map<String, dynamic>.from(cameras![id] as Map),
+      'selected_camera_id': id,
+      // The external capture contract currently publishes uncropped orientation 0.
+      // Unknown mode stays unknown and cannot be inferred from another camera.
+      'inference_capture_mode': {...mode, 'orientation': 0, 'crop': null},
+    };
   }
 
   Future<void> start(String cameraId) async {

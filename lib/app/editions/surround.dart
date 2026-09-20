@@ -40,6 +40,7 @@ final class SurroundIntegration implements CameraIntegration {
       SurroundCameraPage(service: camera);
   @override
   Widget modelSettings(CameraService camera) => ModelManagerPage(
+    cameras: camera,
     canBenchmark: () => camera.current.activeRole == null,
     service: ParkingModelService(camera as SurroundCameraControl),
   );
