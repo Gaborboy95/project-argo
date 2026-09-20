@@ -84,7 +84,10 @@ final class DefaultProjectionService implements ProjectionService {
   Timer? _gainDeadline;
   Timer? _retry;
   int _generation = 0;
-  ProjectionAudioFailure? _audioFailure;
+  bool _focusFailed = false;
+  ProjectionAudioFailure? _gainFailure;
+  ProjectionAudioFailure? get _audioFailure =>
+      _focusFailed ? ProjectionAudioFailure.focus : _gainFailure;
   ProjectionSnapshot? _authoritative;
   final Map<String, bool> _sourceActivity = {};
   bool _closed = false;
@@ -169,7 +172,11 @@ final class DefaultProjectionService implements ProjectionService {
     StackTrace stack,
   ) {
     if (_closed) return;
-    _audioFailure = cause;
+    if (cause == ProjectionAudioFailure.focus) {
+      _focusFailed = true;
+    } else {
+      _gainFailure = cause;
+    }
     _publish();
     diagnostics.error(
       'projection.audio',
@@ -222,10 +229,8 @@ final class DefaultProjectionService implements ProjectionService {
       final generation = _generation;
       try {
         await _applyAudioGains(_authoritative ?? backend.current, generation);
-        if (!_closed &&
-            generation == _generation &&
-            _audioFailure != ProjectionAudioFailure.focus) {
-          _audioFailure = null;
+        if (!_closed && generation == _generation) {
+          _gainFailure = null;
           _publish();
         }
       } on Object catch (error, stack) {
@@ -319,8 +324,8 @@ final class DefaultProjectionService implements ProjectionService {
         _failedAudio(ProjectionAudioFailure.focus, error, stack);
       }
     }
-    if (!failed && _audioFailure == ProjectionAudioFailure.focus) {
-      _audioFailure = null;
+    if (!failed && _focusFailed) {
+      _focusFailed = false;
       _publish();
     }
   }

@@ -322,7 +322,20 @@ final class DefaultAudioService implements AudioService {
     final id = _nextFocusId++;
     await _serialize(() async {
       _focusRequests[id] = _FocusRequest(sourceId, source.role, gain);
-      await _recomputeSourceGains();
+      try {
+        await _recomputeSourceGains();
+      } on Object catch (error, stack) {
+        // No handle was returned: retaining this request would create an owner
+        // nobody can release, and each retry would add another duck request.
+        _focusRequests.remove(id);
+        _replace();
+        try {
+          await _recomputeSourceGains();
+        } on Object {
+          // Preserve the acquisition failure if restoring native gains fails.
+        }
+        Error.throwWithStackTrace(error, stack);
+      }
     });
     return _DefaultAudioFocusHandle(() => _releaseFocus(id));
   }

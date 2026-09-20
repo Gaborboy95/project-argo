@@ -207,6 +207,33 @@ void main() {
     expect(audio.current.effectiveSourceGains['player.media'], 1);
   });
 
+  test(
+    'failed focus acquisition does not leave an owner that has no handle',
+    () async {
+      await audio.close();
+      final failing = _FailingGainBackend();
+      audio = await DefaultAudioService.start(
+        backend: failing,
+        settings: settings,
+        diagnostics: DiagnosticsService(),
+      );
+      await audio.registerSource(
+        AudioSource(id: 'media', role: AudioSourceRole.media),
+      );
+      await audio.registerSource(
+        AudioSource(id: 'voice', role: AudioSourceRole.communication),
+      );
+      await audio.setSourceActive('media', true);
+      await audio.setSourceActive('voice', true);
+      failing.fail = true;
+      await expectLater(audio.requestFocus('voice'), throwsStateError);
+      failing.fail = false;
+      await audio.setSourceActive('media', true);
+      expect(audio.current.focusSources, isEmpty);
+      expect(audio.current.effectiveSourceGains['media'], 1);
+    },
+  );
+
   test('disabled backend remains host-safe while policy state works', () async {
     await audio.close();
     audio = await DefaultAudioService.start(
@@ -233,5 +260,26 @@ final class _MemorySettingsStore implements SettingsStore {
   @override
   Future<void> write(SettingsDocument document) async {
     this.document = document;
+  }
+}
+
+class _FailingGainBackend extends Fake implements AudioBackend {
+  bool fail = false;
+  @override
+  AudioBackendState get current => AudioBackendState(
+    available: true,
+    masterVolume: 0.5,
+    muted: false,
+    capabilities: const AudioBackendCapabilities(perSourceRouting: true),
+  );
+  @override
+  Stream<AudioBackendState> get changes => const Stream.empty();
+  @override
+  Future<void> start() async {}
+  @override
+  Future<void> close() async {}
+  @override
+  Future<void> setSourceGain(String sourceId, double gain) async {
+    if (fail) throw StateError('gain failed');
   }
 }
