@@ -205,10 +205,12 @@ void main() {
           vehicle.emit(CameraVehicleSignals.reverse, true);
           await tester.pumpAndSettle();
           projection.activations.clear();
-          if (change == 'failed')
+          if (change == 'failed') {
             backend.emit(snapshot('original', ProjectionSessionState.failed));
-          if (change == 'replacement')
+          }
+          if (change == 'replacement') {
             backend.emit(snapshot('replacement', ProjectionSessionState.ready));
+          }
           await tester.pumpAndSettle();
           expect(find.text('camera content'), findsOneWidget);
           expect(projection.activations, isEmpty);

@@ -599,7 +599,9 @@ def doctor(deployment, environment=None, release=None):
     def probe(arguments):
         try:
             return subprocess.run(arguments, capture_output=True, text=True,
-                                  timeout=3, check=False).returncode == 0
+                                  timeout=3, check=False,
+                                  env={**environment, 'GST_REGISTRY_UPDATE': 'no',
+                                       'GST_REGISTRY': '/dev/null'}).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
