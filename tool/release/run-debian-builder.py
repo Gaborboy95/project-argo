@@ -15,6 +15,9 @@ def main():
         parser.error('Expected a disposable, provisioned Debian 13 root')
     if workspace.exists():
         parser.error('Workspace must be fresh; no existing build outputs are reused')
+    # Bind destinations must exist before mounting the root read-only.
+    for name in ('source', 'workspace'):
+        (root / name).mkdir(exist_ok=True)
     workspace.mkdir(parents=True)
     (workspace / 'home').mkdir()
     # Only network is shared for public downloads. The host home, runtime sockets,
