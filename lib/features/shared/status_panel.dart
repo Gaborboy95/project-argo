@@ -59,3 +59,36 @@ class ArgoStatusPanel extends StatelessWidget {
     ),
   );
 }
+
+/// Keep the complete local cause available without making technical text the
+/// primary message. Copy uses ServiceFailure's redacted export policy.
+Future<void> showArgoFailure(
+  BuildContext context,
+  ServiceFailure failure, {
+  Future<void> Function()? onRetry,
+}) async {
+  final retry = await showDialog<bool>(
+    context: context,
+    builder: (dialog) => AlertDialog(
+      title: const Text('Operation could not finish'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: ArgoStatusPanel(
+            status: ArgoStatus.failed,
+            summary: failure.summary,
+            failure: failure,
+            onRetry: onRetry == null ? null : () => Navigator.pop(dialog, true),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialog, false),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+  if (retry == true && context.mounted) await onRetry?.call();
+}

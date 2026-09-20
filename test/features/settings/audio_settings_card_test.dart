@@ -38,7 +38,14 @@ void main() {
       await show(fail: true);
       tester.widget<Slider>(find.byType(Slider)).onChangeEnd!(.7);
       await tester.pumpAndSettle();
+      expect(find.text('Could not change the audio setting'), findsOneWidget);
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
       expect(find.textContaining('Output disappeared'), findsOneWidget);
+      expect(
+        find.text('Copy diagnostics (private content omitted)'),
+        findsOneWidget,
+      );
       expect(tester.widget<Slider>(find.byType(Slider)).value, .3);
     },
   );

@@ -251,8 +251,19 @@ class MicrophoneCard extends StatelessWidget {
       await service.connectivityCommand(action, target: target, accept: accept);
     } on Object catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString())));
+        await showArgoFailure(
+          context,
+          ServiceFailure(
+            feature: 'audio',
+            operation: 'configure',
+            kind: FailureKind.rejected,
+            summary: 'Could not change the microphone setting',
+            cause: e,
+            retryable: true,
+          ),
+          onRetry: () =>
+              _command(context, action, target: target, accept: accept),
+        );
       }
     }
   }

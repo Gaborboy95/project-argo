@@ -1,3 +1,5 @@
+import '../../core/diagnostics/service_failure.dart';
+import '../shared/status_panel.dart';
 import '../../core/camera/basic_camera_control.dart';
 import '../shared/argo_components.dart';
 import 'basic_camera_settings.dart';
@@ -111,7 +113,7 @@ class CameraPage extends StatelessWidget {
                     if (camera.state != CameraStreamState.streaming)
                       Expanded(
                         child: Text(
-                          '${camera.activeRole?.name ?? 'Rear'} camera • ${camera.state.name}${camera.error == null ? '' : ' — ${camera.error}'}',
+                          '${camera.activeRole?.name ?? 'Rear'} camera • ${camera.state.name}',
                           maxLines: 2,
                           style: const TextStyle(
                             color: Colors.white,
@@ -121,6 +123,26 @@ class CameraPage extends StatelessWidget {
                       ),
                     if (camera.state == CameraStreamState.streaming)
                       Expanded(child: const SizedBox()),
+                    if (camera.error case final error?)
+                      TextButton(
+                        onPressed: () {
+                          if (!CameraActivityScope.manualSelection(context)) {
+                            return;
+                          }
+                          showArgoFailure(
+                            context,
+                            ServiceFailure(
+                              feature: 'camera',
+                              operation: 'observe',
+                              kind: FailureKind.unavailableDevice,
+                              summary: 'Camera view is unavailable',
+                              cause: error,
+                              retryable: true,
+                            ),
+                          );
+                        },
+                        child: const Text('Details'),
+                      ),
                     if ({
                       CameraStreamState.failed,
                       CameraStreamState.disconnected,

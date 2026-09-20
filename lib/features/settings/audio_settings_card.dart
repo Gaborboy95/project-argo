@@ -1,3 +1,5 @@
+import '../../core/diagnostics/service_failure.dart';
+import '../shared/status_panel.dart';
 import '../shared/argo_components.dart';
 import 'audio_output_setup.dart';
 
@@ -119,8 +121,18 @@ Future<void> _run(BuildContext context, Future<void> Function() action) async {
     await action();
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Audio control failed: $e')));
+      await showArgoFailure(
+        context,
+        ServiceFailure(
+          feature: 'audio',
+          operation: 'configure',
+          kind: FailureKind.rejected,
+          summary: 'Could not change the audio setting',
+          cause: e,
+          retryable: true,
+        ),
+        onRetry: () => _run(context, action),
+      );
     }
   }
 }
@@ -148,6 +160,34 @@ class AudioSettingSlider extends StatefulWidget {
 class _AudioSettingSliderState extends State<AudioSettingSlider> {
   double? preview;
   bool saving = false;
+  ServiceFailure? failure;
+  double? failedValue;
+  Future<void> _commit(double value) async {
+    setState(() {
+      saving = true;
+      failure = null;
+    });
+    try {
+      await widget.commit(value);
+    } catch (error) {
+      failure = ServiceFailure(
+        feature: 'audio',
+        operation: 'configure',
+        kind: FailureKind.rejected,
+        summary: 'Could not change the audio setting',
+        cause: error,
+        retryable: true,
+      );
+      failedValue = value;
+    } finally {
+      if (mounted)
+        setState(() {
+          saving = false;
+          preview = null;
+        });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final value = (preview ?? widget.value).clamp(
@@ -173,19 +213,17 @@ class _AudioSettingSliderState extends State<AudioSettingSlider> {
           onChanged: widget.enabled && !saving
               ? (v) => setState(() => preview = v)
               : null,
-          onChangeEnd: widget.enabled && !saving
-              ? (v) async {
-                  setState(() => saving = true);
-                  await _run(context, () => widget.commit(v));
-                  if (mounted) {
-                    setState(() {
-                      saving = false;
-                      preview = null;
-                    });
-                  }
-                }
-              : null,
+          onChangeEnd: widget.enabled && !saving ? _commit : null,
         ),
+        if (failure case final error?)
+          ArgoStatusPanel(
+            status: ArgoStatus.failed,
+            summary: error.summary,
+            failure: error,
+            onRetry: saving || !widget.enabled
+                ? null
+                : () => _commit(failedValue!),
+          ),
       ],
     );
   }
