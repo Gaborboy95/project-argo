@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "edition": "standard",
+  "architecture": "amd64",
+  "debian": "13-trixie",
+  "version": "1.0.0~standard.2",
+  "source_date_epoch": 1789943625,
+  "argo": {
+    "revision": "d6a7065249ee29ca73cbd1a13796e10ff7a2ce36"
+  },
+  "veloce": {
+    "url": "https://github.com/Gaborboy95/veloce.git",
+    "base_revision": "833fa9dd15bd86219b598c9d330add6955087833",
+    "result_revision": "0ba15aa93a21110bc393f9cad74a39370eb453e9",
+    "patch": "patches/veloce-staged-install.patch",
+    "patch_sha256": "1a0440fb89b75d537c1f907040c0672f4f035cc7355873c64edf15b631dd143c"
+  },
+  "flutter": {
+    "url": "https://github.com/flutter/flutter.git",
+    "revision": "d3b14c876900e553bc736ca19295fc09e3853e8e",
+    "version": "3.47.2",
+    "dart": "3.13.2"
+  },
+  "engine": {
+    "revision": "a804b261645ef8c13eb3d5c44a5c2fb0340c5539",
+    "url": "https://github.com/meta-flutter/flutter-engine/releases/download/linux-engine-sdk-release-x86_64-a804b261645ef8c13eb3d5c44a5c2fb0340c5539/linux-engine-sdk-release-x86_64-a804b261645ef8c13eb3d5c44a5c2fb0340c5539.tar.gz",
+    "sha256": "764e05ba612aaf943523c76a87dd89952f44984a3ec1b48c03aa8b227dafb56c",
+    "library_sha256": "5bd09e0257c8d10db598fea94f3dffe3dc3fb0ecc828dfd2866efa5132587bd6",
+    "header_sha256": "94122469b254a932394bb5bb5c625317426eefd6e23d4366e32372c70ac5be37"
+  },
+  "ihs": {
+    "url": "https://github.com/toyota-connected/ivi-homescreen.git",
+    "revision": "50cbfb5b29266821091dd5a15edb6fe0a8547a91",
+    "patch": "patches/ihs-platform-view.patch",
+    "patch_sha256": "e90b3b077c3a133bcaeb685bf3f054eb1f14efeabc21e8916d4fac78c3f7d584",
+    "cmake": {
+      "BUILD_ACCESSIBILITY": "OFF",
+      "BUILD_ACCESSKIT": "OFF",
+      "BUILD_BACKEND_DRM_KMS_EGL": "OFF",
+      "BUILD_BACKEND_DRM_KMS_VULKAN": "OFF",
+      "BUILD_BACKEND_HEADLESS_EGL": "OFF",
+      "BUILD_BACKEND_HEADLESS_VULKAN": "OFF",
+      "BUILD_BACKEND_SOFTWARE": "OFF",
+      "BUILD_BACKEND_WAYLAND_EGL": "ON",
+      "BUILD_BACKEND_WAYLAND_LEASED_DRM": "OFF",
+      "BUILD_COMPOSITOR": "ON",
+      "BUILD_COMPOSITOR_DMABUF_EXPORT": "OFF",
+      "BUILD_CRASH_HANDLER": "OFF",
+      "BUILD_DOCS": "OFF",
+      "BUILD_DRM_KMS_VULKAN_PROBE": "OFF",
+      "BUILD_EGL_ENABLE_3D": "ON",
+      "BUILD_EGL_ENABLE_MULTISAMPLE": "OFF",
+      "BUILD_EGL_TRANSPARENCY": "ON",
+      "BUILD_FUZZERS": "OFF",
+      "BUILD_HUD": "OFF",
+      "BUILD_MCP": "OFF",
+      "BUILD_UNIT_TESTS": "OFF",
+      "BUILD_VULKAN_VALIDATION": "OFF",
+      "BUILD_WATCHDOG": "OFF",
+      "ENABLE_AGL_SHELL_CLIENT": "OFF",
+      "ENABLE_DEB_SHLIBDEPS": "OFF",
+      "ENABLE_DLT": "OFF",
+      "ENABLE_IVI_SHELL_CLIENT": "OFF",
+      "ENABLE_LTO": "OFF",
+      "ENABLE_OSGI": "OFF",
+      "ENABLE_SIMPLE_SHELL_CLIENT": "OFF",
+      "ENABLE_STATIC_LINK": "OFF",
+      "ENABLE_XDG_CLIENT": "ON"
+    },
+    "platform_view_header_sha256": "2037ce6b26a167b5948280e48b1ddbe6e9d66eb0fa46c1ba0aa4e9bf3d3d574e"
+  },
+  "rust": {
+    "version": "1.98.1",
+    "archives": {
+      "rustc": {
+        "url": "https://static.rust-lang.org/dist/rustc-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+        "sha256": "e974f036b28565f37c0f3bd92ddefa809bee16c04f9dcf07b9ed96e05aaaf7c4"
+      },
+      "cargo": {
+        "url": "https://static.rust-lang.org/dist/cargo-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+        "sha256": "ea1de9f9e23107d97ee2b41a72c552f34064a593da503789218387aee59f3ba4"
+      },
+      "rust-std": {
+        "url": "https://static.rust-lang.org/dist/rust-std-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+        "sha256": "fa3ff450172a16c026944030230c5069947af93c728d9179971d44e5e0cfb561"
+      }
+    }
+  },
+  "contracts": {
+    "aa_ipc": 7,
+    "projection_view": 1,
+    "projection_media": 1,
+    "camera": 1,
+    "carplay_control": 1,
+    "ihs_platform_view": 1
+  },
+  "debian_image_manifest": "sha256:7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c",
+  "runtime_dependencies": [
+    "python3",
+    "gstreamer1.0-tools",
+    "gstreamer1.0-plugins-base",
+    "gstreamer1.0-plugins-good",
+    "gstreamer1.0-plugins-bad",
+    "gstreamer1.0-libav",
+    "gstreamer1.0-pipewire",
+    "pipewire-bin",
+    "wireplumber",
+    "pulseaudio-utils",
+    "bluez",
+    "network-manager",
+    "libusbmuxd-2.0-7",
+    "libvulkan1",
+    "libegl1",
+    "libgles2"
+  ]
+}

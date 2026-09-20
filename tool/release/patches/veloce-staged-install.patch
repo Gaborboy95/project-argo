@@ -1,0 +1,1588 @@
+diff --git a/README.md b/README.md
+index 6e7d5cb..1a9ac40 100644
+--- a/README.md
++++ b/README.md
+@@ -26,7 +26,7 @@ security boundary.
+ - Provider-side CAN filtering and an in-memory CAN provider for demos/tests.
+ - A validated UI model converted to a small allowlisted set of Flutter widgets.
+ - Plugin-attributed logs and plugin-scoped in-memory/JSON/SQLite storage.
+-- Ed25519-authenticated atomic installation, provenance, and rollback.
++- Ed25519-authenticated staged installation, provenance, and verified rollback.
+ - Bounded read-only plugin assets and generic declarative UI extension points.
+ - Execution instruction, wall-clock, memory, and timer limits.
+ 
+@@ -240,8 +240,25 @@ change → parse → fresh Lua state → load → initialize → validate
+ Diagnostics retain plugin ID, lifecycle phase, source filename, Lua line when
+ available, and traceback. Watching is a developer convenience, not a secure
+ installer. `PluginInstaller` separately verifies trusted Ed25519 signatures,
+-records provenance, stages on the destination filesystem, atomically replaces
+-the active directory, and retains a verified rollback version.
++copies a bounded private snapshot on the destination filesystem, then parses and
++verifies that snapshot's manifest, signature and complete payload. Destination ID,
++version, signing-key scope and provenance all use the staged manifest. Source
++mutation after verification cannot change the published package. Copy bounds
++include signature metadata; manifest/signature reads are additionally bounded at
++1 MiB/16 KiB. Unexpected staged files participate in the payload digest.
++
++Symlinked roots, entries and destinations are rejected, with containment checked
++around each copy. These Dart path checks are not descriptor-relative no-follow
++filesystem operations: a hostile concurrent process with write access can still
++race path resolution. Keep the installation root under a trusted owner; arbitrary
++native code or another isolate is not isolated from that owner's filesystem.
++`PluginInstallHooks` is trusted host test instrumentation, never a plugin API.
++
++Replacement uses separate directory renames and retains a verified rollback
++version. It is not an atomic directory exchange or a process-death recovery
++protocol. Installation/rollback serialization, a recovery journal, and complete
++filesystem race hardening remain unfinished; callers must currently use a single
++installation authority and quiesce plugin readers during replacement.
+ 
+ ## Sandbox
+ 
+@@ -394,7 +411,7 @@ For a stripped Debian image:
+ - Tabs are the only implemented Flutter extension-point facade. Notifications,
+   settings pages, quick controls, and background services are future work.
+ - Plugin assets have no host-mediated Lua API yet.
+-- There is no signed plugin package/installer or rollback repository.
++- Signed directory installation and local verified rollback are implemented; an authenticated remote package repository is not.
+ - The native plugin build currently supports Linux and Windows. Embedded target
+   toolchains and `ivi-homescreen` integrations require product-specific build
+   and lifecycle testing.
+diff --git a/packages/veloce_lua_core/lib/src/installation/plugin_installer.dart b/packages/veloce_lua_core/lib/src/installation/plugin_installer.dart
+index 5f4459c..c351cfa 100644
+--- a/packages/veloce_lua_core/lib/src/installation/plugin_installer.dart
++++ b/packages/veloce_lua_core/lib/src/installation/plugin_installer.dart
+@@ -163,8 +163,16 @@ final class PluginInstallResult {
+   final bool replacedExisting;
+ }
+ 
+-/// Authenticates a directory package, stages it on the destination filesystem,
+-/// and commits it with an atomic directory rename.
++/// Trusted host instrumentation for deterministic installation tests. Callbacks
++/// run inside the installer and are not a plugin-facing capability.
++final class PluginInstallHooks {
++  const PluginInstallHooks({this.beforeCopyFile, this.afterSnapshot});
++  final Future<void> Function(String relative)? beforeCopyFile;
++  final Future<void> Function(Directory staging)? afterSnapshot;
++}
++
++/// Authenticates a bounded staged snapshot and publishes it by directory rename.
++/// Replacement is not an atomic exchange; callers must quiesce readers.
+ final class PluginInstaller {
+   PluginInstaller({
+     required this.pluginRoot,
+@@ -172,8 +180,13 @@ final class PluginInstaller {
+     PluginLoader? loader,
+     this.requireSignature = true,
+     this.maxFiles = 4096,
++    this.hooks = const PluginInstallHooks(),
+     this.maxTotalBytes = 128 * 1024 * 1024,
+-  }) : loader = loader ?? PluginLoader();
++  }) : loader = loader ?? PluginLoader() {
++    if (maxFiles < 1 || maxTotalBytes < 1) {
++      throw ArgumentError('Package limits must be positive');
++    }
++  }
+ 
+   static const signatureFileName = 'signature.json';
+   static const provenanceFileName = '.veloce-provenance.json';
+@@ -182,6 +195,7 @@ final class PluginInstaller {
+   final PluginSignatureVerifier signatureVerifier;
+   final PluginLoader loader;
+   final bool requireSignature;
++  final PluginInstallHooks hooks;
+   final int maxFiles;
+   final int maxTotalBytes;
+ 
+@@ -197,11 +211,26 @@ final class PluginInstaller {
+     Directory? prior;
+     PluginManifest? manifest;
+     try {
+-      final candidate = await loader.loadDirectory(packageDirectory);
++      await _requireDirectory(packageDirectory);
++      await pluginRoot.create(recursive: true);
++      await _requireDirectory(pluginRoot);
++      final control = Directory.fromUri(pluginRoot.uri.resolve('.veloce/'));
++      final stagingRoot = Directory.fromUri(control.uri.resolve('staging/'));
++      final rollbackRoot = Directory.fromUri(control.uri.resolve('rollback/'));
++      for (final directory in [control, stagingRoot, rollbackRoot]) {
++        await directory.create();
++        await _requireDirectory(directory);
++      }
++      // Private, unpredictable staging on the destination filesystem. Never
++      // authorize staged bytes from an earlier, mutable source manifest.
++      staging = await stagingRoot.createTemp('snapshot-');
++      await _copyPackage(packageDirectory, staging);
++      await hooks.afterSnapshot?.call(staging);
++      final candidate = await loader.loadDirectory(staging);
+       manifest = candidate.manifest;
+-      final payload = await _digestDirectory(packageDirectory);
++      final payload = await _digestDirectory(staging);
+       final signatureFile = File.fromUri(
+-        packageDirectory.uri.resolve(signatureFileName),
++        staging.uri.resolve(signatureFileName),
+       );
+       PluginSignatureEnvelope? envelope;
+       if (await signatureFile.exists()) {
+@@ -221,17 +250,8 @@ final class PluginInstaller {
+         );
+       }
+ 
+-      await pluginRoot.create(recursive: true);
+-      final control = Directory.fromUri(pluginRoot.uri.resolve('.veloce/'));
+-      final stagingRoot = Directory.fromUri(control.uri.resolve('staging/'));
+-      final rollbackRoot = Directory.fromUri(control.uri.resolve('rollback/'));
+-      await stagingRoot.create(recursive: true);
+-      await rollbackRoot.create(recursive: true);
+-      final nonce = '${DateTime.now().microsecondsSinceEpoch}-$pid';
+-      staging = Directory.fromUri(
+-        stagingRoot.uri.resolve('${manifest.id}-$nonce/'),
+-      );
+-      await _copyPackage(packageDirectory, staging, payload.files);
++      final nonce =
++          '${DateTime.now().microsecondsSinceEpoch}-${staging.uri.pathSegments.where((part) => part.isNotEmpty).last}';
+       final provenance = PluginProvenance(
+         pluginId: manifest.id,
+         version: manifest.version,
+@@ -247,7 +267,17 @@ final class PluginInstaller {
+       final target = Directory.fromUri(
+         pluginRoot.uri.resolve('${manifest.id}/'),
+       );
+-      final replaced = await target.exists();
++      final targetType = await FileSystemEntity.type(
++        target.path,
++        followLinks: false,
++      );
++      if (targetType != FileSystemEntityType.notFound &&
++          targetType != FileSystemEntityType.directory) {
++        throw const PluginInstallationException(
++          'Plugin destination must be a real directory.',
++        );
++      }
++      final replaced = targetType == FileSystemEntityType.directory;
+       if (replaced) {
+         prior = Directory.fromUri(
+           rollbackRoot.uri.resolve('${manifest.id}-$nonce/'),
+@@ -386,12 +416,27 @@ final class PluginInstaller {
+     }
+     files.sort((left, right) => left.relative.compareTo(right.relative));
+     final records = StringBuffer();
++    var readTotal = 0;
+     for (final entry in files) {
+-      final fileDigest = await crypto.sha256.bind(entry.file.openRead()).first;
++      var length = 0;
++      final fileDigest = await crypto.sha256
++          .bind(
++            entry.file.openRead().map((chunk) {
++              length += chunk.length;
++              readTotal += chunk.length;
++              if (readTotal > maxTotalBytes) {
++                throw const PluginInstallationException(
++                  'Plugin package exceeds host size limits while hashing.',
++                );
++              }
++              return chunk;
++            }),
++          )
++          .first;
+       records
+         ..write(entry.relative)
+         ..write('\u0000')
+-        ..write(entry.length)
++        ..write(length)
+         ..write('\u0000')
+         ..write(fileDigest)
+         ..write('\n');
+@@ -403,25 +448,107 @@ final class PluginInstaller {
+     );
+   }
+ 
+-  static Future<void> _copyPackage(
++  Future<void> _copyPackage(Directory root, Directory destination) async {
++    var count = 0;
++    var total = 0;
++    var entries = 0;
++    await for (final entity in root.list(recursive: true, followLinks: false)) {
++      if (++entries > maxFiles * 2) {
++        throw const PluginInstallationException(
++          'Plugin package has too many filesystem entries.',
++        );
++      }
++      final relative = _relativePath(root, entity.path);
++      final type = await FileSystemEntity.type(entity.path, followLinks: false);
++      if (type == FileSystemEntityType.directory) {
++        await _requireContained(root, entity);
++        continue;
++      }
++      if (type != FileSystemEntityType.file) {
++        throw const PluginInstallationException(
++          'Plugin packages require regular files without symbolic links.',
++        );
++      }
++      await _requireContained(root, entity);
++      // Caller-supplied provenance is never installed or trusted.
++      if (relative == provenanceFileName) continue;
++      if (++count > maxFiles) {
++        throw const PluginInstallationException(
++          'Plugin package exceeds host file-count limits.',
++        );
++      }
++      await hooks.beforeCopyFile?.call(relative);
++      await _requireContained(root, entity);
++      if (await FileSystemEntity.type(entity.path, followLinks: false) !=
++          FileSystemEntityType.file) {
++        throw const PluginInstallationException(
++          'Plugin source changed file type before copying.',
++        );
++      }
++      final target = File(
++        '${destination.path}${Platform.pathSeparator}$relative',
++      );
++      await target.parent.create(recursive: true);
++      final output = await target.open(mode: FileMode.writeOnly);
++      var fileBytes = 0;
++      try {
++        await for (final chunk in File(entity.path).openRead()) {
++          total += chunk.length;
++          fileBytes += chunk.length;
++          if ((relative == signatureFileName && fileBytes > 16 * 1024) ||
++              (relative == 'manifest.json' && fileBytes > 1024 * 1024)) {
++            throw const PluginInstallationException(
++              'Plugin metadata exceeds host size limits.',
++            );
++          }
++          if (total > maxTotalBytes) {
++            throw const PluginInstallationException(
++              'Plugin package exceeds host size limits while copying.',
++            );
++          }
++          await output.writeFrom(chunk);
++        }
++        await output.flush();
++      } finally {
++        await output.close();
++      }
++      await _requireContained(root, entity);
++      if (await FileSystemEntity.type(entity.path, followLinks: false) !=
++          FileSystemEntityType.file) {
++        throw const PluginInstallationException(
++          'Plugin source changed file type while copying.',
++        );
++      }
++    }
++  }
++
++  static Future<void> _requireDirectory(Directory directory) async {
++    if (await FileSystemEntity.type(directory.path, followLinks: false) !=
++        FileSystemEntityType.directory) {
++      throw const PluginInstallationException(
++        'Plugin directory may not be a symbolic link.',
++      );
++    }
++    if (Directory(await directory.resolveSymbolicLinks()).absolute.path !=
++        directory.absolute.path.replaceFirst(RegExp(r'[/\\]+$'), '')) {
++      throw const PluginInstallationException(
++        'Plugin directory path must be canonical and contain no symbolic links.',
++      );
++    }
++  }
++
++  static Future<void> _requireContained(
+     Directory root,
+-    Directory destination,
+-    List<({File file, String relative, int length})> signedFiles,
++    FileSystemEntity entity,
+   ) async {
+-    await destination.create(recursive: true);
+-    final signature = File.fromUri(root.uri.resolve(signatureFileName));
+-    final files = [
+-      ...signedFiles.map(
+-        (entry) => (file: entry.file, relative: entry.relative),
+-      ),
+-      if (await signature.exists())
+-        (file: signature, relative: signatureFileName),
+-    ];
+-    for (final entry in files) {
+-      final target = File.fromUri(destination.uri.resolve(entry.relative));
+-      await target.parent.create(recursive: true);
+-      await entry.file.copy(target.path);
++    final canonical = await entity.resolveSymbolicLinks();
++    final expected = entity.absolute.path.replaceFirst(RegExp(r'[/\\]+$'), '');
++    if (canonical != expected) {
++      throw const PluginInstallationException(
++        'Plugin package path contains a symbolic link.',
++      );
+     }
++    _relativePath(root, canonical);
+   }
+ 
+   static String _relativePath(Directory root, String path) {
+@@ -437,7 +564,16 @@ final class PluginInstaller {
+         filename: path,
+       );
+     }
+-    return absolute.substring(prefix.length).replaceAll('\\', '/');
++    final relative = absolute.substring(prefix.length).replaceAll('\\', '/');
++    if (relative
++            .split('/')
++            .any((part) => part.isEmpty || part == '.' || part == '..') ||
++        relative.contains('\u0000') ||
++        relative.contains('\n') ||
++        relative.contains('\r')) {
++      throw const PluginInstallationException('Invalid plugin package path.');
++    }
++    return relative;
+   }
+ }
+ 
+diff --git a/packages/veloce_lua_core/test/plugin_installer_test.dart b/packages/veloce_lua_core/test/plugin_installer_test.dart
+index 782b5dd..c7d63f9 100644
+--- a/packages/veloce_lua_core/test/plugin_installer_test.dart
++++ b/packages/veloce_lua_core/test/plugin_installer_test.dart
+@@ -1,11 +1,220 @@
+ import 'dart:convert';
+ import 'dart:io';
++import 'dart:typed_data';
+ 
+ import 'package:cryptography/cryptography.dart';
+ import 'package:test/test.dart';
+ import 'package:veloce_lua_core/veloce_lua_core.dart';
+ 
+ void main() {
++  for (final mutation in ['payload', 'manifest', 'signature', 'added']) {
++    test('staged $mutation tampering is rejected', () async {
++      final fixture = await _InstallFixture.create();
++      final installer = fixture.installer(
++        hooks: PluginInstallHooks(
++          afterSnapshot: (staging) async {
++            switch (mutation) {
++              case 'payload':
++                await File('${staging.path}/main.lua').writeAsString('changed');
++              case 'manifest':
++                final file = File('${staging.path}/manifest.json');
++                final manifest =
++                    jsonDecode(await file.readAsString())
++                        as Map<String, dynamic>;
++                manifest['version'] = '2.0.0';
++                await file.writeAsString(jsonEncode(manifest));
++              case 'signature':
++                await File(
++                  '${staging.path}/signature.json',
++                ).writeAsString('{}');
++              case 'added':
++                await File('${staging.path}/extra.lua').writeAsString('added');
++            }
++          },
++        ),
++      );
++      await expectLater(
++        installer.install(fixture.package),
++        throwsA(isA<PluginInstallationException>()),
++      );
++      expect(
++        await Directory('${fixture.root.path}/dev.example.signed').exists(),
++        isFalse,
++      );
++      expect(
++        await Directory('${fixture.root.path}/.veloce/staging').list().toList(),
++        isEmpty,
++      );
++    });
++  }
++
++  test('signing-key scope uses the staged manifest', () async {
++    final fixture = await _InstallFixture.create();
++    final installer = fixture.installer(
++      hooks: PluginInstallHooks(
++        afterSnapshot: (staging) async {
++          final file = File('${staging.path}/manifest.json');
++          final manifest =
++              jsonDecode(await file.readAsString()) as Map<String, dynamic>;
++          manifest['id'] = 'dev.example.other';
++          await file.writeAsString(jsonEncode(manifest));
++          await _sign(
++            staging,
++            fixture.installer(),
++            fixture.algorithm,
++            fixture.key,
++          );
++        },
++      ),
++    );
++    await expectLater(
++      installer.install(fixture.package),
++      throwsA(isA<PluginInstallationException>()),
++    );
++    expect(
++      await Directory('${fixture.root.path}/dev.example.other').exists(),
++      isFalse,
++    );
++  });
++
++  test('copy enforces growth bounds after inspection', () async {
++    final fixture = await _InstallFixture.create();
++    final installer = fixture.installer(
++      maxTotalBytes: 2048,
++      hooks: PluginInstallHooks(
++        beforeCopyFile: (relative) async {
++          if (relative == 'main.lua') {
++            await File(
++              '${fixture.package.path}/main.lua',
++            ).writeAsBytes(List.filled(4096, 42));
++          }
++        },
++      ),
++    );
++    await expectLater(
++      installer.install(fixture.package),
++      throwsA(isA<PluginInstallationException>()),
++    );
++    expect(
++      await Directory('${fixture.root.path}/.veloce/staging').list().toList(),
++      isEmpty,
++    );
++  });
++
++  test(
++    'link substitution before copy and symlink destinations are rejected',
++    () async {
++      final fixture = await _InstallFixture.create();
++      final outside = File('${fixture.sources.path}/outside.lua');
++      await outside.writeAsString('private fixture');
++      final installer = fixture.installer(
++        hooks: PluginInstallHooks(
++          beforeCopyFile: (relative) async {
++            if (relative != 'main.lua') return;
++            final file = File('${fixture.package.path}/main.lua');
++            await file.delete();
++            await Link(file.path).create(outside.path);
++          },
++        ),
++      );
++      await expectLater(
++        installer.install(fixture.package),
++        throwsA(isA<PluginInstallationException>()),
++      );
++      await Link('${fixture.package.path}/main.lua').delete();
++      await File(
++        '${fixture.package.path}/main.lua',
++      ).writeAsString('return "safe"');
++      await _sign(
++        fixture.package,
++        fixture.installer(),
++        fixture.algorithm,
++        fixture.key,
++      );
++      await Link(
++        '${fixture.root.path}/dev.example.signed',
++      ).create(fixture.sources.path);
++      await expectLater(
++        fixture.installer().install(fixture.package),
++        throwsA(isA<PluginInstallationException>()),
++      );
++      expect(await outside.readAsString(), 'private fixture');
++    },
++  );
++
++  test('signature metadata counts towards copy bounds', () async {
++    final fixture = await _InstallFixture.create();
++    await File(
++      '${fixture.package.path}/signature.json',
++    ).writeAsString(' ' * (16 * 1024 + 1));
++    await expectLater(
++      fixture.installer().install(fixture.package),
++      throwsA(isA<PluginInstallationException>()),
++    );
++  });
++
++  test(
++    'source mutation after verification cannot alter the installed bytes or manifest',
++    () async {
++      final root = await Directory.systemTemp.createTemp(
++        'veloce-snapshot-root-',
++      );
++      final sources = await Directory.systemTemp.createTemp(
++        'veloce-snapshot-source-',
++      );
++      addTearDown(() async {
++        await root.delete(recursive: true);
++        await sources.delete(recursive: true);
++      });
++      final algorithm = Ed25519();
++      final key = await algorithm.newKeyPair();
++      final public = await key.extractPublicKey();
++      final package = await _package(
++        sources,
++        version: '1.0.0',
++        body: 'verified',
++      );
++      final verifier = _AfterVerification(
++        Ed25519PluginSignatureVerifier([
++          TrustedPluginKey(
++            keyId: 'test-vendor',
++            publicKey: public.bytes,
++            allowedPluginIds: ['dev.example.signed'],
++          ),
++        ]),
++        () async {
++          await File(
++            '${package.path}/main.lua',
++          ).writeAsString('unverified payload');
++          final file = File('${package.path}/manifest.json');
++          final manifest =
++              jsonDecode(await file.readAsString()) as Map<String, dynamic>;
++          manifest['version'] = '9.0.0';
++          await file.writeAsString(jsonEncode(manifest));
++          await File(
++            '${package.path}/unexpected.lua',
++          ).writeAsString('unverified addition');
++          await File('${package.path}/signature.json').writeAsString('{}');
++        },
++      );
++      final installer = PluginInstaller(
++        pluginRoot: root,
++        signatureVerifier: verifier,
++      );
++      await _sign(package, installer, algorithm, key);
++      final result = await installer.install(package);
++      expect(result.source.manifest.version.toString(), '1.0.0');
++      expect(result.provenance.version.toString(), '1.0.0');
++      final target = Directory(result.source.directoryPath);
++      expect(
++        await File('${target.path}/main.lua').readAsString(),
++        'return "verified"',
++      );
++      expect(await File('${target.path}/unexpected.lua').exists(), isFalse);
++      expect(await installer.computeDigest(target), verifier.verifiedDigest);
++    },
++  );
++
+   test(
+     'signed installs upgrade atomically and retain a verified rollback',
+     () async {
+@@ -140,3 +349,79 @@ Future<void> _sign(
+     }),
+   );
+ }
++
++class _AfterVerification implements PluginSignatureVerifier {
++  _AfterVerification(this.delegate, this.after);
++  final PluginSignatureVerifier delegate;
++  final Future<void> Function() after;
++  late Uint8List verifiedDigest;
++  @override
++  Future<void> verify({
++    required PluginManifest manifest,
++    required Uint8List digest,
++    required PluginSignatureEnvelope envelope,
++  }) async {
++    await delegate.verify(
++      manifest: manifest,
++      digest: digest,
++      envelope: envelope,
++    );
++    verifiedDigest = digest;
++    await after();
++  }
++}
++
++class _InstallFixture {
++  _InstallFixture(
++    this.root,
++    this.sources,
++    this.package,
++    this.algorithm,
++    this.key,
++    this.verifier,
++  );
++  final Directory root, sources, package;
++  final Ed25519 algorithm;
++  final KeyPair key;
++  final PluginSignatureVerifier verifier;
++  static Future<_InstallFixture> create() async {
++    final root = await Directory.systemTemp.createTemp('veloce-staging-root-');
++    final sources = await Directory.systemTemp.createTemp(
++      'veloce-staging-source-',
++    );
++    addTearDown(() async {
++      await root.delete(recursive: true);
++      await sources.delete(recursive: true);
++    });
++    final algorithm = Ed25519();
++    final key = await algorithm.newKeyPair();
++    final public = await key.extractPublicKey();
++    final package = await _package(sources, version: '1.0.0', body: 'safe');
++    final fixture = _InstallFixture(
++      root,
++      sources,
++      package,
++      algorithm,
++      key,
++      Ed25519PluginSignatureVerifier([
++        TrustedPluginKey(
++          keyId: 'test-vendor',
++          publicKey: public.bytes,
++          allowedPluginIds: ['dev.example.signed'],
++        ),
++      ]),
++    );
++    await _sign(package, fixture.installer(), algorithm, key);
++    return fixture;
++  }
++
++  PluginInstaller installer({
++    PluginInstallHooks hooks = const PluginInstallHooks(),
++    int maxTotalBytes = 128 * 1024 * 1024,
++  }) => PluginInstaller(
++    pluginRoot: root,
++    signatureVerifier: verifier,
++    hooks: hooks,
++    maxTotalBytes: maxTotalBytes,
++  );
++}
+diff --git a/tool/install_ivi_dev.sh b/tool/install_ivi_dev.sh
+deleted file mode 100644
+index b4fe4d2..0000000
+--- a/tool/install_ivi_dev.sh
++++ /dev/null
+@@ -1,629 +0,0 @@
+-#!/usr/bin/env bash
+-set -Eeuo pipefail
+-IFS=$'\n\t'
+-
+-# Veloce / ivi-homescreen development environment bootstrap.
+-#
+-# Validated target:
+-#   Ubuntu / Debian, x86_64 development host
+-#
+-# What it installs/configures:
+-#   - host build dependencies
+-#   - Veloce
+-#   - emb_cli (+ optional compatibility patch)
+-#   - Flutter SDK pinned to FLUTTER_VERSION
+-#   - matching Flutter engine (prebuilt when available, source-built otherwise)
+-#   - ivi-homescreen Wayland/EGL build
+-#   - persistent vcan0 development interface
+-#   - helper commands: ivi-build, ivi-run, ivi-dev, ivi-test-can
+-#
+-# Examples:
+-#   ./install_ivi_dev.sh
+-#   ./install_ivi_dev.sh --root "$HOME/dev" --jobs 8
+-#   ./install_ivi_dev.sh --emb-patch ./emb_cli-flutter-347-fixes.patch
+-#   EMB_CLI_REPO=https://github.com/you/emb_cli.git ./install_ivi_dev.sh
+-#
+-# Rerunning is safe: existing repositories and cached engines are reused.
+-
+-log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+-ok()   { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+-warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
+-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+-
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-
+-ROOT="${IVI_DEV_ROOT:-$HOME/dev}"
+-WORKSPACE="${FLUTTER_WORKSPACE:-}"
+-FLUTTER_VERSION="${FLUTTER_VERSION:-3.47.2}"
+-JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
+-
+-VELOCE_REPO="${VELOCE_REPO:-https://github.com/Gaborboy95/veloce.git}"
+-EMB_CLI_REPO="${EMB_CLI_REPO:-https://github.com/toyota-connected/emb_cli.git}"
+-IVI_HOMESCREEN_REPO="${IVI_HOMESCREEN_REPO:-https://github.com/toyota-connected/ivi-homescreen.git}"
+-
+-VELOCE_REF="${VELOCE_REF:-main}"
+-EMB_CLI_REF="${EMB_CLI_REF:-main}"
+-IVI_HOMESCREEN_REF="${IVI_HOMESCREEN_REF:-main}"
+-
+-EMB_PATCH="${EMB_PATCH:-}"
+-
+-DO_ENGINE=1
+-DO_DEMO_BUILD=1
+-DO_VCAN=1
+-MODIFY_SHELLRC=1
+-UPDATE_REPOS=0
+-
+-usage() {
+-  cat <<'EOF'
+-Usage: install_ivi_dev.sh [options]
+-
+-Options:
+-  --root PATH               Development root (default: ~/dev)
+-  --workspace PATH          Flutter workspace (default: <root>/infotainment)
+-  --flutter-version VER     Flutter version/tag (default: 3.47.2)
+-  --jobs N                  Parallel build jobs (default: nproc)
+-  --emb-patch PATH|URL      emb_cli compatibility patch
+-  --update                  Fast-forward clean existing repositories
+-  --skip-engine             Do not provision/build Flutter engine
+-  --skip-demo-build         Do not build the Veloce infotainment demo
+-  --no-vcan                 Do not create persistent vcan0
+-  --no-shellrc              Do not add generated environment to ~/.bashrc
+-  -h, --help                Show this help
+-
+-Environment overrides:
+-  IVI_DEV_ROOT
+-  FLUTTER_WORKSPACE
+-  FLUTTER_VERSION
+-  JOBS
+-  VELOCE_REPO / VELOCE_REF
+-  EMB_CLI_REPO / EMB_CLI_REF
+-  IVI_HOMESCREEN_REPO / IVI_HOMESCREEN_REF
+-  EMB_PATCH
+-
+-Recommended repository layout:
+-  <root>/veloce
+-  <root>/emb_cli
+-  <root>/ivi-homescreen
+-  <root>/ivi-build
+-  <root>/infotainment
+-  <root>/bin
+-EOF
+-}
+-
+-while (($#)); do
+-  case "$1" in
+-    --root)
+-      [[ $# -ge 2 ]] || die "--root requires a value"
+-      ROOT="$2"; shift 2 ;;
+-    --workspace)
+-      [[ $# -ge 2 ]] || die "--workspace requires a value"
+-      WORKSPACE="$2"; shift 2 ;;
+-    --flutter-version)
+-      [[ $# -ge 2 ]] || die "--flutter-version requires a value"
+-      FLUTTER_VERSION="$2"; shift 2 ;;
+-    --jobs)
+-      [[ $# -ge 2 ]] || die "--jobs requires a value"
+-      JOBS="$2"; shift 2 ;;
+-    --emb-patch)
+-      [[ $# -ge 2 ]] || die "--emb-patch requires a value"
+-      EMB_PATCH="$2"; shift 2 ;;
+-    --update)
+-      UPDATE_REPOS=1; shift ;;
+-    --skip-engine)
+-      DO_ENGINE=0; shift ;;
+-    --skip-demo-build)
+-      DO_DEMO_BUILD=0; shift ;;
+-    --no-vcan)
+-      DO_VCAN=0; shift ;;
+-    --no-shellrc)
+-      MODIFY_SHELLRC=0; shift ;;
+-    -h|--help)
+-      usage; exit 0 ;;
+-    *)
+-      die "Unknown option: $1" ;;
+-  esac
+-done
+-
+-ROOT="$(realpath -m "$ROOT")"
+-WORKSPACE="${WORKSPACE:-$ROOT/infotainment}"
+-WORKSPACE="$(realpath -m "$WORKSPACE")"
+-
+-VELOCE_DIR="$ROOT/veloce"
+-EMB_DIR="$ROOT/emb_cli"
+-IVI_SRC="$ROOT/ivi-homescreen"
+-IVI_BUILD="$ROOT/ivi-build"
+-BIN_DIR="$ROOT/bin"
+-ENV_FILE="$ROOT/ivi-env.sh"
+-DEMO_DIR="$VELOCE_DIR/example/infotainment_demo"
+-BUNDLE="$WORKSPACE/bundle/infotainment_demo-release-x86_64"
+-
+-[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
+-
+-# ---------------------------------------------------------------------------
+-# Host validation
+-# ---------------------------------------------------------------------------
+-
+-[[ "$(uname -s)" == "Linux" ]] || die "This installer currently targets Linux only."
+-
+-case "$(uname -m)" in
+-  x86_64|amd64) ;;
+-  *) die "This validated development installer currently targets x86_64 hosts." ;;
+-esac
+-
+-if [[ -r /etc/os-release ]]; then
+-  # shellcheck disable=SC1091
+-  . /etc/os-release
+-  case "${ID:-}:${ID_LIKE:-}" in
+-    ubuntu:*|debian:*|*:debian*|*:ubuntu*) ;;
+-    *)
+-      die "This installer currently supports Ubuntu/Debian hosts. Detected: ${PRETTY_NAME:-unknown}"
+-      ;;
+-  esac
+-fi
+-
+-command -v sudo >/dev/null || die "sudo is required."
+-sudo -v
+-
+-mkdir -p "$ROOT" "$WORKSPACE" "$BIN_DIR"
+-
+-# ---------------------------------------------------------------------------
+-# Packages
+-# ---------------------------------------------------------------------------
+-
+-log "Installing host development dependencies"
+-
+-sudo apt-get update
+-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+-  ca-certificates \
+-  curl \
+-  git \
+-  git-lfs \
+-  python3 \
+-  build-essential \
+-  clang \
+-  cmake \
+-  ninja-build \
+-  make \
+-  pkg-config \
+-  patch \
+-  rsync \
+-  unzip \
+-  zip \
+-  xz-utils \
+-  tar \
+-  libsystemd-dev \
+-  packagekit \
+-  libgtk-3-dev \
+-  liblzma-dev \
+-  libwayland-dev \
+-  wayland-protocols \
+-  libxkbcommon-dev \
+-  mesa-common-dev \
+-  libegl1-mesa-dev \
+-  libgles2-mesa-dev \
+-  mesa-utils \
+-  can-utils \
+-  iproute2 \
+-  kmod
+-
+-git lfs install --skip-repo >/dev/null 2>&1 || true
+-
+-# ---------------------------------------------------------------------------
+-# Git helpers
+-# ---------------------------------------------------------------------------
+-
+-clone_or_keep() {
+-  local url="$1"
+-  local dir="$2"
+-  local ref="$3"
+-  local name="$4"
+-
+-  if [[ ! -e "$dir/.git" ]]; then
+-    log "Cloning $name"
+-    git clone --branch "$ref" "$url" "$dir"
+-    git -C "$dir" submodule update --init --recursive
+-    return
+-  fi
+-
+-  log "$name already exists: $dir"
+-
+-  if (( UPDATE_REPOS == 0 )); then
+-    return
+-  fi
+-
+-  if [[ -n "$(git -C "$dir" status --porcelain)" ]]; then
+-    warn "$name has local changes; not updating it."
+-    return
+-  fi
+-
+-  log "Updating $name"
+-  git -C "$dir" fetch origin
+-
+-  # Only fast-forward when the requested ref is a branch that exists remotely.
+-  if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+-    git -C "$dir" checkout "$ref"
+-    git -C "$dir" merge --ff-only "origin/$ref"
+-  else
+-    git -C "$dir" checkout "$ref"
+-  fi
+-
+-  git -C "$dir" submodule update --init --recursive
+-}
+-
+-# Clone Veloce first because it may carry the emb compatibility patch.
+-clone_or_keep "$VELOCE_REPO" "$VELOCE_DIR" "$VELOCE_REF" "Veloce"
+-clone_or_keep "$EMB_CLI_REPO" "$EMB_DIR" "$EMB_CLI_REF" "emb_cli"
+-clone_or_keep "$IVI_HOMESCREEN_REPO" "$IVI_SRC" "$IVI_HOMESCREEN_REF" "ivi-homescreen"
+-
+-# ---------------------------------------------------------------------------
+-# emb_cli compatibility patch
+-# ---------------------------------------------------------------------------
+-
+-resolve_emb_patch() {
+-  local candidate
+-
+-  if [[ -n "$EMB_PATCH" ]]; then
+-    printf '%s\n' "$EMB_PATCH"
+-    return
+-  fi
+-
+-  for candidate in \
+-    "$VELOCE_DIR/tool/patches/emb_cli-flutter-347-fixes.patch" \
+-    "$SCRIPT_DIR/emb_cli-flutter-347-fixes.patch"
+-  do
+-    if [[ -f "$candidate" ]]; then
+-      printf '%s\n' "$candidate"
+-      return
+-    fi
+-  done
+-
+-  printf '\n'
+-}
+-
+-apply_emb_patch() {
+-  local patch_spec
+-  local patch_file
+-  patch_spec="$(resolve_emb_patch)"
+-
+-  if [[ -z "$patch_spec" ]]; then
+-    warn "No emb_cli compatibility patch found."
+-    warn "If your emb_cli fork already contains the Flutter 3.47/source-engine fixes, this is fine."
+-    warn "Otherwise rerun with --emb-patch PATH, or store the patch at:"
+-    warn "  $VELOCE_DIR/tool/patches/emb_cli-flutter-347-fixes.patch"
+-    return
+-  fi
+-
+-  if [[ "$patch_spec" =~ ^https?:// ]]; then
+-    patch_file="$(mktemp)"
+-    log "Downloading emb_cli compatibility patch"
+-    curl -fL "$patch_spec" -o "$patch_file"
+-  else
+-    patch_file="$(realpath "$patch_spec")"
+-  fi
+-
+-  [[ -f "$patch_file" ]] || die "emb patch does not exist: $patch_file"
+-
+-  if git -C "$EMB_DIR" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+-    ok "emb_cli compatibility patch is already applied"
+-  elif git -C "$EMB_DIR" apply --check "$patch_file" >/dev/null 2>&1; then
+-    log "Applying emb_cli compatibility patch"
+-    git -C "$EMB_DIR" apply "$patch_file"
+-  else
+-    # A custom fork may already contain equivalent fixes with a different diff.
+-    warn "The emb_cli patch cannot be cleanly applied or reverse-applied."
+-    warn "Continuing under the assumption that this emb_cli tree already contains equivalent fixes."
+-  fi
+-
+-  if [[ "$patch_spec" =~ ^https?:// ]]; then
+-    rm -f "$patch_file"
+-  fi
+-}
+-
+-apply_emb_patch
+-
+-# ---------------------------------------------------------------------------
+-# Bootstrap emb
+-# ---------------------------------------------------------------------------
+-
+-log "Bootstrapping emb_cli"
+-cd "$EMB_DIR"
+-
+-# bootstrap.sh installs a pinned Dart SDK when necessary and prints PATH exports.
+-# shellcheck disable=SC2046
+-eval "$(./bootstrap.sh --shellenv)"
+-
+-command -v emb >/dev/null || die "emb was not installed onto PATH."
+-emb --version
+-
+-# The installed emb executable resolves the package correctly, but the source
+-# engine recipe is repository-local. Keep this explicit until emb resolves the
+-# recipe relative to its own installation.
+-export EMB_ENGINE_BUILD_SCRIPT="$EMB_DIR/tool/engine/build-engine.sh"
+-
+-# ---------------------------------------------------------------------------
+-# Flutter SDK
+-# ---------------------------------------------------------------------------
+-
+-log "Installing/provisioning Flutter $FLUTTER_VERSION"
+-emb flutter \
+-  --workspace "$WORKSPACE" \
+-  --flutter-version "$FLUTTER_VERSION"
+-
+-[[ -f "$WORKSPACE/setup_env.sh" ]] || die "emb did not generate $WORKSPACE/setup_env.sh"
+-
+-# shellcheck disable=SC1090
+-source "$WORKSPACE/setup_env.sh"
+-
+-flutter config --enable-linux-desktop >/dev/null
+-flutter precache --linux
+-flutter --version
+-
+-# doctor is informative here; Android toolchain failures are irrelevant to this setup.
+-flutter doctor -v || true
+-
+-# ---------------------------------------------------------------------------
+-# Flutter engine
+-# ---------------------------------------------------------------------------
+-
+-if (( DO_ENGINE )); then
+-  log "Provisioning matching Flutter release engine"
+-  log "A prebuilt will be reused when available; otherwise this may perform a large source build."
+-
+-  emb engine \
+-    --workspace "$WORKSPACE" \
+-    --arch x86_64 \
+-    --mode release \
+-    --build-engine
+-
+-  ENGINE_COMMIT="$(tr -d '\r\n' < "$WORKSPACE/flutter/bin/internal/engine.version")"
+-  ENGINE_SO="$WORKSPACE/.config/flutter_workspace/flutter-engine/bundle-release-x86_64/lib/libflutter_engine.so"
+-
+-  [[ -f "$ENGINE_SO" ]] || die "Engine provisioning finished without staging libflutter_engine.so."
+-  ok "Flutter engine staged for commit $ENGINE_COMMIT"
+-else
+-  warn "Skipping Flutter engine provisioning."
+-fi
+-
+-# ---------------------------------------------------------------------------
+-# ivi-homescreen
+-# ---------------------------------------------------------------------------
+-
+-log "Configuring ivi-homescreen (Wayland/EGL)"
+-cmake \
+-  -S "$IVI_SRC" \
+-  -B "$IVI_BUILD" \
+-  -D CMAKE_BUILD_TYPE=Debug \
+-  -D CMAKE_STAGING_PREFIX="$IVI_BUILD/out/usr/local" \
+-  -D BUILD_BACKEND_WAYLAND_EGL=ON \
+-  -D BUILD_BACKEND_WAYLAND_VULKAN=OFF \
+-  -D ENABLE_XDG_CLIENT=ON \
+-  -D ENABLE_DLT=OFF
+-
+-log "Building ivi-homescreen"
+-cmake --build "$IVI_BUILD" --target install --parallel "$JOBS"
+-
+-HOMESCREEN="$IVI_BUILD/out/usr/local/bin/homescreen"
+-[[ -x "$HOMESCREEN" ]] || die "homescreen binary was not produced at $HOMESCREEN"
+-ok "ivi-homescreen built: $HOMESCREEN"
+-
+-# ---------------------------------------------------------------------------
+-# Veloce Flutter dependencies + optional smoke bundle
+-# ---------------------------------------------------------------------------
+-
+-[[ -d "$DEMO_DIR" ]] || die "Veloce infotainment demo not found at $DEMO_DIR"
+-
+-log "Resolving Veloce demo dependencies"
+-cd "$DEMO_DIR"
+-flutter pub get
+-
+-if (( DO_DEMO_BUILD )); then
+-  log "Building Veloce IVI smoke-test bundle with emb"
+-  emb bundle \
+-    --workspace "$WORKSPACE" \
+-    --app-path "$DEMO_DIR" \
+-    --arch x86_64 \
+-    --mode release \
+-    --build
+-
+-  for f in \
+-    "$BUNDLE/lib/libapp.so" \
+-    "$BUNDLE/lib/libflutter_engine.so" \
+-    "$BUNDLE/lib/libveloce_lua_native.so"
+-  do
+-    [[ -f "$f" ]] || die "Smoke bundle is missing: $f"
+-  done
+-
+-  if ldd "$BUNDLE/lib/libveloce_lua_native.so" | grep -q "not found"; then
+-    ldd "$BUNDLE/lib/libveloce_lua_native.so" | grep "not found" >&2 || true
+-    die "Veloce native library has unresolved dependencies."
+-  fi
+-
+-  ok "Smoke-test bundle built successfully"
+-else
+-  warn "Skipping Veloce demo bundle build."
+-fi
+-
+-# ---------------------------------------------------------------------------
+-# vcan0
+-# ---------------------------------------------------------------------------
+-
+-if (( DO_VCAN )); then
+-  log "Installing persistent vcan0 development interface"
+-
+-  sudo tee /usr/local/sbin/veloce-vcan0-up >/dev/null <<'EOF'
+-#!/bin/sh
+-set -eu
+-modprobe vcan
+-if ! ip link show vcan0 >/dev/null 2>&1; then
+-  ip link add dev vcan0 type vcan
+-fi
+-ip link set dev vcan0 up
+-EOF
+-  sudo chmod 0755 /usr/local/sbin/veloce-vcan0-up
+-
+-  sudo tee /etc/systemd/system/veloce-vcan0.service >/dev/null <<'EOF'
+-[Unit]
+-Description=Veloce virtual CAN development interface
+-After=network-pre.target
+-
+-[Service]
+-Type=oneshot
+-RemainAfterExit=yes
+-ExecStart=/usr/local/sbin/veloce-vcan0-up
+-ExecStop=/bin/sh -c 'ip link show vcan0 >/dev/null 2>&1 && ip link del dev vcan0 || true'
+-
+-[Install]
+-WantedBy=multi-user.target
+-EOF
+-
+-  sudo systemctl daemon-reload
+-  sudo systemctl enable --now veloce-vcan0.service
+-  ip link show vcan0 >/dev/null || die "vcan0 service started but vcan0 is unavailable."
+-  ok "vcan0 is up"
+-fi
+-
+-# ---------------------------------------------------------------------------
+-# Environment + helper commands
+-# ---------------------------------------------------------------------------
+-
+-log "Generating development environment"
+-
+-cat > "$ENV_FILE" <<EOF
+-# Generated by install_ivi_dev.sh
+-export IVI_DEV_ROOT="$ROOT"
+-export FLUTTER_WORKSPACE="$WORKSPACE"
+-export VELOCE_ROOT="$VELOCE_DIR"
+-export EMB_CLI_ROOT="$EMB_DIR"
+-export IVI_HOMESCREEN_ROOT="$IVI_SRC"
+-export IVI_BUILD="$IVI_BUILD"
+-export EMB_ENGINE_BUILD_SCRIPT="$EMB_DIR/tool/engine/build-engine.sh"
+-
+-source "$WORKSPACE/setup_env.sh"
+-
+-export VELOCE_PLUGIN_DIR="$VELOCE_DIR/plugins"
+-export VELOCE_PLUGIN_STORAGE="$VELOCE_DIR/.veloce_storage"
+-export VELOCE_CAN_INPUT="socketcan"
+-export VELOCE_SOCKETCAN_INTERFACE="vcan0"
+-export VELOCE_CAN_BUS="comfort"
+-export VELOCE_CAN_WRITE_ENABLED="false"
+-
+-export PATH="$BIN_DIR:\$PATH"
+-EOF
+-
+-cat > "$BIN_DIR/ivi-build" <<EOF
+-#!/usr/bin/env bash
+-set -euo pipefail
+-source "$ENV_FILE"
+-exec emb bundle \\
+-  --workspace "$WORKSPACE" \\
+-  --app-path "$DEMO_DIR" \\
+-  --arch x86_64 \\
+-  --mode release \\
+-  --build
+-EOF
+-
+-cat > "$BIN_DIR/ivi-run" <<EOF
+-#!/usr/bin/env bash
+-set -euo pipefail
+-source "$ENV_FILE"
+-
+-BUNDLE="$BUNDLE"
+-HOMESCREEN="$HOMESCREEN"
+-
+-[[ -f "\$BUNDLE/lib/libapp.so" ]] || {
+-  echo "Bundle missing. Run: ivi-build" >&2
+-  exit 1
+-}
+-
+-export LD_LIBRARY_PATH="$IVI_BUILD/out/usr/local/lib:\$BUNDLE/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+-export VELOCE_LUA_LIBRARY="\$BUNDLE/lib/libveloce_lua_native.so"
+-
+-exec "\$HOMESCREEN" -b "\$BUNDLE"
+-EOF
+-
+-cat > "$BIN_DIR/ivi-dev" <<EOF
+-#!/usr/bin/env bash
+-set -euo pipefail
+-"$BIN_DIR/ivi-build"
+-exec "$BIN_DIR/ivi-run"
+-EOF
+-
+-cat > "$BIN_DIR/ivi-test-can" <<'EOF'
+-#!/usr/bin/env bash
+-set -euo pipefail
+-cansend vcan0 280#0BB8
+-echo "Sent 0x280 / 0BB8 to vcan0 (demo expectation: 3000 RPM)"
+-EOF
+-
+-chmod +x \
+-  "$BIN_DIR/ivi-build" \
+-  "$BIN_DIR/ivi-run" \
+-  "$BIN_DIR/ivi-dev" \
+-  "$BIN_DIR/ivi-test-can"
+-
+-if (( MODIFY_SHELLRC )); then
+-  BASHRC="$HOME/.bashrc"
+-  SOURCE_LINE="source \"$ENV_FILE\""
+-
+-  touch "$BASHRC"
+-  if ! grep -Fqx "$SOURCE_LINE" "$BASHRC"; then
+-    {
+-      printf '\n# Veloce / IVI development environment\n'
+-      printf '%s\n' "$SOURCE_LINE"
+-    } >> "$BASHRC"
+-    ok "Added IVI environment to $BASHRC"
+-  fi
+-fi
+-
+-# ---------------------------------------------------------------------------
+-# Final verification
+-# ---------------------------------------------------------------------------
+-
+-log "Final verification"
+-
+-test -x "$HOMESCREEN"
+-test -x "$BIN_DIR/ivi-build"
+-test -x "$BIN_DIR/ivi-run"
+-command -v flutter >/dev/null
+-command -v emb >/dev/null
+-
+-if (( DO_VCAN )); then
+-  ip link show vcan0 >/dev/null
+-fi
+-
+-cat <<EOF
+-
+-============================================================
+-Veloce IVI development environment is ready
+-============================================================
+-
+-Root:
+-  $ROOT
+-
+-Flutter workspace:
+-  $WORKSPACE
+-
+-Repositories:
+-  Veloce:          $VELOCE_DIR
+-  emb_cli:         $EMB_DIR
+-  ivi-homescreen:  $IVI_SRC
+-
+-Environment:
+-  $ENV_FILE
+-
+-Helper commands:
+-  ivi-build       Build the embedded Veloce bundle
+-  ivi-run         Run the current bundle in ivi-homescreen
+-  ivi-dev         Build, then run
+-  ivi-test-can    Send the demo 3000 RPM CAN frame
+-
+-For THIS shell, run:
+-  source "$ENV_FILE"
+-
+-Then a complete test is:
+-  ivi-dev
+-
+-In another terminal:
+-  ivi-test-can
+-
+-EOF
+diff --git a/tool/patches/emb_cli-flutter-347-fixes.patch b/tool/patches/emb_cli-flutter-347-fixes.patch
+deleted file mode 100644
+index 508d09e..0000000
+--- a/tool/patches/emb_cli-flutter-347-fixes.patch
++++ /dev/null
+@@ -1,305 +0,0 @@
+-From 044589230b2817deb358da6d9e9801f84364ff6e Mon Sep 17 00:00:00 2001
+-From: Gabor Peter <peter.gabor04@gmail.com>
+-Date: Sun, 30 Aug 2026 21:01:40 +0200
+-Subject: [PATCH] Fix source engine staging and Flutter 3.47 AOT builds
+-
+----
+- lib/src/aot/aot_builder.dart         | 23 ++++++-
+- lib/src/bundle/bundle_pipeline.dart  | 17 +++++-
+- lib/src/commands/engine_command.dart | 91 ++++++++++++++++++++++++++++
+- lib/src/engine/engine_builder.dart   | 69 +++++++++++++--------
+- 4 files changed, 173 insertions(+), 27 deletions(-)
+-
+-diff --git a/lib/src/aot/aot_builder.dart b/lib/src/aot/aot_builder.dart
+-index 41af6a7..5720649 100644
+---- a/lib/src/aot/aot_builder.dart
+-+++ b/lib/src/aot/aot_builder.dart
+-@@ -265,10 +265,10 @@ class AotBuilder {
+- 
+-     final newScheme = File(_frontendServerAot).existsSync();
+-     final targetArch = arch ?? host.machineArch;
+--    final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
+- 
+-     final results = <AotModeResult>[];
+-     for (final mode in modes) {
+-+      final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, [mode]);
+-       onStep?.call('[$mode] flutter build bundle');
+-       final bundle = await runProcess(
+-         _flutterBin,
+-@@ -592,6 +592,27 @@ class AotBuilder {
+-     final hostToken = EngineArtifacts.engineArch(host.machineArch);
+-     final cross = targetToken != hostToken;
+- 
+-+    // Native builds should prefer Flutter's mode-specific gen_snapshot.
+-+    // In particular, linux-x64-release/gen_snapshot is product-configured and
+-+    // must be paired with a product release engine.
+-+    if (!cross) {
+-+      for (final mode in modes) {
+-+        final modeGen = p.join(
+-+          workspace.flutterDir.path,
+-+          'bin',
+-+          'cache',
+-+          'artifacts',
+-+          'engine',
+-+          '${host.os.configToken}-${host.flutterArch}-$mode',
+-+          'gen_snapshot',
+-+        );
+-+
+-+        if (File(modeGen).existsSync()) {
+-+          return modeGen;
+-+        }
+-+      }
+-+    }
+-+
+-     final commit = workspace.engineCommit();
+-     if (commit != null) {
+-       for (final mode in [...modes, 'release', 'profile', 'debug']) {
+-diff --git a/lib/src/bundle/bundle_pipeline.dart b/lib/src/bundle/bundle_pipeline.dart
+-index 7a31f1c..83b3e6a 100644
+---- a/lib/src/bundle/bundle_pipeline.dart
+-+++ b/lib/src/bundle/bundle_pipeline.dart
+-@@ -47,7 +47,22 @@ Future<BundleResult> buildAndAssemble({
+-     if (commit != null && (!icu.existsSync() || have != want)) {
+-       final token = EngineArtifacts.engineArch(arch);
+-       onStep?.call('fetching engine ($mode/$token)');
+--      await engine.fetch(runtime: mode, arch: token, commit: commit);
+-+
+-+      final fetched = await engine.fetch(
+-+        runtime: mode,
+-+        arch: token,
+-+        commit: commit,
+-+      );
+-+
+-+      if (!fetched.ok) {
+-+        return BundleResult(
+-+          success: false,
+-+          message:
+-+              fetched.message ??
+-+              'No usable engine for $mode/$token@$commit. '
+-+                  'Run `emb engine --arch $token --mode $mode --build-engine`.',
+-+        );
+-+      }
+-     }
+-   }
+- 
+-diff --git a/lib/src/commands/engine_command.dart b/lib/src/commands/engine_command.dart
+-index 5480852..5312bf6 100644
+---- a/lib/src/commands/engine_command.dart
+-+++ b/lib/src/commands/engine_command.dart
+-@@ -295,6 +295,18 @@ class EngineCommand extends Command<int> {
+-     );
+-     switch (result.status) {
+-       case EngineBuildStatus.cached:
+-+        if (result.storeRoot == null ||
+-+            !_stageBuiltEngine(
+-+              workspace: workspace,
+-+              storeRoot: result.storeRoot!,
+-+              commit: commit,
+-+              arch: arch,
+-+              mode: mode,
+-+            )) {
+-+          progress.fail('Engine $mode: could not stage cached source build');
+-+          return false;
+-+        }
+-+
+-         progress.complete(
+-           'Engine $mode (cached build) → ${result.storeRoot?.path}',
+-         );
+-@@ -310,6 +322,17 @@ class EngineCommand extends Command<int> {
+-             return false;
+-           }
+-         }
+-+        if (result.storeRoot == null ||
+-+            !_stageBuiltEngine(
+-+              workspace: workspace,
+-+              storeRoot: result.storeRoot!,
+-+              commit: commit,
+-+              arch: arch,
+-+              mode: mode,
+-+            )) {
+-+          progress.fail('Engine $mode: could not stage source-built engine');
+-+          return false;
+-+        }
+-         progress.complete(
+-           'Engine $mode built from source → ${result.storeRoot?.path}',
+-         );
+-@@ -403,4 +426,72 @@ class EngineCommand extends Command<int> {
+-     }
+-     return null;
+-   }
+-+
+-+  bool _stageBuiltEngine({
+-+    required Workspace workspace,
+-+    required Directory storeRoot,
+-+    required String commit,
+-+    required String arch,
+-+    required String mode,
+-+  }) {
+-+    final token = EngineArtifacts.engineArch(arch);
+-+
+-+    final sdkCandidate = Directory(p.join(storeRoot.path, 'engine-sdk'));
+-+    final sdkRoot = sdkCandidate.existsSync() ? sdkCandidate : storeRoot;
+-+
+-+    final icu = _findFile(sdkRoot, 'icudtl.dat');
+-+    final engine = _findFile(sdkRoot, 'libflutter_engine.so');
+-+
+-+    if (icu == null || engine == null) {
+-+      return false;
+-+    }
+-+
+-+    final platform = workspace.ensurePlatformDir('flutter-engine');
+-+
+-+    final bundleDir = Directory(p.join(platform.path, 'bundle-$mode-$token'));
+-+
+-+    if (bundleDir.existsSync()) {
+-+      bundleDir.deleteSync(recursive: true);
+-+    }
+-+
+-+    final dataDir = Directory(p.join(bundleDir.path, 'data'))
+-+      ..createSync(recursive: true);
+-+
+-+    final libDir = Directory(p.join(bundleDir.path, 'lib'))
+-+      ..createSync(recursive: true);
+-+
+-+    icu.copySync(p.join(dataDir.path, 'icudtl.dat'));
+-+
+-+    engine.copySync(p.join(libDir.path, 'libflutter_engine.so'));
+-+
+-+    File(p.join(bundleDir.path, EngineArtifacts.bundleStampName))
+-+        .writeAsStringSync(EngineArtifacts.engineKey(mode, token, commit));
+-+
+-+    final commitDir = Directory(p.join(platform.path, commit))
+-+      ..createSync(recursive: true);
+-+
+-+    final sdkLinkPath = p.join(commitDir.path, 'engine-sdk-$mode-$token');
+-+
+-+    final existingType = FileSystemEntity.typeSync(
+-+      sdkLinkPath,
+-+      followLinks: false,
+-+    );
+-+
+-+    switch (existingType) {
+-+      case FileSystemEntityType.link:
+-+        Link(sdkLinkPath).deleteSync();
+-+      case FileSystemEntityType.directory:
+-+        Directory(sdkLinkPath).deleteSync(recursive: true);
+-+      case FileSystemEntityType.file:
+-+        File(sdkLinkPath).deleteSync();
+-+      case FileSystemEntityType.notFound:
+-+      case FileSystemEntityType.pipe:
+-+      case FileSystemEntityType.unixDomainSock:
+-+        break;
+-+    }
+-+
+-+    Link(sdkLinkPath).createSync(sdkRoot.path, recursive: true);
+-+
+-+    return true;
+-+  }
+- }
+-diff --git a/lib/src/engine/engine_builder.dart b/lib/src/engine/engine_builder.dart
+-index 3199d13..a8dd765 100644
+---- a/lib/src/engine/engine_builder.dart
+-+++ b/lib/src/engine/engine_builder.dart
+-@@ -30,24 +30,22 @@ class EngineBuildResult {
+- 
+- /// A single-mode engine build, injectable into `EngineCommand` for testing the
+- /// fetch-else-build dispatch without a real engine build.
+--typedef EngineBuildFn =
+--    Future<EngineBuildResult> Function({
+--      required String commit,
+--      required String arch,
+--      required String mode,
+--      ToolchainProfile profile,
+--      bool offline,
+--      bool strict,
+--    });
+-+typedef EngineBuildFn = Future<EngineBuildResult> Function({
+-+  required String commit,
+-+  required String arch,
+-+  required String mode,
+-+  ToolchainProfile profile,
+-+  bool offline,
+-+  bool strict,
+-+});
+- 
+- /// A subprocess runner for the build driver, injectable for tests.
+--typedef EngineProcessRunner =
+--    Future<ProcessResult> Function(
+--      String exe,
+--      List<String> args, {
+--      String? workingDirectory,
+--      Map<String, String>? environment,
+--    });
+-+typedef EngineProcessRunner = Future<ProcessResult> Function(
+-+  String exe,
+-+  List<String> args, {
+-+  String? workingDirectory,
+-+  Map<String, String>? environment,
+-+});
+- 
+- /// Resolves a target sysroot directory (e.g. an Alpine apk musl sysroot),
+- /// injected so the build phase can pass `EMB_SYSROOT_DIR` to the recipe.
+-@@ -126,14 +124,35 @@ class EngineBuilder {
+-     }
+- 
+-     // An offline build must build from a previously fetched closure.
+--    final closure = _store.rootOf(srcKind, commit);
+--    if (wantOffline && !closure.existsSync()) {
+--      return EngineBuildResult(
+--        EngineBuildStatus.unsupported,
+--        message:
+--            'offline build needs the fetch phase first: no engine-src closure '
+--            'for $commit (run `emb engine fetch`)',
+-+    var closure = _store.rootOf(srcKind, commit);
+-+
+-+    if (!closure.existsSync()) {
+-+      if (wantOffline) {
+-+        return EngineBuildResult(
+-+          EngineBuildStatus.unsupported,
+-+          message:
+-+              'offline build needs the fetch phase first: no engine-src closure '
+-+              'for $commit',
+-+        );
+-+      }
+-+
+-+      final fetched = await fetch(
+-+        commit: commit,
+-+        arch: arch,
+-+        mode: mode,
+-+        profile: profile,
+-       );
+-+
+-+      if ((fetched.status != EngineBuildStatus.built &&
+-+              fetched.status != EngineBuildStatus.cached) ||
+-+          fetched.storeRoot == null) {
+-+        return EngineBuildResult(
+-+          EngineBuildStatus.failed,
+-+          message: fetched.message ?? 'engine source fetch failed',
+-+        );
+-+      }
+-+
+-+      closure = fetched.storeRoot!;
+-     }
+- 
+-     // --offline-strict refuses when real isolation is unavailable, rather than
+-@@ -166,7 +185,7 @@ class EngineBuilder {
+-     final built =
+-         outDir ?? Directory.systemTemp.createTempSync('emb-engine-build-');
+-     final baseArgv = [
+--      '/bin/sh',
+-+      '/bin/bash',
+-       _script.path,
+-       'build',
+-       mode,
+-@@ -222,7 +241,7 @@ class EngineBuilder {
+-     if (missingScript != null) return missingScript;
+- 
+-     final out = Directory.systemTemp.createTempSync('emb-engine-src-');
+--    final result = await _run('/bin/sh', [
+-+    final result = await _run('/bin/bash', [
+-       _script.path,
+-       'fetch',
+-       mode,
+--- 
+-2.43.0
+-

@@ -1,0 +1,25 @@
+diff --git a/shell/platform/homescreen/platform_views/platform_view_host.cc b/shell/platform/homescreen/platform_views/platform_view_host.cc
+index 0b4d65d..0828682 100644
+--- a/shell/platform/homescreen/platform_views/platform_view_host.cc
++++ b/shell/platform/homescreen/platform_views/platform_view_host.cc
+@@ -1213,11 +1213,15 @@ int HostSubmit(void* user_data,
+     v->pending_egl.acquire_fence_fd = acquire_fence_fd;  // ownership moves here
+     v->pending_egl.stash_seq = v->submit_seq;
+     v->pending_egl.valid = true;
+-    // Per-frame release eventfd: hand the producer a dup to wait on before it
+-    // reuses this ring slot; the compositor signals our copy from
+-    // OnScanoutRelease. A stale entry for this buffer_id (the producer reused
+-    // the slot without our having signalled) is retired first.
+-    v->HandBackReleaseEventfd(frame->buffer_id, out_release_fence_fd);
++    // Only GBM/DRM backends retire these eventfds via OnScanoutRelease.
++    // Wayland-EGL has no scanout callback. Keep its GL fence handling above
++    // unchanged instead of accumulating one host-owned eventfd per buffer.
++    BackendEglContext egl{};
++    Backend* backend = BackendOf(user_data);
++    if (backend != nullptr && backend->GetEglContext(&egl) &&
++        egl.gbm_device != nullptr) {
++      v->HandBackReleaseEventfd(frame->buffer_id, out_release_fence_fd);
++    }
+     lock.unlock();  // don't call into the engine holding the view lock
+     ScheduleEngineFrame(user_data);
+     return IHS_PV_OK;

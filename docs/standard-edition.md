@@ -99,3 +99,15 @@ continues through the Camera destination.
 loader, session, GStreamer, service/process and camera-access checks without
 creating deployment state or starting services. An unchecked hardware operation
 is reported as unverified, never as accepted. It does not open capture devices.
+
+## Development Debian runtime
+
+`tool/release/standard-release.json` pins the standard runtime and public build
+inputs. `tool/release/README.md` documents the builder, package and isolated tests.
+The development `argo-runtime` package has passed Debian 13 install/reinstall,
+upgrade/remove/purge, data-preservation, corrupt-archive, checksum and loader checks.
+It needs no development toolchain on the target. User services start only through
+an explicit desktop/session launch. Host deployment and graphical/physical
+acceptance were not performed. Clean-container execution, independent compilation
+reproducibility and publication licensing remain open; identical-input package
+assembly is reproducible. See the build artifact continuation report for evidence.
