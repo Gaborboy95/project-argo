@@ -53,7 +53,6 @@ def main():
             (bundle / 'data/flutter_assets' / name).unlink(missing_ok=True)
         sources = {
             'bin/homescreen': args.ihs / 'bin/homescreen',
-            'lib/libihs_shared.so': args.ihs / 'lib/libihs_shared.so',
             'lib/libihs_shared.so.1': args.ihs / 'lib/libihs_shared.so.1',
             'lib/libflutter_engine.so': args.engine,
             'lib/libargo_projection_view.so': args.projection_view,
@@ -91,6 +90,10 @@ def main():
         for path in [bundle / name for name in sources]:
             if path.read_bytes()[:4] == b'\x7fELF':
                 subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/../lib' if path.parent.name == 'bin' else '$ORIGIN', str(path)], check=True)
+        # Both names must resolve to one ELF instance/registry. A hard link also
+        # preserves the release validator's no-symbolic-links invariant. Create
+        # it after patchelf, which may replace the underlying file.
+        os.link(bundle / 'lib/libihs_shared.so.1', bundle / 'lib/libihs_shared.so')
         launcher = stage / 'usr/bin'
         launcher.mkdir(parents=True)
         for command, binary in [('argo', 'homescreen'), ('argo-projectiond', 'argo-projectiond'), ('argo-carplayd', 'argo-carplayd'), ('argo-carplayctl', 'argo-carplayctl')]:

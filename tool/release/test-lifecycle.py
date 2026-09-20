@@ -64,6 +64,7 @@ def main():
         # This checks every ELF and dynamically loaded native asset, not only launchers.
         output = run('loader closure', ['/bin/sh', '-c', 'set -e; for f in /usr/lib/argo/runtime/bin/* /usr/lib/argo/runtime/lib/*.so*; do ldd "$f"; done'], read_only=True)
         if 'not found' in output: raise RuntimeError('Unresolved runtime dependency')
+        run('IHS aliases share one loader instance', ['python3', '-c', 'import ctypes,os; a="/usr/lib/argo/runtime/lib/libihs_shared.so"; b=a+".1"; assert os.path.samefile(a,b); assert ctypes.CDLL(a)._handle == ctypes.CDLL(b)._handle'], read_only=True)
         run('no compiler on runtime target', ['/bin/sh', '-c', '! command -v cargo && ! command -v cmake && ! command -v flutter && ! command -v ninja'], read_only=True)
         run('package configured', ['dpkg-query', '-W', '-f=${Status} ${Version}\n', 'argo-runtime'])
     a.log.with_suffix('.json').write_text(json.dumps(results, indent=2) + '\n')
