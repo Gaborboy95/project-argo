@@ -37,6 +37,24 @@ class _Control implements SurroundCameraControl {
 
 void main() {
   test(
+    'closed view cancels candidate rendering and rejects its late result',
+    () async {
+      final control = _Control(), service = CameraFixture();
+      final manager = CalibrationManager(service, control);
+      final pending = manager.render({'op': 'render'});
+      final rejected = expectLater(pending, throwsStateError);
+      await control.polled.future;
+      await manager.close();
+      control.status.complete({
+        'state': 'complete',
+        'result': {'output': '/late'},
+      });
+      await rejected;
+      expect(control.calls, contains('cancel'));
+      await service.close();
+    },
+  );
+  test(
     'closed view rejects late solver result and cancels owned job',
     () async {
       final control = _Control(), service = CameraFixture();

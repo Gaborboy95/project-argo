@@ -30,7 +30,9 @@ final class ServiceFailure implements Exception {
   final Object cause;
   final bool retryable;
   final String? recovery;
-  String get detail => cause.toString();
+  String get detail => cause is ServiceFailure
+      ? (cause as ServiceFailure).detail
+      : cause.toString();
   String get copyDiagnostics => jsonEncode({
     'schema': 1,
     'kind': kind.name,

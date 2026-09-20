@@ -43,7 +43,16 @@ class _BenchState extends State<BenchLensCalibrationPage> {
   }
 
   Future<void> _run(Future<void> Function() action) async {
-    if (_busy) return;
+    if (_busy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A lens calibration operation is already in progress. Wait for it to finish.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() {
       _busy = true;
       _failure = null;

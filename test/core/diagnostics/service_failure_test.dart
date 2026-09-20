@@ -14,6 +14,15 @@ void main() {
       recovery: secret,
     );
     expect(error.detail, secret);
+    final wrapped = ServiceFailure(
+      feature: 'camera',
+      operation: 'command',
+      kind: FailureKind.rejected,
+      summary: 'Camera operation failed',
+      cause: error,
+    );
+    expect(wrapped.detail, secret);
+    expect(wrapped.copyDiagnostics, isNot(contains('pairing-secret')));
     for (final part in [
       'pairing-secret',
       'phone-contact',

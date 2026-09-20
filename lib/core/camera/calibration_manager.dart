@@ -43,13 +43,21 @@ class CalibrationManager {
   Future<Map<String, dynamic>> call(
     String op, [
     Map<String, Object?> args = const {},
-  ]) async {
+  ]) => _runJob('calibration', {'op': op, ...args});
+
+  Future<Map<String, dynamic>> render(Map<String, Object?> args) =>
+      _runJob('render', args);
+
+  Future<Map<String, dynamic>> _runJob(
+    String worker,
+    Map<String, Object?> args,
+  ) async {
     if (_closed) throw StateError('Calibration view closed');
     final generation = _generation;
     final job = SurroundJob(control);
     _jobs.add(job);
     try {
-      final result = await job.run('calibration', {'op': op, ...args});
+      final result = await job.run(worker, args);
       if (_closed || generation != _generation) {
         throw StateError('Calibration decision expired');
       }

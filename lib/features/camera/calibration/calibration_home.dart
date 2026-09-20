@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 
 import '../../../core/camera/camera_service.dart';
 import '../../../core/camera/calibration_manager.dart';
-import '../../../core/camera/surround_jobs.dart';
 import '../calibration_wizard.dart';
 import 'calibration_preview.dart';
 import 'bench_lens_calibration_page.dart';
@@ -77,7 +76,16 @@ class _HomeState extends State<CalibrationHome> {
   }
 
   Future<void> _run(Future<void> Function() action) async {
-    if (_busy) return;
+    if (_busy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A calibration operation is already in progress. Wait for it to finish.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() {
       _busy = true;
       _failure = null;
@@ -85,17 +93,28 @@ class _HomeState extends State<CalibrationHome> {
     try {
       await action();
     } catch (e) {
+      _recordFailure(e, retry: action);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  void _recordFailure(
+    Object error, {
+    String summary = 'Could not complete calibration',
+    Future<void> Function()? retry,
+  }) {
+    if (!mounted) return;
+    setState(() {
       _failure = ServiceFailure(
         feature: 'camera',
         operation: 'calibration',
         kind: FailureKind.rejected,
-        summary: 'Could not complete calibration',
-        cause: '$e',
-        retryable: true,
+        summary: summary,
+        cause: error,
+        retryable: retry != null,
       );
-      _retry = action;
-    }
-    if (mounted) setState(() => _busy = false);
+      _retry = retry;
+    });
   }
 
   Future<void> _persist() {
@@ -103,7 +122,11 @@ class _HomeState extends State<CalibrationHome> {
     final snapshot = jsonDecode(jsonEncode(_draft)) as Map<String, dynamic>;
     _saveChain = _saveChain
         .catchError((Object e) {
-          if (mounted) setState(() => _message = '$e');
+          _recordFailure(
+            e,
+            summary: 'Could not save calibration progress',
+            retry: _persist,
+          );
         })
         .then((_) async {
           final result = await _manager.call('draft_save', {'draft': snapshot});
@@ -121,7 +144,11 @@ class _HomeState extends State<CalibrationHome> {
     _saveTimer = Timer(const Duration(milliseconds: 500), () {
       unawaited(
         _persist().catchError((Object error) {
-          if (mounted) setState(() => _message = '$error');
+          _recordFailure(
+            error,
+            summary: 'Could not save calibration progress',
+            retry: _persist,
+          );
         }),
       );
     });
@@ -206,8 +233,15 @@ class _HomeState extends State<CalibrationHome> {
           'orientation': frame['orientation'] ?? 0,
           'crop': frame['crop'],
         };
-      } catch (e) {
-        _message = 'Some views unavailable: $e';
+      } catch (error) {
+        (_draft!.putIfAbsent('statuses', () => <String, dynamic>{})
+                as Map)[e.key] =
+            'Failed: $error';
+        _recordFailure(
+          error,
+          summary: 'Some camera views could not be captured',
+          retry: _captureAll,
+        );
       }
     }
     await _persist();
@@ -248,14 +282,18 @@ class _HomeState extends State<CalibrationHome> {
             'pixel_format': 'image',
           });
         } catch (e) {
-          _message = 'Missing view: $e';
+          _recordFailure(
+            e,
+            summary: 'A camera view is unavailable for preview',
+            retry: _preview,
+          );
         }
       }
     }
     if (frames.isEmpty) {
       throw StateError('No camera images available for preview');
     }
-    final image = await SurroundJob(widget.control).run('render', {
+    final image = await _manager.render({
       'op': 'render',
       'calibration': {'vehicle': _draft!['vehicle'], 'cameras': cameras},
       'frames': frames,
@@ -289,7 +327,7 @@ class _HomeState extends State<CalibrationHome> {
               onPressed: () =>
                   Navigator.pop(context, record['revision'] as String),
               child: Text(
-                '${record['revision'] == state['active'] ? 'Active • ' : ''}${DateTime.fromMillisecondsSinceEpoch(((record['created_ns'] as num) / 1000000).round()).toLocal()} • ${record['camera_count']} cameras\n${record['revision']}',
+                '${record['revision'] == state['active'] ? 'Active • ' : ''}${DateTime.fromMillisecondsSinceEpoch(((record['created_ns'] as num) / 1000000).round()).toLocal()} • ${record['camera_count']} cameras',
               ),
             ),
         ],
@@ -304,8 +342,7 @@ class _HomeState extends State<CalibrationHome> {
             as Map<String, dynamic>;
     _continue = true;
     _step = 5;
-    _message =
-        'Selected saved calibration for preview. Active revision remains ${state['active'] ?? 'none'}.';
+    _message = 'Selected saved calibration for preview. The active calibration is unchanged.';
   }
 
   Future<void> _importRig() async {
@@ -403,7 +440,9 @@ class _HomeState extends State<CalibrationHome> {
           try {
             captures[id] = await _manager.capture(id);
           } catch (e) {
-            _message = '$id: $e';
+            (_draft!.putIfAbsent('statuses', () => <String, dynamic>{})
+                    as Map)[id] =
+                'Failed: $e';
           }
         }
         final stamps =
@@ -419,7 +458,10 @@ class _HomeState extends State<CalibrationHome> {
         for (final id in cameras.keys.toList()) {
           try {
             if (!captures.containsKey(id)) {
-              throw StateError('Camera capture unavailable');
+              throw StateError(
+                (_draft!['statuses'] as Map? ?? {})[id] ??
+                    'Camera capture unavailable',
+              );
             }
             await _detect(id, captured: captures[id]);
           } catch (e) {
@@ -495,7 +537,12 @@ class _HomeState extends State<CalibrationHome> {
         }),
     ],
     _ => [
-      Text('Candidate: ${_revision.isEmpty ? 'Not saved' : _revision}'),
+      Text(_revision.isEmpty ? 'Candidate not saved' : 'Candidate saved'),
+      if (_revision.isNotEmpty)
+        ExpansionTile(
+          title: const Text('Details'),
+          children: [SelectableText('Calibration revision: $_revision')],
+        ),
       _button('Save calibration', () async {
         await _persist();
         _revision =
@@ -507,7 +554,7 @@ class _HomeState extends State<CalibrationHome> {
         _revision =
             (await _manager.call('draft_candidate'))['revision'] as String;
         await _manager.call('activate', {'revision': _revision});
-        _message = 'Active revision $_revision';
+        _message = 'Calibration activated';
       }),
       _button('Export calibration', () async {
         if (_revision.isEmpty) throw StateError('Save a candidate first');
@@ -520,7 +567,8 @@ class _HomeState extends State<CalibrationHome> {
         if (saved) _message = 'Calibration exported to the selected folder';
       }),
       _button('Roll back', () async {
-        _message = '${await _manager.call('rollback')}';
+        await _manager.call('rollback');
+        _message = 'Previous calibration restored';
       }),
       _button('Duplicate as new candidate', () async {
         await _persist();
@@ -532,7 +580,7 @@ class _HomeState extends State<CalibrationHome> {
       if (_revision.isNotEmpty)
         _button('Activate inspected candidate', () async {
           await _manager.call('activate', {'revision': _revision});
-          _message = 'Active revision $_revision';
+          _message = 'Calibration activated';
         }),
     ],
   };
@@ -590,7 +638,7 @@ class _HomeState extends State<CalibrationHome> {
                 if (_revision.isNotEmpty)
                   _button('Activate inspected candidate', () async {
                     await _manager.call('activate', {'revision': _revision});
-                    _message = 'Active revision $_revision';
+                    _message = 'Calibration activated';
                   }),
               ] else ...[
                 Wrap(
