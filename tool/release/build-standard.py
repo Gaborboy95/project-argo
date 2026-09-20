@@ -69,6 +69,7 @@ def main():
         run(['sh', installer, '--prefix=' + str(toolchain), '--disable-ldconfig'])
     env['PATH'] = str(toolchain / 'bin') + ':' + str(flutter / 'bin') + ':' + env['PATH']
     env['RUSTFLAGS'] = '--remap-path-prefix=' + str(work) + '=/build'
+    env['CFLAGS'] = env['CXXFLAGS'] = '-ffile-prefix-map=' + str(work) + '=/build -fdebug-prefix-map=' + str(work) + '=/build'
     engine_archive = download(definition['engine'], 'engine.tar.gz')
     engine = work / 'engine/libflutter_engine.so'
     engine.parent.mkdir()

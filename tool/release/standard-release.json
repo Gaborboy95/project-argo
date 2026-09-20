@@ -3,10 +3,10 @@
   "edition": "standard",
   "architecture": "amd64",
   "debian": "13-trixie",
-  "version": "1.0.0~standard.2",
-  "source_date_epoch": 1789943625,
+  "version": "1.0.0~standard.3",
+  "source_date_epoch": 1789946837,
   "argo": {
-    "revision": "d6a7065249ee29ca73cbd1a13796e10ff7a2ce36"
+    "revision": "bf42d68d4fe40535d1c127a36b90e954781a37f7"
   },
   "veloce": {
     "url": "https://github.com/Gaborboy95/veloce.git",

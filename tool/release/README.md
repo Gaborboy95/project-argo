@@ -51,8 +51,8 @@ minimum-Flutter constraint. No floating branch is used.
 After transferring the `.deb` and its checksum file to a Debian 13 amd64 target:
 
 ```sh
-sha256sum -c argo-runtime_1.0.0~standard.2_amd64.deb.sha256
-sudo apt install ./argo-runtime_1.0.0~standard.2_amd64.deb
+sha256sum -c argo-runtime_1.0.0~standard.3_amd64.deb.sha256
+sudo apt install ./argo-runtime_1.0.0~standard.3_amd64.deb
 argoctl doctor --json
 argo-session
 # Stop the complete desktop session:
@@ -99,7 +99,7 @@ python3 tool/release/test-lifecycle.py \
   --proot /tools/proot/usr/bin/proot \
   --proot-library /tools/proot/usr/lib/x86_64-linux-gnu \
   --previous /artifacts/argo-runtime_1.0.0~standard.1_amd64.deb \
-  --package /artifacts/argo-runtime_1.0.0~standard.2_amd64.deb \
+  --package /artifacts/argo-runtime_1.0.0~standard.3_amd64.deb \
   --log /artifacts/lifecycle.log
 ```
 
@@ -133,3 +133,16 @@ license files, IHS third-party notices and supplemental ImGui/Apache text. Argo
 and Veloce currently lack root license files; the inventory explicitly records
 that unresolved publication gap. These are development runtime packages, not a
 claim of a publicly redistributable, signed or physically accepted release.
+
+
+Without Docker, `run-debian-builder.py --root ROOT --workspace FRESH --source REPO`
+runs the same builder through Bubblewrap in a provisioned Debian 13 filesystem.
+Provision ROOT from the pinned OCI manifest using `debian-test-root.py`, then use
+PRoot to install the exact Dockerfile build dependency list from its fixed Debian
+snapshot. Keep a root-local `policy-rc.d` returning 101 while provisioning. This
+requires no host package installation. The runner mounts ROOT read-only, binds
+only the Argo source and a fresh writable workspace, and shares networking for
+public downloads. Private surround sources, host homes, hardware and service
+sockets are absent. `HOME`, Pub and Cargo directories start empty; all artifacts
+are written under FRESH. Two runs use the same namespace paths to permit a direct
+reproducibility comparison. C/C++ and Rust builds remap source paths.
