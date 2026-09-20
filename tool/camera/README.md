@@ -2,6 +2,14 @@
 
 New releases use the independent [surround-camera client](../../docs/configuration.md#surround-camera-client). The external native factory keeps immutable sealed frame allocations until its CPU copy completes, then explicitly releases each frame. Each native subscription has independent delivery state and 750 ms stale blanking. It copies final BGRx into GBM for IHS; this is not a zero-copy claim. RapidJSON headers are required to build the external adapter; set `RAPIDJSON_ROOT` to an existing checkout when they are not installed.
 
+External calibration/model job polling has a five-minute total deadline,
+including worker startup and status calls. Timeout remains distinct from user
+cancellation even if the best-effort cancel request fails. Cleanup waits at most
+two seconds. Each run owns its job ID; late replies cannot complete a cancelled
+run or cancel a newer run. Starting another job on the same helper while one is
+running reports busy. Backend solver messages remain intact. These are client
+lifecycle guarantees, not acceptance of a physical calibration result.
+
 The rest of this runbook documents the retained `camera_contract=1` manual regression and rollback path.
 
 ## Legacy manual camera
