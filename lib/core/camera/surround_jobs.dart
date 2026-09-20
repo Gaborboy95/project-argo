@@ -78,8 +78,9 @@ final class SurroundJob {
       'request': request,
     }, true);
     final jobId = started['job_id'];
-    if (jobId is! int || jobId < 1)
+    if (jobId is! int || jobId < 1) {
       throw const FormatException('Invalid worker job ID');
+    }
     run.id = jobId;
     if (run.failure != null) {
       await _cleanup(run); // Late startup owns this ID, never the new run's ID.
@@ -95,10 +96,11 @@ final class SurroundJob {
           final result = Map<String, dynamic>.from(
             state['result'] as Map? ?? {},
           );
-          if (result['ok'] == false)
+          if (result['ok'] == false) {
             throw StateError(
               _failureMessage(state, fallback: 'Worker job failed'),
             );
+          }
           return result['result'] is Map
               ? Map<String, dynamic>.from(result['result'] as Map)
               : result;

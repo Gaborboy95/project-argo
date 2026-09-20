@@ -17,6 +17,41 @@
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
 | Host audio/power | Default-sink volume/mute via wpctl; policy and capability reporting; opt-in systemd power backend. |
 
+## Standard Edition stabilization
+
+The Standard Edition milestone is **in progress, not a packaged release**.
+The current implementation checkpoint covers these failure paths:
+
+- Native CarPlay activation admits its command batch before committing state;
+  disconnect and failed terminal touch release use queue-independent cancellation.
+  Unsupported rotary/non-Siri button input returns an error.
+- Projection/video state publishes independently of audio. Audio reconciliation
+  coalesces state, limits native gain work, reports retryable degradation, and
+  releases obsolete owners independently. Failed focus acquisition rolls back its
+  unreturned owner. Audio status changes retain the native view identity.
+- `SurroundJob` owns each run's ID, rejects overlapping runs, ignores late replies
+  after cancellation, and preserves timeout through bounded cleanup. This does
+  not complete calibration/model workflow acceptance.
+- Veloce's installer now verifies the manifest/signature/digest of a bounded
+  private staged snapshot. It does not yet have complete descriptor-relative
+  filesystem race defenses, cross-isolate installation serialization, or a
+  process-death replacement journal. See Veloce's installer trust assumptions.
+
+Remaining Phase A work includes structured end-to-end error/recovery presentation,
+phone ducking, microphone contention/recovery, projection-switch recovery, and
+installer crash/concurrency hardening. The normal-camera provider migration,
+common reverse composition, standard/surround compile-time isolation, shared UI
+migration, guided setup/doctor, calibration/model workflow completion, release
+builder, Debian packages and disposable install/upgrade/remove tests are not
+implemented by this checkpoint. The existing camera default and deployment model
+remain as documented in [configuration](configuration.md) and [setup](setup.md).
+
+No new physical acceptance follows from these changes. Phone input teardown under
+load, audio recovery, IHS/GPU behavior, actual camera capture/reverse, calibration,
+model benchmarks and OEM microphone/vehicle acceptance still require their
+respective hardware checks. There is no Standard Edition `.deb` installation or
+launch command to publish yet.
+
 ## Tested configurations
 
 Wireless Android Auto startup and AP band selection have been tested on the
