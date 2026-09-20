@@ -4,9 +4,9 @@
   "architecture": "amd64",
   "debian": "13-trixie",
   "version": "1.0.0~standard.3",
-  "source_date_epoch": 1789946837,
+  "source_date_epoch": 1789947392,
   "argo": {
-    "revision": "bf42d68d4fe40535d1c127a36b90e954781a37f7"
+    "revision": "fdee363ee92500e20fab378d56078c268b4d65c2"
   },
   "veloce": {
     "url": "https://github.com/Gaborboy95/veloce.git",
