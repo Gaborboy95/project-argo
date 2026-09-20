@@ -327,11 +327,16 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
   }) async {
     if (button == ProjectionInputButton.voiceAssistant) {
       await _command(sessionId, {'action': 'siri', 'pressed': pressed});
+      return;
     }
+    throw UnsupportedError('CarPlay does not support ${button.name} input.');
   }
 
   @override
-  Future<void> sendRotary(String sessionId, int detents) async {}
+  Future<void> sendRotary(String sessionId, int detents) async {
+    throw UnsupportedError('CarPlay rotary input is not available.');
+  }
+
   @override
   Future<void> setVideoVisibility(String streamId, bool visible) async {
     if (streamId != 'main' || _nativeSession == null) return;

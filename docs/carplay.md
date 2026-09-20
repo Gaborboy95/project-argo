@@ -159,6 +159,10 @@ The shared `wired_runtime` is now used by both the example and `argo-carplayd
 backoff after a minute-long session, and stores pairing under
 `$XDG_STATE_HOME/argo-carplay` (default `~/.local/state/argo-carplay`). It owns one
 receiver at a time and cleans up session resources before retrying. Explicit user
+The native receiver advertises its implemented two-contact touch HID. Siri uses
+its dedicated press/release commands. Rotary and other generic projection buttons
+are unsupported and return an explicit error; they do not report silent success.
+
 Native control admission is bounded. Activation reserves both keyframe and audio
 release commands before changing presentation state. A rejected touch-down does
 not allocate a contact; a rejected show request retains the previous visibility.

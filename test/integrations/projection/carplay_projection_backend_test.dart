@@ -184,6 +184,23 @@ void main() {
     },
   );
 
+  test('unsupported rotary and non-Siri buttons fail explicitly', () async {
+    final backend = CarPlayProjectionBackend(
+      socketPath: '/tmp/unused-carplay-control',
+    );
+    for (final button in ProjectionInputButton.values) {
+      if (button == ProjectionInputButton.voiceAssistant) continue;
+      for (final pressed in [true, false]) {
+        await expectLater(
+          backend.sendButton('7', button, pressed: pressed),
+          throwsUnsupportedError,
+        );
+      }
+    }
+    await expectLater(backend.sendRotary('7', 1), throwsUnsupportedError);
+    await backend.close();
+  });
+
   test('rejects invalid socket and polling configuration', () {
     expect(
       () => CarPlayProjectionBackend(socketPath: 'relative'),
