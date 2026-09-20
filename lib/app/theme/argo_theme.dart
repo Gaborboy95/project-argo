@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../features/shared/argo_components.dart';
+
 import '../../core/settings/app_setting_keys.dart';
 import '../../core/settings/settings_service.dart';
 
@@ -28,6 +30,26 @@ abstract final class ArgoTheme {
           );
     final size = settings.get(AppSettingKeys.appearanceControlSize);
     return base.copyWith(
+      cardTheme: CardThemeData(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(ArgoSpacing.radius),
+        ),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          minimumSize: Size(ArgoSpacing.touch * size, ArgoSpacing.touch * size),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          minimumSize: Size(ArgoSpacing.touch * size, ArgoSpacing.touch * size),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: Size(ArgoSpacing.touch * size, ArgoSpacing.touch * size),
+        ),
+      ),
       textTheme: base.typography.englishLike
           .merge(base.textTheme)
           .apply(fontSizeFactor: size),

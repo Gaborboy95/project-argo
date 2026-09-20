@@ -434,6 +434,29 @@ pub struct SessionInfo {
     pub audio_available: bool,
     pub host_return_revision: u64,
     pub audio: Vec<AudioInfo>,
+    pub phone_duck: Option<PhoneDuck>,
+}
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PhoneDuck {
+    pub gain: f64,
+    pub ramp_ms: u32,
+}
+fn phone_duck(command: &plist::Dictionary, unduck: bool) -> PhoneDuck {
+    let params = command.get("params").and_then(Value::as_dictionary);
+    let number = |key| {
+        params
+            .and_then(|p| p.get(key))
+            .and_then(|v| {
+                v.as_real()
+                    .or_else(|| v.as_signed_integer().map(|n| n as f64))
+            })
+            .filter(|v| v.is_finite())
+    };
+    let db = number("volume").unwrap_or(0.0).clamp(-80.0, 0.0);
+    PhoneDuck {
+        gain: if unduck { 1.0 } else { 10.0f64.powf(db / 20.0) },
+        ramp_ms: number("durationMs").unwrap_or(0.0).clamp(0.0, 2000.0) as u32,
+    }
 }
 #[derive(Clone, serde::Serialize)]
 pub struct AudioInfo {
@@ -661,7 +684,10 @@ impl Receiver {
                                     }
                                 }
                             }
-                            Some("duckAudio"|"unduckAudio") => eprintln!("CarPlay audio duck command"),
+                            Some(kind @ ("duckAudio"|"unduckAudio")) => {
+                                let duck = phone_duck(&command, kind == "unduckAudio");
+                                self.information.send_modify(|s| s.phone_duck = Some(duck));
+                            },
                             _ => {}
                         }
                         if command.get("type").and_then(Value::as_string) == Some("requestUI") { self.information.send_modify(|s|s.host_return_revision=s.host_return_revision.saturating_add(1)); }
@@ -699,6 +725,7 @@ impl Receiver {
         self.information.send_modify(|s| {
             s.recorded = false;
             s.audio.clear();
+            s.phone_duck = None;
         });
         result
     }
@@ -1068,6 +1095,20 @@ async fn timing(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn phone_duck_is_bounded_and_unduck_restores_unity() {
+        let mut params = plist::Dictionary::new();
+        params.insert("volume".into(), Value::Real(-20.0));
+        params.insert("durationMs".into(), Value::Integer(9000.into()));
+        let mut command = plist::Dictionary::new();
+        command.insert("params".into(), Value::Dictionary(params));
+        let duck = phone_duck(&command, false);
+        assert!((duck.gain - 0.1).abs() < 0.000001);
+        assert_eq!(duck.ramp_ms, 2000);
+        assert_eq!(phone_duck(&command, true).gain, 1.0);
+        assert_eq!(phone_duck(&plist::Dictionary::new(), false).gain, 1.0);
+    }
+
     use super::*;
     fn display() -> Display {
         Display {

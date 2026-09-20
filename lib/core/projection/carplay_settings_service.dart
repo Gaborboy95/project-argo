@@ -1,3 +1,5 @@
+import '../diagnostics/service_failure.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,6 +15,7 @@ class CarPlaySettingsService {
   bool available = false;
   bool saving = false;
   String? error;
+  ServiceFailure? failure;
   Timer? _timer;
   bool _closed = false;
   Future<void>? _polling;
@@ -74,6 +77,7 @@ class CarPlaySettingsService {
       current = reply;
       available = true;
       error = null;
+      failure = null;
       final source = selectedMicrophone?.call();
       if (source != null &&
           source.isNotEmpty &&
@@ -85,9 +89,20 @@ class CarPlaySettingsService {
         });
         _sentSource = source;
       }
-    } on Object {
+    } on Object catch (cause) {
       available = false;
-      error = 'CarPlay service unavailable.';
+      failure = ServiceFailure(
+        feature: 'carplay',
+        operation: 'status',
+        kind: cause is SocketException
+            ? FailureKind.missingService
+            : FailureKind.rejected,
+        summary: 'Could not read CarPlay receiver settings',
+        cause: cause,
+        retryable: true,
+        recovery: 'Check the receiver service and retry.',
+      );
+      error = failure!.summary;
       _sentSource = null;
     }
     _notify();
@@ -105,7 +120,15 @@ class CarPlaySettingsService {
       await _request(command);
       await refresh();
     } on Object catch (e) {
-      error = '$e';
+      failure = ServiceFailure(
+        feature: 'carplay',
+        operation: 'configure',
+        kind: FailureKind.rejected,
+        summary: 'Could not update CarPlay',
+        cause: e,
+        retryable: true,
+      );
+      error = failure!.summary;
     } finally {
       saving = false;
       _notify();

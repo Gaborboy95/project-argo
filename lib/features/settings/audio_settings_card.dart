@@ -1,3 +1,5 @@
+import '../shared/argo_components.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_service.dart';
@@ -19,12 +21,12 @@ class AudioSettingsCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Sound', style: Theme.of(context).textTheme.titleLarge),
+              const ArgoSection(title: 'Sound', children: []),
               const SizedBox(height: 8),
               Text(
                 s.backendAvailable
                     ? 'Output · ${s.selectedOutput == null || s.selectedOutput == '@DEFAULT_AUDIO_SINK@' ? 'System default' : s.selectedOutput}'
-                    : 'Host audio is unavailable. Use the release launcher with PipeWire running; ARGO_AUDIO_BACKEND=disabled turns these controls off.',
+                    : 'Host audio is unavailable. Check the desktop audio service, then retry.',
               ),
               const SizedBox(height: 20),
               AudioSettingSlider(

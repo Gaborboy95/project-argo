@@ -1,7 +1,10 @@
+import 'projection_recovery.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
 import 'projection_backend.dart';
+import '../diagnostics/service_failure.dart';
 import 'projection_models.dart';
 import 'projection_types.dart';
 
@@ -11,7 +14,8 @@ import 'projection_types.dart';
 /// IDs are opaque, protocol-qualified values. Native media endpoints must still
 /// be selected independently using a validated native stream descriptor; an ID
 /// here is not a path, native view ID, or encoded-media subscription.
-final class MultiplexProjectionBackend implements ProjectionBackend {
+final class MultiplexProjectionBackend
+    implements ProjectionBackend, ProjectionRecovery {
   MultiplexProjectionBackend(Iterable<ProjectionBackend> backends)
     : _backends = List.unmodifiable(backends) {
     final protocols = <ProjectionProtocol>{};
@@ -42,6 +46,8 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
   Future<void>? _start;
   Future<void>? _closing;
   String? _owner;
+  int _decision = 0;
+  ProjectionSwitchRecovery? _recovery;
   ProjectionBackend? _preferredBackend;
   bool _closed = false;
 
@@ -67,7 +73,7 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
             _snapshots[backend] = snapshot;
             _publish();
           },
-          onError: (Object error) => _failed(backend),
+          onError: (Object error) => _failed(backend, error),
           onDone: () => _failed(backend),
         ),
       );
@@ -77,9 +83,9 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
         try {
           await backend.start();
           if (!_closed) _snapshots[backend] = backend.current;
-        } on Object {
+        } on Object catch (error) {
           // A failed protocol adapter must not prevent another from starting.
-          _failed(backend);
+          _failed(backend, error);
           try {
             await backend.close();
           } on Object {
@@ -91,11 +97,22 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
     if (!_closed) _publish();
   }
 
-  void _failed(ProjectionBackend backend) {
+  void _failed(ProjectionBackend backend, [Object? cause]) {
     if (_closed) return;
     _snapshots[backend] = ProjectionSnapshot(
       backendAvailable: false,
       failureMessage: '${backend.protocol!.name} backend unavailable.',
+      failure: cause is ServiceFailure
+          ? cause
+          : ServiceFailure(
+              feature: backend.protocol!.name,
+              operation: 'observe',
+              kind: FailureKind.missingService,
+              summary: 'Projection receiver is unavailable',
+              cause: cause ?? 'Receiver event stream ended',
+              retryable: true,
+              recovery: 'Check the receiver service and reconnect the phone.',
+            ),
     );
     _publish();
   }
@@ -163,7 +180,14 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
       devices: devices,
       sessions: sessions,
       activeSessionId: _owner,
+      switchRecovery: _recovery,
       failureMessage: available ? null : 'Projection backends unavailable.',
+      failure:
+          _snapshots[_preferredBackend]?.failure ??
+          _snapshots.values
+              .map((s) => s.failure)
+              .whereType<ServiceFailure>()
+              .firstOrNull,
     );
     if (next == _current) return;
     _current = next;
@@ -195,6 +219,7 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
     state: session.state,
     failureMessage: session.failureMessage,
     hostReturnRevision: session.hostReturnRevision,
+    phoneDucking: session.phoneDucking,
     metadata: session.metadata,
     videoStreams: session.videoStreams.map((stream) {
       final streamId = _streamId(backend, 'video', session.id, stream.id);
@@ -251,64 +276,131 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
   });
 
   @override
-  Future<void> activate(String sessionId) => _enqueue(() async {
-    final (backend, session) = _session(sessionId);
-    final previous = _owner;
-    if (previous != sessionId && previous != null) {
-      final prior = _sessions[previous];
-      if (prior != null) {
-        _hiddenMainSessions.add(previous);
-        for (final stream in prior.$2.videoStreams) {
-          if (stream.role != ProjectionVideoRole.main) continue;
-          _hiddenStreams.add(
-            _streamId(prior.$1, 'video', prior.$2.id, stream.id),
-          );
-          _publish();
-          await prior.$1.setVideoVisibility(stream.id, false);
-        }
-      }
+  void invalidateRecovery() {
+    _decision++;
+    if (_recovery != null) {
+      _recovery = null;
+      if (!_closed) _publish();
     }
-    await backend.activate(session.id);
-    _requireOpen();
-    if (!_isLive(sessionId)) {
-      throw StateError('Projection session ended during activation.');
-    }
-    _preferredBackend = backend;
-    _owner = sessionId;
-    _hiddenMainSessions.remove(sessionId);
-    for (final stream in session.videoStreams) {
-      _hiddenStreams.remove(_streamId(backend, 'video', session.id, stream.id));
-    }
-    _publish();
-  });
+  }
 
   @override
-  Future<void> setVideoVisibility(String streamId, bool visible) =>
-      _enqueue(() async {
-        final route = _video[streamId];
-        if (route == null) throw StateError('Unknown projection video stream.');
-        final (backend, session, stream) = route;
-        if (visible && _owner != _sessionId(backend, session)) {
-          throw StateError('Only the selected session may become visible.');
+  Future<void> recover(
+    ProjectionSwitchRecovery decision, {
+    bool returnToPrevious = false,
+  }) {
+    _requireOpen();
+    if (!identical(decision, _recovery) || decision.generation != _decision) {
+      return Future.error(StateError('Projection recovery decision expired.'));
+    }
+    final target = returnToPrevious ? decision.previous : decision.target;
+    if (target == null || !_isLive(target)) {
+      return Future.error(StateError('Projection session has ended.'));
+    }
+    return activate(target);
+  }
+
+  @override
+  Future<void> activate(String sessionId) {
+    invalidateRecovery();
+    final decision = _decision;
+    return _enqueue(() async {
+      if (decision != _decision) {
+        throw StateError('Presentation decision expired.');
+      }
+      final previous = _owner;
+      try {
+        final (backend, session) = _session(sessionId);
+
+        if (previous != sessionId && previous != null) {
+          final prior = _sessions[previous];
+          if (prior != null) {
+            _hiddenMainSessions.add(previous);
+            for (final stream in prior.$2.videoStreams) {
+              if (stream.role != ProjectionVideoRole.main) continue;
+              _hiddenStreams.add(
+                _streamId(prior.$1, 'video', prior.$2.id, stream.id),
+              );
+              _publish();
+              await prior.$1.setVideoVisibility(stream.id, false);
+            }
+          }
         }
-        final sessionId = _sessionId(backend, session);
-        final main =
-            _sessions[sessionId]?.$2.videoStreams.any(
-              (s) => s.id == stream && s.role == ProjectionVideoRole.main,
-            ) ??
-            false;
-        if (!visible) {
-          if (main) _hiddenMainSessions.add(sessionId);
-          _hiddenStreams.add(streamId);
+        await backend.activate(session.id);
+        _requireOpen();
+        if (decision != _decision) {
+          for (final stream in session.videoStreams) {
+            if (stream.role == ProjectionVideoRole.main) {
+              await backend.setVideoVisibility(stream.id, false);
+            }
+          }
+          throw StateError('Presentation decision changed during activation.');
+        }
+        if (!_isLive(sessionId)) {
+          throw StateError('Projection session ended during activation.');
+        }
+        _preferredBackend = backend;
+        _owner = sessionId;
+        _hiddenMainSessions.remove(sessionId);
+        for (final stream in session.videoStreams) {
+          _hiddenStreams.remove(
+            _streamId(backend, 'video', session.id, stream.id),
+          );
+        }
+        _publish();
+      } on Object catch (error) {
+        if (!_closed && decision == _decision) {
+          _recovery = ProjectionSwitchRecovery(
+            generation: decision,
+            target: sessionId,
+            targetName: _sessions[sessionId]?.$1.protocol?.name ?? 'projection',
+            previous: _isLive(previous) ? previous : null,
+            previousName: _sessions[previous]?.$1.protocol?.name,
+            failure: ServiceFailure(
+              feature: 'projection',
+              operation: 'activate',
+              kind: FailureKind.rejected,
+              summary: 'Could not switch projection',
+              cause: error,
+              retryable: true,
+            ),
+          );
           _publish();
         }
-        await backend.setVideoVisibility(stream, visible);
-        if (visible) {
-          if (main) _hiddenMainSessions.remove(sessionId);
-          _hiddenStreams.remove(streamId);
-          _publish();
-        }
-      });
+        rethrow;
+      }
+    });
+  }
+
+  @override
+  Future<void> setVideoVisibility(String streamId, bool visible) {
+    if (!visible) invalidateRecovery();
+    return _enqueue(() async {
+      final route = _video[streamId];
+      if (route == null) throw StateError('Unknown projection video stream.');
+      final (backend, session, stream) = route;
+      if (visible && _owner != _sessionId(backend, session)) {
+        throw StateError('Only the selected session may become visible.');
+      }
+      final sessionId = _sessionId(backend, session);
+      final main =
+          _sessions[sessionId]?.$2.videoStreams.any(
+            (s) => s.id == stream && s.role == ProjectionVideoRole.main,
+          ) ??
+          false;
+      if (!visible) {
+        if (main) _hiddenMainSessions.add(sessionId);
+        _hiddenStreams.add(streamId);
+        _publish();
+      }
+      await backend.setVideoVisibility(stream, visible);
+      if (visible) {
+        if (main) _hiddenMainSessions.remove(sessionId);
+        _hiddenStreams.remove(streamId);
+        _publish();
+      }
+    });
+  }
 
   @override
   Future<void> sendTouch(String sessionId, ProjectionTouch touch) async {
@@ -391,6 +483,7 @@ final class MultiplexProjectionBackend implements ProjectionBackend {
   Future<void> close() => _closing ??= _close();
 
   Future<void> _close() async {
+    invalidateRecovery();
     _closed = true;
     for (final subscription in _subscriptions) {
       await subscription.cancel();

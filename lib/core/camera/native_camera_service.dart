@@ -8,22 +8,30 @@ import 'package:flutter/foundation.dart';
 import '../settings/app_setting_keys.dart';
 import '../settings/settings_service.dart';
 import 'camera_service.dart';
+import 'basic_camera_control.dart';
 
 /// Application-owned camera process. IPC contains only commands and metadata.
-final class NativeCameraService implements CameraService {
+final class NativeCameraService implements CameraService, BasicCameraControl {
   NativeCameraService({
     required SettingsService settings,
     required this._environment,
   }) : _settings = settings {
     final saved = settings.get(AppSettingKeys.cameraRear);
     if (saved.isNotEmpty) _assignments[CameraRole.rear] = saved;
+    _configuration = BasicCameraConfiguration.fromJson(
+      jsonDecode(settings.get(AppSettingKeys.cameraConfiguration))
+          as Map<String, dynamic>,
+    );
     _publish();
   }
   final SettingsService _settings;
   final Map<String, String> _environment;
   final _events = StreamController<CameraSnapshot>.broadcast(sync: true);
   final _assignments = <CameraRole, String>{};
-  final _commands = <int, Completer<void>>{};
+  final _commands = <int, Completer<Map<String, dynamic>>>{};
+  late BasicCameraConfiguration _configuration;
+  @override
+  BasicCameraConfiguration get configuration => _configuration;
   CameraSnapshot _current = const CameraSnapshot();
   Process? _process;
   Socket? _socket;
@@ -64,7 +72,6 @@ final class NativeCameraService implements CameraService {
   void _fail(Object error) {
     if (_closed) return;
     _error = '$error'.replaceAll('\n', ' ');
-    if (_error!.length > 240) _error = _error!.substring(0, 240);
     _state = CameraStreamState.failed;
     _frame = {};
     _lastFrame = null;
@@ -229,7 +236,7 @@ final class NativeCameraService implements CameraService {
       final c = _commands.remove(value['id']);
       if (c != null) {
         if (value['error'] == null) {
-          c.complete();
+          c.complete(value);
         } else {
           c.completeError(StateError('${value['error']}'));
         }
@@ -265,11 +272,16 @@ final class NativeCameraService implements CameraService {
     _publish();
   }
 
-  Future<void> _command(String op, {CameraRole? role, String? stableId}) async {
+  Future<Map<String, dynamic>> _command(
+    String op, {
+    CameraRole? role,
+    String? stableId,
+    Map<String, Object?> extra = const {},
+  }) async {
     final socket = _socket;
     if (socket == null) throw StateError('Camera daemon unavailable');
     final id = ++_id;
-    final done = Completer<void>();
+    final done = Completer<Map<String, dynamic>>();
     _commands[id] = done;
     final bytes = utf8.encode(
       jsonEncode({
@@ -278,26 +290,30 @@ final class NativeCameraService implements CameraService {
         'op': op,
         'role': role?.name,
         'stableId': stableId,
+        ...extra,
       }),
     );
     final prefix = ByteData(4)..setUint32(0, bytes.length);
     socket.add(prefix.buffer.asUint8List());
     socket.add(bytes);
     try {
-      await done.future.timeout(const Duration(seconds: 4));
+      return await done.future.timeout(const Duration(seconds: 4));
     } finally {
       _commands.remove(id);
     }
   }
 
-  Future<void> _serialize(Future<void> Function() work) {
+  Future<void> _serialize(
+    Future<void> Function() work, {
+    bool propagate = false,
+  }) {
     final next = _tail.then((_) async {
       if (!_closed) await work();
     });
     _tail = next.catchError((Object e) {
       _fail(e);
     });
-    return _tail;
+    return propagate ? next : _tail;
   }
 
   @override
@@ -328,7 +344,12 @@ final class NativeCameraService implements CameraService {
       _frame = {};
       _lastFrame = null;
       _publish();
-      await _command('start', role: role, stableId: id);
+      await _command(
+        'start',
+        role: role,
+        stableId: id,
+        extra: {'configuration': _configuration.toJson()},
+      );
     });
   }
 
@@ -354,6 +375,37 @@ final class NativeCameraService implements CameraService {
     ++_requestEpoch;
     return _serialize(_stop);
   }
+
+  @override
+  Future<List<CameraMode>> discoverModes() async {
+    List<CameraMode> modes = [];
+    await _serialize(() async {
+      await initialize();
+      final id = _assignments[CameraRole.rear];
+      if (id == null) throw StateError('Choose a rear camera first');
+      await _stop();
+      final reply = await _command('modes', stableId: id);
+      modes = (reply['modes'] as List)
+          .map((v) => CameraMode.fromJson(Map<String, dynamic>.from(v as Map)))
+          .toList();
+    }, propagate: true);
+    return modes;
+  }
+
+  @override
+  Future<void> configure(BasicCameraConfiguration configuration) =>
+      _serialize(() async {
+        // Revalidate public constructor input before persistence or native use.
+        final validated = BasicCameraConfiguration.fromJson(
+          configuration.toJson(),
+        );
+        await _stop();
+        await _settings.set(
+          AppSettingKeys.cameraConfiguration,
+          jsonEncode(validated.toJson()),
+        );
+        _configuration = validated;
+      }, propagate: true);
 
   @override
   Future<void> refresh() => _serialize(() async {

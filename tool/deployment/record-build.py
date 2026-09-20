@@ -20,7 +20,7 @@ def main():
     p.add_argument('kind', choices=['daemon', 'bundle'])
     p.add_argument('path', type=Path)
     p.add_argument('--ihs-prefix', type=Path)
-    p.add_argument('--camera-mode', choices=['legacy', 'external'], default='legacy')
+    p.add_argument('--camera-mode', choices=['basic', 'surround', 'disabled', 'legacy', 'external'], default='basic')
     p.add_argument('--projection-media-contract', type=int, choices=[1])
     p.add_argument('--carplay-wired', action='store_true')
     args = p.parse_args()
@@ -46,14 +46,15 @@ def main():
         if args.ihs_prefix is None:
             p.error('Bundle records require the known matched --ihs-prefix')
         camera = [(args.path / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
-        if args.camera_mode == 'external':
+        if args.camera_mode in ('external', 'surround'):
             if camera[0] or not camera[1]:
                 p.error('External Camera requires camera-view and no app-owned camerad binary')
-            record.update(camera_mode='external', camera_view_contract=2,
+            record.update(camera_mode='surround', camera_view_contract=2,
                           camera_api={'major': 1, 'min_minor': 0, 'max_minor': 0})
         else:
             if any(camera) and not all(camera):
                 p.error('Camera bundles require both camerad and camera-view')
+            record['camera_mode'] = 'disabled' if args.camera_mode == 'disabled' else 'basic'
             if all(camera):
                 record['camera_contract'] = 1
         record['managed_control'] = 1

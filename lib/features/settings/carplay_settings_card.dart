@@ -1,4 +1,9 @@
+import '../projection/projection_recovery_panel.dart';
+import '../../core/audio/microphone_ownership.dart';
+import '../shared/argo_components.dart';
+import '../shared/status_panel.dart';
 import '../../core/projection/projection_types.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/projection/carplay_settings_service.dart';
@@ -32,9 +37,11 @@ class CarPlaySettingsCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const ArgoSection(title: 'Apple CarPlay', children: []),
               Text(
-                'Apple CarPlay',
-                style: Theme.of(context).textTheme.titleLarge,
+                MicrophoneOwnership.parse(
+                  service.current['microphone_ownership'],
+                ).message,
               ),
               const SizedBox(height: 12),
               Text(
@@ -43,10 +50,12 @@ class CarPlaySettingsCard extends StatelessWidget {
                           'Waiting for CarPlay service')
                     : '${sessions.first.device.displayName} · Connected by USB',
               ),
-              if (service.error != null)
-                Text(
-                  service.error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+              if (service.failure case final failure?)
+                ArgoStatusPanel(
+                  status: ArgoStatus.failed,
+                  summary: failure.summary,
+                  failure: failure,
+                  onRetry: service.refresh,
                 ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -67,6 +76,11 @@ class CarPlaySettingsCard extends StatelessWidget {
                     ? (v) => service.configure({'auto_connect': v})
                     : null,
               ),
+              if (snapshot.data?.switchRecovery case final recovery?)
+                ProjectionRecoveryPanel(
+                  service: projection!,
+                  decision: recovery,
+                ),
               Wrap(
                 spacing: 12,
                 runSpacing: 8,
@@ -85,7 +99,13 @@ class CarPlaySettingsCard extends StatelessWidget {
                   ),
                   if (sessions.isNotEmpty && projection != null)
                     OutlinedButton(
-                      onPressed: () => projection!.activate(sessions.first.id),
+                      onPressed: () async {
+                        try {
+                          await projection!.activate(sessions.first.id);
+                        } on Object {
+                          /* Recovery is published by the service. */
+                        }
+                      },
                       child: const Text('Make active'),
                     ),
                 ],

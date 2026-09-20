@@ -409,11 +409,13 @@ see [camera configuration and ownership](../tool/camera/README.md).
 
 ## Surround-camera client
 
-`ARGO_CAMERA_BACKEND=external` selects the independently managed surround-camera
-API 1.0 service. It is the default for new releases; bundles marked
-`camera_contract=1` retain the legacy manual rear path unless explicitly overridden.
-`ARGO_CAMERA_BACKEND=legacy` is the explicit rollback switch. The external engine
-must be stopped before starting legacy capture of the same hardware.
+`ARGO_CAMERA_BACKEND=basic` is the standard default. `surround` selects the
+independently managed API 1.0 service and requires `lib/main_surround.dart` plus
+a native camera view built with `ARGO_WITH_SURROUND=ON`. `disabled` starts neither
+provider. Historical `legacy`/`external` values remain aliases; existing explicit
+release-manifest selection is respected. Unknown values fail configuration.
+Stop the old provider and its recording owners before selecting another provider.
+A missing socket is not proof that capture ownership has been released.
 
 `SURROUND_RUNTIME_DIR` overrides `$XDG_RUNTIME_DIR/surround-camera` for both
 Dart and native clients. It must be an absolute private directory; local socket

@@ -1,3 +1,6 @@
+import 'projection_recovery.dart';
+import '../diagnostics/service_failure.dart';
+
 import 'dart:collection';
 
 import '../media/media_state.dart';
@@ -169,6 +172,21 @@ final class ProjectionAudioStream {
   );
 }
 
+final class ProjectionDucking {
+  ProjectionDucking(double gain, int rampMs)
+    : gain = gain.isFinite ? gain.clamp(0.0, 1.0) : 1.0,
+      rampMs = rampMs.clamp(0, 2000);
+  final double gain;
+  final int rampMs;
+  @override
+  bool operator ==(Object other) =>
+      other is ProjectionDucking &&
+      gain == other.gain &&
+      rampMs == other.rampMs;
+  @override
+  int get hashCode => Object.hash(gain, rampMs);
+}
+
 final class ProjectionSession {
   ProjectionSession({
     required this.id,
@@ -179,6 +197,7 @@ final class ProjectionSession {
     this.failureMessage,
     this.metadata,
     this.hostReturnRevision = 0,
+    this.phoneDucking,
   }) : videoStreams = List.unmodifiable(videoStreams),
        audioStreams = List.unmodifiable(audioStreams);
 
@@ -190,6 +209,7 @@ final class ProjectionSession {
 
   /// Session-scoped phone requests to relinquish presentation, not AV stops.
   final int hostReturnRevision;
+  final ProjectionDucking? phoneDucking;
   final ProjectionSessionMetadata? metadata;
   final String? failureMessage;
 
@@ -201,6 +221,7 @@ final class ProjectionSession {
       state == other.state &&
       failureMessage == other.failureMessage &&
       hostReturnRevision == other.hostReturnRevision &&
+      phoneDucking == other.phoneDucking &&
       metadata == other.metadata &&
       _listEquals(videoStreams, other.videoStreams) &&
       _listEquals(audioStreams, other.audioStreams);
@@ -213,6 +234,7 @@ final class ProjectionSession {
     failureMessage,
     metadata,
     hostReturnRevision,
+    phoneDucking,
     Object.hashAll(videoStreams),
     Object.hashAll(audioStreams),
   );
@@ -240,6 +262,8 @@ final class ProjectionSnapshot {
     this.activeSessionId,
     this.failureMessage,
     this.audioFailure,
+    this.failure,
+    this.switchRecovery,
   }) : devices = UnmodifiableListView(List.of(devices)),
        sessions = UnmodifiableListView(List.of(sessions));
 
@@ -249,7 +273,9 @@ final class ProjectionSnapshot {
       sessions = const [],
       activeSessionId = null,
       failureMessage = null,
-      audioFailure = null;
+      audioFailure = null,
+      failure = null,
+      switchRecovery = null;
 
   final bool backendAvailable;
   final List<ProjectionDevice> devices;
@@ -257,6 +283,8 @@ final class ProjectionSnapshot {
   final String? activeSessionId;
   final String? failureMessage;
   final ProjectionAudioFailure? audioFailure;
+  final ServiceFailure? failure;
+  final ProjectionSwitchRecovery? switchRecovery;
 
   ProjectionSession? get activeSession {
     final id = activeSessionId;
@@ -272,6 +300,8 @@ final class ProjectionSnapshot {
       other is ProjectionSnapshot &&
       backendAvailable == other.backendAvailable &&
       audioFailure == other.audioFailure &&
+      failure == other.failure &&
+      switchRecovery == other.switchRecovery &&
       activeSessionId == other.activeSessionId &&
       failureMessage == other.failureMessage &&
       _listEquals(devices, other.devices) &&
@@ -281,6 +311,8 @@ final class ProjectionSnapshot {
   int get hashCode => Object.hash(
     backendAvailable,
     audioFailure,
+    failure,
+    switchRecovery,
     activeSessionId,
     failureMessage,
     Object.hashAll(devices),

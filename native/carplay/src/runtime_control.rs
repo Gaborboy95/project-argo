@@ -151,7 +151,7 @@ impl Control {
                     json!({"id":"main","width":d.width,"height":d.height,"fps":d.fps_num/d.fps_den,"codec":if d.codec==crate::media::Codec::H264{"h264"}else{"hevc"},"first_frame":*video.first_frame.borrow(),"presentation_revision":presentation.revision,"native_parameters":d.view_parameters(Default::default()).ok().map(|b|b.to_vec())})
                 });
                 return Ok(
-                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision}),
+                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck}),
                 );
             }
             Request::Activate { .. } => {
@@ -314,7 +314,15 @@ async fn handle(mut socket: UnixStream, owner: Arc<Control>) -> io::Result<()> {
     let request: Request = serde_json::from_slice(&bytes)?;
     let reply = match owner.request(request).await {
         Ok(value) => value,
-        Err(_) => json!({"ok":false,"error":"CarPlay operation unavailable"}),
+        Err(error) => {
+            let detail = error.to_string();
+            let code = match detail.as_str() {
+                "stale session" | "session ended; reconnect required" => "stale_session",
+                "CarPlay input queue unavailable" => "busy",
+                _ => "rejected",
+            };
+            json!({"ok":false,"code":code,"error":detail})
+        }
     };
     let mut bytes = serde_json::to_vec(&reply)?;
     if bytes.len() > 16383 {

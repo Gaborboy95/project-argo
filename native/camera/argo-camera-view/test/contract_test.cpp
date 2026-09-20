@@ -1,5 +1,7 @@
 #include "../src/contract.h"
+#ifdef ARGO_WITH_SURROUND
 #include "../src/surround_transport.h"
+#endif
 #include <cassert>
 #include <cmath>
 int main() {
@@ -7,6 +9,7 @@ int main() {
   assert(camera::ClockDiscontinuity(100, 200000001));
   assert(camera::ClockDiscontinuity(200000001, 100));
 
+#ifdef ARGO_WITH_SURROUND
   rapidjson::Document descriptor;
   descriptor.Parse(R"({"format":"BGRx","width":640,"height":480,"generation":1,"sequence":2,"capture_ns":100,"allocation_size":1228800,"planes":[{"offset":0,"stride":2560,"size":1228800}]})");
   camera::Frame immutable;
@@ -18,6 +21,7 @@ int main() {
   descriptor["planes"][0]["stride"].SetUint64(UINT64_MAX);
   assert(!surround::Layout(descriptor, immutable, generation, allocation, offset, 101));
 
+#endif
   std::uint8_t bytes[12]{'A', 'R', 'C', 'V', 1, 0, 0, 0, 0, 0, 0, 0};
   std::uint32_t role = 99;
   assert(camera::Parse(bytes, 12, role) && role == 0);
@@ -49,6 +53,11 @@ int main() {
   put64(160, 100);
   camera::Frame f;
   assert(camera::Latest(ring, 101, f));
+  put(136, 1080); put(140, 1920); put(144, 1080 * 4);
+  assert(camera::Latest(ring, 101, f));
+  put(136, 1920); put(140, 1920); put(144, 1920 * 4);
+  assert(!camera::Latest(ring, 101, f));
+  put(136, 2); put(140, 2); put(144, 8);
   put64(128, 3);
   assert(!camera::Latest(ring, 101, f));
   put64(128, 2);

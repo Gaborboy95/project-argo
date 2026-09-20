@@ -1,3 +1,6 @@
+import '../../core/audio/microphone_ownership.dart';
+import '../shared/argo_components.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -261,10 +264,16 @@ class MicrophoneCard extends StatelessWidget {
       final inputs = (voice?['inputs'] as List?) ?? [];
       final selected = voice?['selected'] as String?;
       final owner = voice?['owner'] as String? ?? '';
+      final ownership = MicrophoneOwnership.parse(voice?['ownership']);
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Voice input', style: Theme.of(context).textTheme.titleLarge),
+          const ArgoSection(title: 'Voice input', children: []),
+          Text(ownership.message),
+          if (ownership.occupied)
+            const Text(
+              'End the current voice session before retrying. Active capture will not be interrupted.',
+            ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             key: ValueKey(selected),
@@ -281,7 +290,7 @@ class MicrophoneCard extends StatelessWidget {
                   child: Text(i['name'] as String),
                 ),
             ],
-            onChanged: owner.isNotEmpty
+            onChanged: owner.isNotEmpty || ownership.occupied
                 ? null
                 : (v) {
                     if (v != null) {

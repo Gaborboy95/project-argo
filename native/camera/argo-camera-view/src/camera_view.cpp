@@ -1,6 +1,8 @@
 #include "contract.h"
 #include "static_image_state.h"
+#ifdef ARGO_WITH_SURROUND
 #include "surround_transport.h"
+#endif
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <cmath>
@@ -24,6 +26,7 @@
 #include <vulkan/vulkan.h>
 namespace {
 constexpr const char *kType = "argo.camera.view";
+#ifdef ARGO_WITH_SURROUND
 constexpr const char *kSurroundType = "argo.surround.view";
 std::atomic<std::uint32_t> selected_role{0};
 struct PresentedImage { std::string path; std::uint64_t capture_ns = 0, revision = 0; bool replay = false; };
@@ -56,6 +59,7 @@ bool DecodeImage(const std::string &path, camera::Frame &frame) {
   gst_object_unref(source); gst_object_unref(sink); gst_object_unref(pipeline);
   return success;
 }
+#endif
 std::uint64_t Now() {
   timespec t{};
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -256,6 +260,7 @@ struct View {
     }
     return result == IHS_PV_OK;
   }
+  #ifdef ARGO_WITH_SURROUND
   void RunExternal() {
     auto suspend_offset = [] {
       timespec t{}; clock_gettime(CLOCK_BOOTTIME, &t);
@@ -398,6 +403,7 @@ struct View {
     }
     disconnect();
   }
+  #endif
   void Run() {
     int socket = -1, event = -1, memory = -1;
     const std::uint8_t *ring = nullptr;
@@ -566,7 +572,12 @@ int Create(const IhsPvCreateInfo *args, void *factory_data, IhsPlatformView *vie
   callbacks->renegotiate = Renegotiate;
   callbacks->dispose = Dispose;
   *user_data = v;
-  v->worker = std::thread([v] { if (v->external) v->RunExternal(); else v->Run(); });
+  v->worker = std::thread([v] {
+#ifdef ARGO_WITH_SURROUND
+    if (v->external) { v->RunExternal(); return; }
+#endif
+    v->Run();
+  });
   return IHS_PV_OK;
 }
 } // namespace
@@ -579,6 +590,7 @@ argo_camera_view_unregister() {
   ihs_pv_unregister_factory(kType);
 }
 
+#ifdef ARGO_WITH_SURROUND
 extern "C" __attribute__((visibility("default"))) int
 argo_surround_camera_view_register() {
   gst_init(nullptr, nullptr);
@@ -607,3 +619,5 @@ argo_surround_camera_runtime_check(const char *path) {
 
 extern "C" __attribute__((visibility("default"))) std::uint64_t
 argo_surround_camera_monotonic_ns() { return Now(); }
+
+#endif

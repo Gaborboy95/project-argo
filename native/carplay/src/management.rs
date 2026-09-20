@@ -154,7 +154,7 @@ impl Manager {
         match value.get("action").and_then(Value::as_str) {
             Some("status") => {
                 return Ok(
-                    json!({"ok":true,"contract":1,"settings":state.settings,"running":state.running,"phase":*self.phase.lock().await,"wireless":false}),
+                    json!({"ok":true,"contract":1,"settings":state.settings,"running":state.running,"phase":*self.phase.lock().await,"wireless":false,"microphone_ownership":microphone_ownership()}),
                 );
             }
             Some("configure") => {
@@ -252,6 +252,18 @@ impl Manager {
         socket.write_all(&bytes).await
     }
 }
+
+fn microphone_ownership() -> &'static str {
+    #[cfg(feature = "linux-audio")]
+    {
+        argo_audio_ownership::state()
+    }
+    #[cfg(not(feature = "linux-audio"))]
+    {
+        "unavailable"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

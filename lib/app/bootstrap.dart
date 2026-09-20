@@ -1,11 +1,12 @@
-import '../core/camera/parking_model_service.dart';
+import 'camera_integration.dart';
+import '../core/camera/camera_provider.dart';
+import '../core/camera/unavailable_camera_service.dart';
 
 import 'dart:async';
 
 import '../core/camera/camera_service.dart';
 import '../core/camera/camera_presentation_policy.dart';
 import '../core/camera/native_camera_service.dart';
-import '../core/camera/surround_camera_service.dart';
 
 import 'dart:convert';
 
@@ -57,6 +58,7 @@ import 'vehicle_profile_composition.dart';
 Future<Widget> bootstrapArgoApplication({
   required Map<String, String> processEnvironment,
   DiagnosticsService? diagnosticsService,
+  CameraIntegration? cameraIntegration,
 }) {
   final diagnostics = diagnosticsService ?? DiagnosticsService();
   final lifecycle = AppLifecycleCoordinator(
@@ -144,44 +146,46 @@ Future<Widget> bootstrapArgoApplication({
       shutdown: settings.close,
     );
 
-    // Existing paired releases keep their manual regression path. New external
-    // releases connect to the engine and never acquire its process lifetime.
-    var cameraBackend = processEnvironment['ARGO_CAMERA_BACKEND'];
-    if (cameraBackend == null) {
-      final bundle = processEnvironment['ARGO_WIRELESS_BUNDLE'];
-      if (bundle != null) {
-        try {
-          final manifest = jsonDecode(
-            await File('$bundle/argo-release.json').readAsString(),
-          ) as Map;
-          if (manifest['camera_contract'] == 1) cameraBackend = 'legacy';
-        } on Object {
-          /* Camera absence must not prevent application startup. */
-        }
-      }
+    Map<Object?, Object?> cameraRelease = const {};
+    final bundle = processEnvironment['ARGO_WIRELESS_BUNDLE'];
+    if (bundle != null && await File('$bundle/argo-release.json').exists()) {
+      cameraRelease = jsonDecode(
+        await File('$bundle/argo-release.json').readAsString(),
+      ) as Map;
     }
+    final provider = CameraProvider.resolve(
+      configured: processEnvironment['ARGO_CAMERA_BACKEND'],
+      release: cameraRelease,
+    );
     final CameraService camera;
-    if (cameraBackend == 'legacy') {
-      final legacy = NativeCameraService(
-        settings: settings,
-        environment: processEnvironment,
-      );
-      camera = legacy;
-      unawaited(legacy.initialize());
-    } else {
-      final external = SurroundCameraService(
-        settings: settings,
-        environment: processEnvironment,
-      );
-      camera = external;
-      unawaited(external.initialize());
+    switch (provider) {
+      case CameraProvider.basic:
+        final basic = NativeCameraService(
+          settings: settings,
+          environment: processEnvironment,
+        );
+        camera = basic;
+        unawaited(basic.initialize());
+      case CameraProvider.surround:
+        if (cameraIntegration == null) {
+          camera = UnavailableCameraService(
+            'Surround integration is not included in this edition. Install the surround-enabled frontend or explicitly select basic after stopping surround capture.',
+          );
+        } else {
+          camera = cameraIntegration.create(settings, processEnvironment);
+          services.register(
+            CameraFeatureContribution(
+              page: cameraIntegration.cameraPage(camera),
+              settings: cameraIntegration.modelSettings(camera),
+            ),
+          );
+        }
+      case CameraProvider.disabled:
+        camera = UnavailableCameraService(
+          'Camera is disabled in configuration.',
+        );
     }
     services.register<CameraService>(camera);
-    if (camera is SurroundCameraControl) {
-      services.register<ParkingModelService>(
-        ParkingModelService(camera as SurroundCameraControl),
-      );
-    }
     lifecycle.registerShutdown(
       name: 'camera',
       phase: AppShutdownPhase.stopActivity,
@@ -242,7 +246,7 @@ Future<Widget> bootstrapArgoApplication({
       ..register(veloceRuntime)
       ..register<VehicleDataService>(vehicleData)
       ..register<VehicleTransportLifecycle>(canSelection.transportLifecycle);
-    if (camera is SurroundCameraService) {
+    if (provider != CameraProvider.disabled) {
       final automatic = CameraPresentationService(
         vehicleData,
         policy: CameraPresentationPolicy(
@@ -255,7 +259,9 @@ Future<Widget> bootstrapArgoApplication({
               3,
         ),
       );
-      camera.renderingMeasurements = () => automatic.renderingMeasurements;
+      if (provider == CameraProvider.surround) {
+        cameraIntegration?.attachPresentation(camera, automatic);
+      }
       services.register<CameraPresentationService>(automatic);
       lifecycle.registerShutdown(
         name: 'camera.presentation',

@@ -19,6 +19,7 @@ pub struct Snapshot {
     pub selected: String,
     pub muted: bool,
     pub owner: String,
+    pub ownership: String,
     pub detail: String,
 }
 #[derive(Clone)]
@@ -77,6 +78,8 @@ fn pulse_fallback_excludes_speaker_monitors_and_bluetooth_inputs() {
 }
 impl Voice {
     pub async fn refresh(&self) -> Result<(), String> {
+        self.state
+            .send_modify(|s| s.ownership = argo_audio_ownership::state().into());
         let inputs = match graph().await {
             Ok(nodes) => nodes
                 .iter()
@@ -151,8 +154,12 @@ impl Voice {
             .clone()
             .try_acquire_owned()
             .map_err(|_| "Microphone is already owned by another voice session")?;
-        let process_lease =
-            argo_audio_ownership::MicrophoneLease::acquire().map_err(|e| e.to_string())?;
+        let process_lease = argo_audio_ownership::MicrophoneLease::acquire_for(match owner {
+            "androidAuto" => argo_audio_ownership::Owner::AndroidAuto,
+            "bluetoothCall" => argo_audio_ownership::Owner::BluetoothCall,
+            _ => argo_audio_ownership::Owner::LocalAssistant,
+        })
+        .map_err(|e| e.to_string())?;
         self.refresh().await?;
         let selected = self.state.borrow().selected.clone();
         if !self.state.borrow().inputs.iter().any(|n| n.id == selected) {

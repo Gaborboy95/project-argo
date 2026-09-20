@@ -1,3 +1,5 @@
+import 'camera_integration.dart';
+
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -7,7 +9,10 @@ import 'argo_error_capture.dart';
 import 'bootstrap.dart';
 
 /// Installs process error capture, composes Argo, and mounts the widget tree.
-void runArgoApplication({required Map<String, String> processEnvironment}) {
+void runArgoApplication({
+  required Map<String, String> processEnvironment,
+  CameraIntegration? cameraIntegration,
+}) {
   final diagnostics = DiagnosticsService();
   ArgoErrorCapture? errorCapture;
   runZonedGuarded(
@@ -18,6 +23,7 @@ void runArgoApplication({required Map<String, String> processEnvironment}) {
         await bootstrapArgoApplication(
           processEnvironment: processEnvironment,
           diagnosticsService: diagnostics,
+          cameraIntegration: cameraIntegration,
         ),
       );
     },

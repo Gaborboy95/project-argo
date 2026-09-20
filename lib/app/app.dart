@@ -23,7 +23,7 @@ class ArgoApp extends StatelessWidget {
         theme: ArgoTheme.build(settings, Brightness.light),
         darkTheme: ArgoTheme.build(settings, Brightness.dark),
         themeMode: ArgoTheme.mode(settings),
-        home: AppShell(environment: environment),
+        home: AppShell(environment: environment, showSetupOnFirstRun: true),
       ),
     );
   }

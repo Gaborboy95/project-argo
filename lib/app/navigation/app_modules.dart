@@ -1,6 +1,6 @@
 import '../../core/projection/carplay_settings_service.dart';
 import '../../core/projection/carplay_link_diagnostics.dart';
-import '../../core/camera/parking_model_service.dart';
+import '../camera_integration.dart';
 import '../../core/camera/camera_service.dart';
 import '../../features/camera/camera_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
@@ -85,6 +85,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          camera: services.contains<CameraService>()
+              ? services.get<CameraService>()
+              : null,
           projection: services.get<ProjectionService>(),
           carPlaySettings: services.contains<CarPlaySettingsService>()
               ? services.get<CarPlaySettingsService>()
@@ -92,8 +95,8 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
           carPlayDiagnostics: services.contains<CarPlayLinkDiagnostics>()
               ? services.get<CarPlayLinkDiagnostics>()
               : null,
-          models: services.contains<ParkingModelService>()
-              ? services.get<ParkingModelService>()
+          modelsPage: services.contains<CameraFeatureContribution>()
+              ? services.get<CameraFeatureContribution>().settings
               : null,
           exit: services.contains<ApplicationExitService>()
               ? services.get<ApplicationExitService>()
@@ -114,11 +117,13 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
       id: 'camera',
       label: 'Camera',
       icon: Icons.videocam_outlined,
-      builder: (_, services) => CameraPage(
-        service: services.contains<CameraService>()
-            ? services.get<CameraService>()
-            : null,
-      ),
+      builder: (_, services) => services.contains<CameraFeatureContribution>()
+          ? services.get<CameraFeatureContribution>().page
+          : CameraPage(
+              service: services.contains<CameraService>()
+                  ? services.get<CameraService>()
+                  : null,
+            ),
     ),
   );
   registry.register(

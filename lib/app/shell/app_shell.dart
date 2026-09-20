@@ -1,3 +1,6 @@
+import '../../core/projection/projection_recovery.dart';
+import '../../features/setup/setup_assistant.dart';
+import '../../core/connectivity/connectivity_service.dart';
 import '../../features/camera/camera_page.dart' show CameraActivityScope;
 import '../../core/camera/camera_service.dart';
 import '../../core/camera/camera_presentation_policy.dart';
@@ -28,7 +31,12 @@ import '../../features/projection/projection_presentation_scope.dart';
 import '../navigation/app_module.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, required this.environment});
+  const AppShell({
+    super.key,
+    required this.environment,
+    this.showSetupOnFirstRun = false,
+  });
+  final bool showSetupOnFirstRun;
 
   final ArgoEnvironment environment;
 
@@ -107,6 +115,26 @@ class _AppShellState extends State<AppShell> {
           if (mounted && _home) _resumeHome();
         });
       }
+    }
+    if (widget.showSetupOnFirstRun &&
+        _settings.get(AppSettingKeys.setupStep) < 9 &&
+        widget.environment.services.contains<AudioService>()) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _automaticCamera?.current != null) return;
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => SetupAssistant(
+              settings: _settings,
+              audio: widget.environment.services.get<AudioService>(),
+              camera: _camera,
+              connectivity:
+                  widget.environment.services.contains<ConnectivityService>()
+                  ? widget.environment.services.get<ConnectivityService>()
+                  : null,
+            ),
+          ),
+        );
+      });
     }
   }
 
@@ -569,6 +597,9 @@ class _AppShellState extends State<AppShell> {
     bool automatic = false,
     CameraRole cameraRole = CameraRole.rear,
   }) {
+    if (_projection case final ProjectionRecovery recovery) {
+      recovery.invalidateRecovery();
+    }
     if (!automatic) {
       _manualCameraSelection();
     }

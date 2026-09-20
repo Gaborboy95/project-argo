@@ -28,7 +28,7 @@ IHS_FILES = ('bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_vie
 COMMON = {'ARGO_AUDIO_BACKEND', 'ARGO_PROJECTION_BACKEND', 'ARGO_PROJECTION_LOG_LEVEL',
           'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE',
           'ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS', 'ARGO_PROJECTION_RENDER_TEST',
-          'ARGO_CARPLAY_DIAGNOSTICS'}
+          'ARGO_CARPLAY_DIAGNOSTICS', 'ARGO_CAMERA_BACKEND'}
 DAEMON = {'ARGO_ANDROID_AUTO_CERT_FILE', 'ARGO_ANDROID_AUTO_KEY_FILE',
           'ARGO_ANDROID_AUTO_HEVC', 'ARGO_ANDROID_AUTO_PROTOCOL_VERSION'}
 
@@ -167,7 +167,7 @@ class Deployment:
         if manifest.get('projection_media_contract') not in (None, 1):
             raise ValueError('Unsupported projection media contract')
         camera = [(bundle / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
-        external = manifest.get('camera_mode') == 'external'
+        external = manifest.get('camera_mode') in ('external', 'surround')
         if external:
             if manifest.get('camera_contract') is not None or camera[0] or not camera[1]:
                 raise ValueError('External Camera requires only camera-view, without app-owned camerad')
@@ -176,13 +176,16 @@ class Deployment:
             if manifest.get('camera_view_contract') != 2:
                 raise ValueError('External Camera requires native presentation contract 2')
         else:
-            if manifest.get('camera_mode') not in (None, 'legacy'):
+            if manifest.get('camera_mode') not in (None, 'legacy', 'basic', 'disabled'):
                 raise ValueError('Unknown Camera deployment mode')
             if any(camera) and (not all(camera) or manifest.get('camera_contract') != 1):
                 raise ValueError('Camera requires both assets and camera_contract=1')
             if manifest.get('camera_contract') is not None and (manifest['camera_contract'] != 1 or not all(camera)):
                 raise ValueError('Invalid camera contract or missing camera assets')
-        _, ihs = self.ihs()
+        if manifest.get('package_runtime') == 1:
+            ihs = {name: digest(bundle / name) for name in ('bin/homescreen', 'lib/libihs_shared.so')}
+        else:
+            _, ihs = self.ihs()
         if manifest.get('ihs_sha256') != ihs:
             raise ValueError('Installed IHS differs from the recorded matched build')
         hashes = manifest['sha256']
@@ -585,6 +588,105 @@ def install(deployment, ihs):
     print('Installed user units. Enablement and running processes unchanged; new installation is disabled.')
 
 
+def doctor(deployment, environment=None, release=None):
+    """Read-only probes. No lock, directory creation, service start or device open."""
+    environment = os.environ if environment is None else environment
+    checks = []
+
+    def check(name, state, summary):
+        checks.append({'check': name, 'state': state, 'summary': summary})
+
+    def probe(arguments):
+        try:
+            return subprocess.run(arguments, capture_output=True, text=True,
+                                  timeout=3, check=False).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    bundle = Path(release) if release else deployment.current
+    if not release and not bundle.exists() and Path('/usr/lib/argo/runtime/argo-release.json').is_file():
+        bundle = Path('/usr/lib/argo/runtime')
+    manifest = {}
+    valid = False
+    check('release.selected', 'ready' if bundle.is_dir() else 'failed',
+          'Selected release exists' if bundle.is_dir() else 'No selected release; select a verified release')
+    if bundle.is_dir():
+        try:
+            manifest = deployment.validate(bundle)
+            valid = True
+            check('release.integrity', 'ready', 'Recorded release and matched IHS hashes agree')
+        except (OSError, ValueError, KeyError, TypeError):
+            check('release.integrity', 'failed', 'Release or matched IHS contract failed validation; re-stage a matched release')
+    check('runtime.contract', 'ready' if valid else 'failed',
+          'Matched Flutter/Engine/IHS assets checked by release manifest' if valid else 'Runtime contract unverified')
+    for relative in REQUIRED:
+        check('runtime.' + relative, 'ready' if (bundle / relative).is_file() else 'failed',
+              'Present' if (bundle / relative).is_file() else 'Missing required runtime asset')
+    if valid:
+        elfs = []
+        for relative in manifest.get('sha256', {}):
+            path = bundle / relative
+            with path.open('rb') as source:
+                if source.read(4) == b'\x7fELF':
+                    elfs.append(path)
+        for path in elfs:
+            try:
+                result = subprocess.run(['ldd', str(path)], capture_output=True, text=True, timeout=3, check=False)
+                resolved = result.returncode == 0 and 'not found' not in result.stdout
+            except (OSError, subprocess.SubprocessError):
+                resolved = False
+            check('loader.' + str(path.relative_to(bundle)), 'ready' if resolved else 'failed',
+                  'Loader dependencies resolved' if resolved else 'Loader dependencies unresolved or check unavailable')
+    runtime = Path(environment.get('XDG_RUNTIME_DIR', '/nonexistent'))
+    wayland = environment.get('WAYLAND_DISPLAY')
+    display = Path(wayland) if wayland and Path(wayland).is_absolute() else runtime / (wayland or 'nonexistent')
+    check('session.wayland', 'ready' if wayland and display.is_socket() else 'offline', 'Wayland socket present' if wayland and display.is_socket() else 'Run from the graphical desktop session')
+    check('session.dbus', 'ready' if environment.get('DBUS_SESSION_BUS_ADDRESS') and probe(['busctl', '--user', '--no-pager', 'list']) else 'offline', 'User D-Bus reachability')
+    check('session.pipewire', 'ready' if probe(['wpctl', 'status']) else 'offline', 'PipeWire/WirePlumber reachability')
+    for name, arguments in [('networkmanager', ['busctl', '--system', 'status', 'org.freedesktop.NetworkManager']),
+                            ('bluez', ['busctl', '--system', 'status', 'org.bluez'])]:
+        check('connectivity.' + name, 'ready' if probe(arguments) else 'offline', 'Service reachability; feature may be optional')
+    for name in ('argo-projectiond', 'argo-carplayd'):
+        installed = (bundle / 'bin' / name).is_file()
+        check('projection.' + name, 'ready' if installed and program_pids(name) else 'offline' if installed else 'notInstalled',
+              'Installed process observed' if installed and program_pids(name) else 'Installed, not running' if installed else 'Optional receiver not installed')
+    provider = environment.get('ARGO_CAMERA_BACKEND', manifest.get('camera_mode', 'basic'))
+    provider = {'legacy': 'basic', 'external': 'surround'}.get(provider, provider)
+    check('camera.provider', 'ready' if provider in ('basic', 'surround', 'disabled') else 'failed',
+          provider if provider in ('basic', 'surround', 'disabled') else 'Invalid camera provider')
+    devices = list(Path('/dev').glob('video*'))
+    check('camera.access', 'ready' if any(os.access(p, os.R_OK | os.W_OK) for p in devices) else 'needsSetup',
+          'Accessible V4L2 node present; capture not tested' if any(os.access(p, os.R_OK | os.W_OK) for p in devices) else 'No accessible V4L2 node; manual setup required')
+    settings_path = Path(environment.get('ARGO_SETTINGS_FILE', str(Path(environment.get('XDG_CONFIG_HOME', str(deployment.home / '.config'))) / 'project-argo/settings.json')))
+    try:
+        if settings_path.is_file() and settings_path.stat().st_size <= 1024 * 1024:
+            assigned = read(settings_path).get('values', {}).get('camera.rear', '')
+            if not assigned:
+                check('camera.assignment', 'needsSetup', 'No rear camera assigned')
+            elif isinstance(assigned, str) and assigned.startswith(('by-id:', 'by-path:')):
+                kind, name = assigned.split(':', 1)
+                if '/' in name or name in ('.', '..'):
+                    check('camera.assignment', 'failed', 'Invalid stable camera assignment')
+                else:
+                    node = Path('/dev/v4l') / kind / name
+                    check('camera.assignment', 'ready' if node.exists() and os.access(node, os.R_OK | os.W_OK) else 'needsSetup', 'Assigned stable camera identity accessible' if node.exists() and os.access(node, os.R_OK | os.W_OK) else 'Assigned stable camera is missing or inaccessible')
+            else:
+                check('camera.assignment', 'unverified', 'Sysfs camera identity needs provider discovery; no capture probe performed')
+        else:
+            check('camera.assignment', 'needsSetup', 'No readable bounded camera settings document')
+    except (OSError, ValueError, TypeError, AttributeError):
+        check('camera.assignment', 'failed', 'Camera settings could not be read')
+    check('surround.installation', 'ready' if (runtime / 'surround-camera/control.sock').is_socket() else 'notInstalled',
+          'Optional control socket present; API not tested' if (runtime / 'surround-camera/control.sock').is_socket() else 'Optional surround control socket absent')
+    elements = ['appsrc', 'appsink', 'decodebin', 'videoconvert', 'audioconvert', 'audioresample', 'pipewiresink']
+    if provider == 'basic':
+        elements += ['v4l2src', 'videoflip', 'jpegdec']
+    for element in elements:
+        check('gstreamer.' + element, 'ready' if probe(['gst-inspect-1.0', element]) else 'failed', 'Required GStreamer element ' + element)
+    return {'schema': 1, 'readOnly': True, 'checks': checks,
+            'ok': not any(item['state'] == 'failed' for item in checks)}
+
+
 def main():
     if os.geteuid() == 0:
         raise ValueError('Run as the desktop account, never root')
@@ -601,8 +703,18 @@ def main():
         p = sub.add_parser(verb); p.add_argument('role', choices=['app', 'daemon', 'carplay'])
     sub.add_parser('_stop-app')
     sub.add_parser('quit')
+    p = sub.add_parser('doctor'); p.add_argument('--json', action='store_true'); p.add_argument('--release', type=Path)
     args = parser.parse_args()
     d = Deployment()
+    if args.command == 'doctor':
+        result = doctor(d, release=args.release)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print('Argo Doctor (read-only)')
+            for item in result['checks']:
+                print(f"  {item['state']:12} {item['check']}: {item['summary']}")
+        return 0 if result['ok'] else 1
     if args.command.startswith('_') or args.command == 'foreground':
         if args.command in ('foreground', '_run'):
             d.launch(args.role, args.command == '_run')
@@ -652,7 +764,7 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         # Called-process output may contain launch arguments; never dump environments.
         print('argoctl: ' + str(error), file=sys.stderr)

@@ -3,8 +3,7 @@
 CarPlay's separate diagnostic/protocol crate builds with
 `cargo build --locked --offline --release --manifest-path native/carplay/Cargo.toml`.
 The [CarPlay runbook](../../docs/carplay.md) defines tests, optional usbmuxd library,
-Link checks and managed release integration. It does not yet supply a complete
-phone session. Native ARPM/1 is separate from AA IPC7 and ARVW; see the
+Link checks and managed release integration. Wired phone sessions are implemented; wireless remains unfinished and new stabilization behavior still needs physical acceptance. Native ARPM/1 is separate from AA IPC7 and ARVW; see the
 [encoded media contract](../../native/projection/argo-projection-view/README.md)
 for H.264/H.265 framing, color/range, limits and native tests. Rebuild the view in
 a fresh directory against matched IHS. No Engine/IHS dependency update is required.

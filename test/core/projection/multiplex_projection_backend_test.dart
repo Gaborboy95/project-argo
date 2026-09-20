@@ -231,6 +231,61 @@ void main() {
     },
   );
 
+  test('switch recovery is explicit and invalidated by a later presentation decision', () async {
+    final fixture = await _Fixture.start();
+    addTearDown(fixture.facade.close);
+    final target = fixture.session(ProjectionProtocol.carPlay);
+    final previous = fixture.session(ProjectionProtocol.androidAuto);
+    fixture.cp.activationError = StateError('receiver refused');
+    await expectLater(fixture.facade.activate(target.id), throwsStateError);
+    final recovery = fixture.facade.current.switchRecovery!;
+    expect(recovery.previous, previous.id);
+    expect(
+      fixture.facade.current.activeSession!.videoStreams.single.visible,
+      isFalse,
+    );
+    fixture.facade
+        .invalidateRecovery(); // Navigation or reverse owns a newer decision.
+    await expectLater(
+      fixture.facade.recover(recovery, returnToPrevious: true),
+      throwsStateError,
+    );
+    expect(fixture.facade.current.switchRecovery, isNull);
+    await expectLater(fixture.facade.activate(target.id), throwsStateError);
+    final retry = fixture.facade.current.switchRecovery!;
+    await fixture.facade.recover(retry, returnToPrevious: true);
+    expect(fixture.facade.current.activeSessionId, previous.id);
+    expect(
+      fixture.facade.current.activeSession!.videoStreams.single.visible,
+      isTrue,
+    );
+  });
+  test(
+    'reverse decision during stalled activation cancels late visibility grant',
+    () async {
+      final fixture = await _Fixture.start();
+      addTearDown(fixture.facade.close);
+      final target = fixture.session(ProjectionProtocol.carPlay);
+      final entered = Completer<void>(), finish = Completer<void>();
+      fixture.cp.activation = () async {
+        entered.complete();
+        await finish.future;
+      };
+      final pending = fixture.facade.activate(target.id);
+      final rejected = expectLater(pending, throwsStateError);
+      await entered.future;
+      fixture.facade.invalidateRecovery();
+      finish.complete();
+      await rejected;
+      expect(fixture.facade.current.switchRecovery, isNull);
+      expect(fixture.events.last, 'carPlay.hide.main');
+      expect(
+        fixture.session(ProjectionProtocol.carPlay).videoStreams.single.visible,
+        isFalse,
+      );
+    },
+  );
+
   test('startup failure is isolated; start and close are idempotent', () async {
     final aa = _Backend(ProjectionProtocol.androidAuto);
     final cp = _Backend(ProjectionProtocol.carPlay)

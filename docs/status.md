@@ -11,7 +11,7 @@
 | CarPlay development | Real wired MFi/AirPlay, IHS video and touch confirmed; opt-in supervised daemon and persistent pairing implemented. Automatic USB lease and one visible replug cycle confirmed; Spotify audio and pause/resume confirmed with a configured Corsair input and Dzsibilee output; Siri, clear two-way calls and music restoration confirmed; echo processing and shared microphone mute/unmute confirmed; dedicated CarPlay settings, shared microphone selection and managed stop/start are implemented and deployed; wireless remains unfinished. [Scope and physical checks](carplay.md). |
 | Media | Native video/PCM, touch, AA and Bluetooth metadata, bounded AA artwork and optional BlueZ BIP covers, Bluetooth and AA playback controls, provider-owned source selection and read-only Lua state. |
 | Dashboard | Negotiated View Area/Safe Area, projection behind floating media above the dock; measured 4:3 layout, stationary dock/media slot, centered app grid, shared Media/Climate/Apps panels and generic vehicle-backed climate with labelled simulation. |
-| Camera | External API 1.0 client, sealed-frame native presentation, guided real calibration jobs, software surround/orbit, separate-track recording/replay controls, source-aware perception status, and normalized reverse/PDC/optional-indicator arbitration. Legacy manual rear remains available. Physical IHS picture, UI calibration accuracy and vehicle-trigger acceptance remain pending. |
+| Camera | External API 1.0 client, sealed-frame native presentation, guided real calibration jobs, software surround/orbit, separate-track recording/replay controls, source-aware perception status, and normalized reverse/PDC/optional-indicator arbitration. Maintained basic rear capture is the standard default; surround is optional. Physical IHS picture, UI calibration accuracy and vehicle-trigger acceptance remain pending. |
 | Presentation | AA Exit returns to Media without ending the session; Home requests video focus on that same session. |
 | Connectivity | Shared BlueZ pairing, selected-phone admission, NM-owned AP, selectable 2.4/5 GHz band, bounded retries and explicit stop. |
 | Vehicle | Generic/external profiles, synthetic scenarios, normalized signals and opt-in Linux SocketCAN. |
@@ -37,20 +37,17 @@ The current implementation checkpoint covers these failure paths:
   filesystem race defenses, cross-isolate installation serialization, or a
   process-death replacement journal. See Veloce's installer trust assumptions.
 
-Remaining Phase A work includes structured end-to-end error/recovery presentation,
-phone ducking, microphone contention/recovery, projection-switch recovery, and
-installer crash/concurrency hardening. The normal-camera provider migration,
-common reverse composition, standard/surround compile-time isolation, shared UI
-migration, guided setup/doctor, calibration/model workflow completion, release
-builder, Debian packages and disposable install/upgrade/remove tests are not
-implemented by this checkpoint. The existing camera default and deployment model
-remain as documented in [configuration](configuration.md) and [setup](setup.md).
+The continuation adds typed camera selection with basic as the default, generic
+reverse composition, separate standard/surround entry points and native builds,
+basic mode/orientation controls, projection-switch recovery, phone ducking,
+microphone-owner reporting, shared UI primitives, resumable setup and a read-only
+doctor. Model polling no longer drops foreground actions; guided mat forms are
+template-specific. See [the exact implementation limits](standard-edition.md).
 
-No new physical acceptance follows from these changes. Phone input teardown under
-load, audio recovery, IHS/GPU behavior, actual camera capture/reverse, calibration,
-model benchmarks and OEM microphone/vehicle acceptance still require their
-respective hardware checks. There is no Standard Edition `.deb` installation or
-launch command to publish yet.
+Full integration/error migration, full setup hardware tests, calibration/model
+workflow completion and reproducible package acceptance remain open. No new
+physical acceptance follows from these changes. The Veloce concurrency/crash
+assumptions above remain in force.
 
 ## Tested configurations
 

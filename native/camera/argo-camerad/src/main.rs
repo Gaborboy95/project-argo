@@ -26,6 +26,7 @@ struct Command {
     op: String,
     role: Option<String>,
     stable_id: Option<String>,
+    configuration: Option<capture::Configuration>,
 }
 #[derive(Default)]
 struct Decoder {
@@ -142,6 +143,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut viewer: Option<UnixStream> = None;
     let mut capture: Option<Capture> = None;
     let mut selected: Option<String> = None;
+    let mut configuration = capture::Configuration::default();
     let mut role: Option<String> = None;
     let mut state = "idle";
     let mut error: Option<String> = None;
@@ -191,8 +193,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 };
                 let mut failure: Option<String> = None;
+                let mut modes = vec![];
                 match command.op.as_str() {
                     "refresh" => next_inventory = now,
+                    "modes" => {
+                        if capture.is_some() || selected.is_some() {
+                            failure = Some("Stop capture before inspecting modes".into());
+                        } else {
+                            match device::enumerate()?
+                                .into_iter()
+                                .find(|d| Some(&d.stable_id) == command.stable_id.as_ref())
+                            {
+                                Some(d) => match capture::modes(&d.capture_path()) {
+                                    Ok(value) => modes = value,
+                                    Err(e) => failure = Some(e),
+                                },
+                                None => failure = Some("Assigned camera is unavailable".into()),
+                            }
+                        }
+                    }
                     "stop" | "close" => {
                         ring.invalidate();
                         if let Some(c) = capture.take() {
@@ -207,7 +226,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         health = Health::new(now);
                     }
                     "start" => {
-                        if !matches!(
+                        let requested = command.configuration.unwrap_or_default();
+                        if let Err(e) = requested.validate() {
+                            failure = Some(e);
+                        } else if !matches!(
                             command.role.as_deref(),
                             Some("rear" | "front" | "left" | "right")
                         ) {
@@ -217,6 +239,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(c) = capture.take() {
                                 c.stop().map_err(io::Error::other)?;
                             }
+                            configuration = requested;
                             selected = Some(id);
                             role = command.role;
                             ring.role(match role.as_deref() {
@@ -240,7 +263,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(
                     &mut owner,
-                    json!({"version":1,"id":command.id,"error":failure}),
+                    json!({"version":1,"id":command.id,"error":failure,"modes":modes}),
                 )?;
                 if command.op == "close" {
                     return Ok(());
@@ -281,7 +304,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .iter()
                     .find(|d| Some(&d.stable_id) == selected.as_ref())
                 {
-                    match Capture::start(&d.capture_path()) {
+                    match Capture::start(&d.capture_path(), &configuration) {
                         Ok(c) => {
                             capture = Some(c);
                             health.last = now;

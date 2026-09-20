@@ -3,6 +3,102 @@ use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
 use gstreamer_video::{VideoFrameExt, VideoFrameRef, VideoInfo};
 use std::time::{Duration, Instant};
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mode {
+    pub width: i32,
+    pub height: i32,
+    pub fps: i32,
+    pub jpeg: bool,
+}
+impl Mode {
+    fn caps(&self) -> Result<gst::Caps, String> {
+        if !(1..=1920).contains(&self.width)
+            || !(1..=1080).contains(&self.height)
+            || !(1..=30).contains(&self.fps)
+        {
+            return Err("Capture mode outside supported bounds".into());
+        }
+        Ok(gst::Caps::builder(if self.jpeg {
+            "image/jpeg"
+        } else {
+            "video/x-raw"
+        })
+        .field("width", self.width)
+        .field("height", self.height)
+        .field("framerate", gst::Fraction::new(self.fps, 1))
+        .build())
+    }
+}
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Configuration {
+    pub mode: Option<Mode>,
+    pub rotation: u16,
+    pub mirror: bool,
+    pub flip: bool,
+}
+impl Configuration {
+    pub fn validate(&self) -> Result<(), String> {
+        if ![0, 90, 180, 270].contains(&self.rotation) {
+            return Err("Invalid camera rotation".into());
+        }
+        if let Some(mode) = &self.mode {
+            mode.caps()?;
+        }
+        Ok(())
+    }
+}
+/// Bounded useful choices, each intersected with the device's actual caps.
+/// Probe only after acquiring the same exclusion lease as capture.
+pub fn modes(node: &str) -> Result<Vec<Mode>, String> {
+    let _owner = physical_lock(node)?;
+    let source = gst::ElementFactory::make("v4l2src")
+        .property("device", node)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _probe = Probe(source.clone());
+    source
+        .set_state(gst::State::Ready)
+        .map_err(|e| e.to_string())?;
+    let caps = source
+        .static_pad("src")
+        .ok_or("Missing capture pad")?
+        .query_caps(None);
+    let result = choices(&caps);
+    source
+        .set_state(gst::State::Null)
+        .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+fn choices(caps: &gst::Caps) -> Vec<Mode> {
+    let mut result = Vec::new();
+    for (width, height) in [
+        (1920, 1080),
+        (1280, 720),
+        (1024, 768),
+        (800, 600),
+        (720, 576),
+        (720, 480),
+        (640, 480),
+        (320, 240),
+    ] {
+        for fps in [30, 25, 20, 15, 10, 5] {
+            for jpeg in [false, true] {
+                let mode = Mode {
+                    width,
+                    height,
+                    fps,
+                    jpeg,
+                };
+                if caps.can_intersect(&mode.caps().unwrap()) {
+                    result.push(mode);
+                }
+            }
+        }
+    }
+    result
+}
 struct Probe(gst::Element);
 impl Drop for Probe {
     fn drop(&mut self) {
@@ -12,12 +108,13 @@ impl Drop for Probe {
     }
 }
 pub struct Capture {
-    _physical_owner: std::fs::File,
+    _physical_owner: Option<std::fs::File>,
     pipeline: gst::Pipeline,
     sink: AppSink,
 }
 impl Capture {
-    pub fn start(node: &str) -> Result<Self, String> {
+    pub fn start(node: &str, configuration: &Configuration) -> Result<Self, String> {
+        configuration.validate()?;
         let physical_owner = physical_lock(node)?;
         let source = gst::ElementFactory::make("v4l2src")
             .property("device", node)
@@ -58,15 +155,23 @@ impl Capture {
             .set_state(gst::State::Null)
             .map_err(|e| e.to_string())?;
         candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        let (_, _, s) = candidates
-            .into_iter()
-            .next()
-            .ok_or("No advertised raw/MJPEG capture mode at or below 1920x1080/30")?;
-        let mut caps = gst::Caps::builder_full().structure(s).build();
+        let mut caps = if let Some(mode) = &configuration.mode {
+            let requested = mode.caps()?;
+            if !modes.can_intersect(&requested) {
+                return Err("Selected capture mode is no longer advertised".into());
+            }
+            modes.intersect(&requested)
+        } else {
+            let (_, _, s) = candidates
+                .into_iter()
+                .next()
+                .ok_or("No advertised raw/MJPEG capture mode at or below 1920x1080/30")?;
+            gst::Caps::builder_full().structure(s).build()
+        };
         caps.fixate();
         eprintln!("Camera selected advertised mode: {caps}");
         // Only static pipeline text is parsed. Device paths and caps are GObject properties.
-        let pipeline = gst::parse::launch("v4l2src name=camera ! capsfilter name=mode ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! decodebin ! videoconvert ! video/x-raw,format=BGRx ! appsink name=frames sync=false max-buffers=1 drop=true")
+        let pipeline = gst::parse::launch("v4l2src name=camera ! capsfilter name=mode ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! decodebin ! videoconvert ! videoflip name=rotation ! videoflip name=mirror ! videoflip name=flip ! video/x-raw,format=BGRx ! appsink name=frames sync=false max-buffers=1 drop=true")
         .map_err(|e| e.to_string())?.downcast::<gst::Pipeline>().map_err(|_| "Not a pipeline")?;
         pipeline
             .by_name("camera")
@@ -76,13 +181,45 @@ impl Capture {
             .by_name("mode")
             .ok_or("Missing mode")?
             .set_property("caps", &caps);
+        for (name, method) in [
+            (
+                "rotation",
+                match configuration.rotation {
+                    90 => "clockwise",
+                    180 => "rotate-180",
+                    270 => "counterclockwise",
+                    _ => "none",
+                },
+            ),
+            (
+                "mirror",
+                if configuration.mirror {
+                    "horizontal-flip"
+                } else {
+                    "none"
+                },
+            ),
+            (
+                "flip",
+                if configuration.flip {
+                    "vertical-flip"
+                } else {
+                    "none"
+                },
+            ),
+        ] {
+            pipeline
+                .by_name(name)
+                .ok_or("Missing orientation filter")?
+                .set_property_from_str("method", method);
+        }
         let sink = pipeline
             .by_name("frames")
             .ok_or("Missing sink")?
             .downcast::<AppSink>()
             .map_err(|_| "Invalid sink")?;
         let capture = Self {
-            _physical_owner: physical_owner,
+            _physical_owner: Some(physical_owner),
             pipeline,
             sink,
         };
@@ -141,6 +278,9 @@ impl Drop for Capture {
     fn drop(&mut self) {
         if let Err(e) = self.stop() {
             eprintln!("Camera cleanup failed: {e}");
+            if let Some(owner) = self._physical_owner.take() {
+                std::mem::forget(owner);
+            }
         }
     }
 }
@@ -209,7 +349,9 @@ fn physical_lock(node: &str) -> Result<std::fs::File, String> {
         .open(dir.join(format!("{rdev:x}.lock")))
         .map_err(|e| e.to_string())?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("physical adapter owned by legacy/standalone capture".into());
+        return Err(
+            "Physical camera is owned by another capture provider; stop it before retrying".into(),
+        );
     }
     Ok(file)
 }
@@ -217,6 +359,38 @@ fn physical_lock(node: &str) -> Result<std::fs::File, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mode_choices_require_advertised_format_size_and_rate() {
+        gst::init().unwrap();
+        let caps: gst::Caps = "image/jpeg,width=(int)640,height=(int)480,framerate=(fraction)25/1"
+            .parse()
+            .unwrap();
+        let modes = choices(&caps);
+        assert_eq!(modes.len(), 1);
+        assert_eq!(
+            (modes[0].width, modes[0].height, modes[0].fps, modes[0].jpeg),
+            (640, 480, 25, true)
+        );
+        assert!(choices(&gst::Caps::new_empty()).is_empty());
+        assert!(
+            Configuration {
+                rotation: 45,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Mode {
+                width: 4096,
+                height: 1080,
+                fps: 30,
+                jpeg: false
+            }
+            .caps()
+            .is_err()
+        );
+    }
     #[test]
     fn stale_bounded_recovery_and_fresh_start() {
         let now = Instant::now();

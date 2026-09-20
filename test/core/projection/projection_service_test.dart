@@ -74,6 +74,59 @@ void main() {
     },
   );
 
+  test(
+    'phone duck composes with other focus and teardown restores only its lease',
+    () async {
+      final fixture = await _Fixture.start();
+      await fixture.audio.registerSource(
+        AudioSource(id: 'player', role: AudioSourceRole.media),
+      );
+      await fixture.audio.setSourceActive('player', true);
+      await fixture.audio.registerSource(
+        AudioSource(id: 'call', role: AudioSourceRole.communication),
+      );
+      final master = fixture.audio.current.masterVolume;
+      fixture.backend.emit(
+        _snapshot(
+          audioRole: ProjectionAudioRole.media,
+          phoneDucking: ProjectionDucking(.2, 0),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.audioBackend.sourceGains['player'], closeTo(.2, .0001));
+      final call = await fixture.audio.requestFocus('call', duckingGain: .3);
+      expect(fixture.audioBackend.sourceGains['player'], closeTo(.06, .0001));
+      fixture.backend.emit(ProjectionSnapshot(backendAvailable: true));
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.audioBackend.sourceGains['player'], closeTo(.3, .0001));
+      expect(fixture.audio.current.masterVolume, master);
+      await call.release();
+      expect(fixture.audioBackend.sourceGains['player'], 1);
+      await fixture.close();
+    },
+  );
+  test('phone ramp is bounded and cannot revive a torn down session', () async {
+    final fixture = await _Fixture.start();
+    await fixture.audio.registerSource(
+      AudioSource(id: 'player', role: AudioSourceRole.media),
+    );
+    await fixture.audio.setSourceActive('player', true);
+    expect(ProjectionDucking(-100, 99999).gain, 0);
+    expect(ProjectionDucking(-100, 99999).rampMs, 2000);
+    fixture.backend.emit(
+      _snapshot(
+        audioRole: ProjectionAudioRole.media,
+        phoneDucking: ProjectionDucking(.1, 80),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(fixture.audioBackend.sourceGains['player'], closeTo(.1, .0001));
+    fixture.backend.emit(ProjectionSnapshot(backendAvailable: true));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(fixture.audioBackend.sourceGains['player'], 1);
+    await fixture.close();
+  });
+
   test('gain failure cannot suppress authoritative projection state', () async {
     final gains = _ControlledGains()..failure = StateError('gain unavailable');
     final fixture = await _Fixture.start(gains: gains);
@@ -220,6 +273,7 @@ void main() {
 ProjectionSnapshot _snapshot({
   required ProjectionAudioRole audioRole,
   String sessionId = 'session',
+  ProjectionDucking? phoneDucking,
 }) {
   const device = ProjectionDevice(
     id: 'phone',
@@ -235,6 +289,7 @@ ProjectionSnapshot _snapshot({
         id: sessionId,
         device: device,
         state: ProjectionSessionState.streaming,
+        phoneDucking: phoneDucking,
         audioStreams: [
           ProjectionAudioStream(
             id: 'speech',

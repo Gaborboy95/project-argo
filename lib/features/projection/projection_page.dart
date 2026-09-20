@@ -1,3 +1,6 @@
+import 'projection_recovery_panel.dart';
+import '../shared/status_panel.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/projection/projection_models.dart';
@@ -81,6 +84,17 @@ class ProjectionPage extends StatelessWidget {
                     children: [
                       const Icon(Icons.screen_share_outlined, size: 64),
                       const SizedBox(height: 16),
+                      if (snapshot.switchRecovery case final recovery?)
+                        ProjectionRecoveryPanel(
+                          service: projection,
+                          decision: recovery,
+                        ),
+                      if (snapshot.failure case final failure?)
+                        ArgoStatusPanel(
+                          status: ArgoStatus.failed,
+                          summary: failure.summary,
+                          failure: failure,
+                        ),
                       Text(
                         presentation?.error ??
                             snapshot.failureMessage ??

@@ -59,7 +59,7 @@ inline bool Latest(const std::uint8_t *ring, std::uint64_t now, Frame &frame,
     return false;
   const auto w = U32(slot + 8), h = U32(slot + 12), stride = U32(slot + 16);
   const auto timestamp = Load(slot + 32);
-  if (w == 0 || h == 0 || w > 1920 || h > 1080 || stride < w * 4 ||
+  if (w == 0 || h == 0 || w > 1920 || h > 1920 || stride < w * 4 ||
       stride > kCapacity / h || timestamp > now || now - timestamp >= kStaleNs)
     return false;
   frame.pixels.resize(static_cast<std::size_t>(stride) * h);

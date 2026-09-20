@@ -1,10 +1,11 @@
+import '../../core/camera/camera_service.dart';
+import '../setup/setup_assistant.dart';
+import '../shared/argo_components.dart';
 import '../../core/projection/carplay_settings_service.dart';
 import '../../core/projection/projection_service.dart';
 import 'carplay_settings_card.dart';
 import '../../core/projection/carplay_link_diagnostics.dart';
 import 'carplay_link_settings_card.dart';
-import '../../core/camera/parking_model_service.dart';
-import 'models/model_manager_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
 import '../calls/calls_page.dart';
 import 'application_settings_card.dart';
@@ -30,10 +31,12 @@ class SettingsPage extends StatefulWidget {
     this.carPlaySettings,
     this.projection,
     this.exit,
-    this.models,
+    this.modelsPage,
+    this.camera,
     super.key,
   });
-  final ParkingModelService? models;
+  final Widget? modelsPage;
+  final CameraService? camera;
   final ApplicationExitService? exit;
   final AudioService audio;
   final ProjectionSettingsService? projectionSettings;
@@ -107,13 +110,40 @@ class _SettingsPageState extends State<SettingsPage> {
           Icons.palette_outlined,
           AppearanceSettingsCard(settings: widget.settings!),
         ),
-      if (widget.models != null)
-        (
-          'AI & Models',
-          Icons.model_training,
-          ModelManagerPage(service: widget.models!),
-        ),
+      if (widget.modelsPage != null)
+        ('AI & Models', Icons.model_training, widget.modelsPage!),
     ];
+    if (widget.settings != null) {
+      sections.add((
+        'System',
+        Icons.settings_suggest_outlined,
+        ArgoSection(
+          title: 'Setup and diagnostics',
+          children: [
+            ListTile(
+              title: const Text('Setup assistant'),
+              subtitle: const Text('Resume or revisit hardware setup'),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SetupAssistant(
+                    settings: widget.settings!,
+                    audio: widget.audio,
+                    camera: widget.camera,
+                    connectivity: widget.connectivity,
+                  ),
+                ),
+              ),
+            ),
+            const ListTile(
+              title: Text('System diagnostics'),
+              subtitle: Text(
+                'Run argoctl doctor in this desktop session for read-only runtime and service checks.',
+              ),
+            ),
+          ],
+        ),
+      ));
+    }
     if (widget.exit != null) {
       sections.add((
         'Application',

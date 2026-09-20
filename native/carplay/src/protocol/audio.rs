@@ -418,7 +418,12 @@ impl Microphone {
             return Ok(());
         }
         if active {
-            self.lease = Some(argo_audio_ownership::MicrophoneLease::acquire().map_err(failure)?);
+            self.lease = Some(
+                argo_audio_ownership::MicrophoneLease::acquire_for(
+                    argo_audio_ownership::Owner::CarPlay,
+                )
+                .map_err(failure)?,
+            );
         }
         if active {
             self.bin

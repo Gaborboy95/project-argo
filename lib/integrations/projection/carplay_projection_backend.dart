@@ -1,3 +1,5 @@
+import '../../core/diagnostics/service_failure.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -69,8 +71,27 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
           bytes.addAll(part);
           if (end >= 0) {
             final response = jsonDecode(utf8.decode(bytes));
-            if (response is! Map<String, dynamic> || response['ok'] == false) {
-              throw const FormatException('CarPlay operation unavailable');
+            if (response is! Map<String, dynamic>) {
+              throw const FormatException('Invalid CarPlay response');
+            }
+            if (response['ok'] == false) {
+              final code = response['code'];
+              throw ServiceFailure(
+                feature: 'carplay',
+                operation: '${request['action']}',
+                kind: switch (code) {
+                  'stale_session' => FailureKind.staleSession,
+                  'busy' => FailureKind.busy,
+                  'unsupported' => FailureKind.unsupported,
+                  _ => FailureKind.rejected,
+                },
+                summary: 'CarPlay rejected the request.',
+                cause: response['error'] ?? 'No backend detail',
+                retryable: code == 'busy',
+                recovery: code == 'stale_session'
+                    ? 'Reconnect the phone.'
+                    : null,
+              );
             }
             return response;
           }
@@ -252,17 +273,47 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
               videoStreams: videos,
               audioStreams: audio,
               hostReturnRevision: data['host_return_revision'] as int? ?? 0,
+              phoneDucking: data['phone_duck'] is Map
+                  ? ProjectionDucking(
+                      (data['phone_duck']['gain'] as num).toDouble(),
+                      data['phone_duck']['ramp_ms'] as int,
+                    )
+                  : null,
             ),
           ],
           activeSessionId: data['selected'] == true ? sessionId : null,
         ),
       );
-    } on Object {
+    } on Object catch (error) {
       _nativeSession = null;
+      final failure = error is ServiceFailure
+          ? error
+          : ServiceFailure(
+              feature: 'carplay',
+              operation: 'status',
+              kind: error is TimeoutException
+                  ? FailureKind.timeout
+                  : error is SocketException
+                  ? FailureKind.missingService
+                  : error is FormatException
+                  ? FailureKind.unsupported
+                  : FailureKind.internal,
+              summary: error is TimeoutException
+                  ? 'CarPlay receiver did not respond in time.'
+                  : error is SocketException
+                  ? 'CarPlay receiver is not running or cannot be reached.'
+                  : error is FormatException
+                  ? 'CarPlay receiver returned an incompatible response.'
+                  : 'Could not read CarPlay status.',
+              cause: error,
+              retryable: error is! FormatException,
+              recovery: 'Check CarPlay settings and the receiver service.',
+            );
       _publish(
         ProjectionSnapshot(
           backendAvailable: false,
-          failureMessage: 'CarPlay receiver unavailable.',
+          failureMessage: failure.summary,
+          failure: failure,
         ),
       );
     }

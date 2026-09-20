@@ -1,3 +1,5 @@
+import '../shared/argo_components.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -65,10 +67,7 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Devices & connectivity',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+              const ArgoSection(title: 'Devices & connectivity', children: []),
               if (widget.settings != null)
                 SwitchListTile(
                   title: const Text('Auto-connect phone'),
@@ -258,13 +257,13 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
                     d.id.startsWith('${s.adapter}/') &&
                     (d.paired || s.discovering),
               ))
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(d.name),
-                  subtitle: Text(
-                    '${d.id}\n${d.paired ? 'Bluetooth paired' : 'Not paired'} · ${d.connected ? 'Bluetooth connected' : 'Bluetooth disconnected'}',
-                  ),
-                  trailing: Wrap(
+                ArgoDeviceChoice(
+                  name: d.name,
+                  identifier: d.id,
+                  selected: s.selected == d.id,
+                  status:
+                      '${d.paired ? 'Paired' : 'Not paired'} · ${d.connected ? 'Connected' : 'Disconnected'}',
+                  actions: Wrap(
                     spacing: 4,
                     children: [
                       if (!d.paired)
@@ -286,7 +285,17 @@ class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
                       if (d.paired)
                         IconButton(
                           tooltip: 'Forget device and stop wireless',
-                          onPressed: () => command('forget', target: d.id),
+                          onPressed: () async {
+                            if (await confirmArgoAction(
+                                  context,
+                                  title: 'Forget this phone?',
+                                  explanation: 'Pairing will be removed and wireless projection stopped. Your phone content is not deleted.',
+                                  action: 'Forget',
+                                ) &&
+                                mounted) {
+                              command('forget', target: d.id);
+                            }
+                          },
                           icon: const Icon(Icons.link_off),
                         ),
                     ],

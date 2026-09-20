@@ -1,6 +1,6 @@
 # Camera adapters
 
-New releases use the independent [surround-camera client](../../docs/configuration.md#surround-camera-client). The external native factory keeps immutable sealed frame allocations until its CPU copy completes, then explicitly releases each frame. Each native subscription has independent delivery state and 750 ms stale blanking. It copies final BGRx into GBM for IHS; this is not a zero-copy claim. RapidJSON headers are required to build the external adapter; set `RAPIDJSON_ROOT` to an existing checkout when they are not installed.
+Surround-enabled releases can use the independent [surround-camera client](../../docs/configuration.md#surround-camera-client). The external native factory keeps immutable sealed frame allocations until its CPU copy completes, then explicitly releases each frame. Each native subscription has independent delivery state and 750 ms stale blanking. It copies final BGRx into GBM for IHS; this is not a zero-copy claim. Build the optional adapter with `-DARGO_WITH_SURROUND=ON`; the standard library excludes it. RapidJSON headers are required only for that adapter; set `RAPIDJSON_ROOT` to an existing checkout when they are not installed.
 
 External calibration/model job polling has a five-minute total deadline,
 including worker startup and status calls. Timeout remains distinct from user
@@ -10,18 +10,17 @@ run or cancel a newer run. Starting another job on the same helper while one is
 running reports busy. Backend solver messages remain intact. These are client
 lifecycle guarantees, not acceptance of a physical calibration result.
 
-The rest of this runbook documents the retained `camera_contract=1` manual regression and rollback path.
+The standard frontend defaults to the maintained `camera_contract=1` basic provider. See [Standard Edition](../../docs/standard-edition.md) for provider selection and compile-time editions.
 
-## Legacy manual camera
+## Basic camera
 
-Camera is a manual dashboard destination. Open **Apps → Camera**, select a
+Camera is a dashboard destination with manual preview and generic reverse activation. Open **Apps → Camera**, select a
 capture device and assign it as Rear. No device is assigned implicitly. With a
 present assignment, the dock Camera button opens it directly. Leaving Camera
 stops capture even though the page remains in the shell's IndexedStack. A saved
 Camera destination does not activate capture at application startup.
 
-Automatic reverse/gear/PDC activation is **pass 4**, not implemented here. Parking
-remains a separate destination. The core role IDs are rear/front/left/right; only
+Automatic reverse/PDC activation uses the shared fresh-signal presentation policy for basic and surround providers. Without fresh signals only manual activation is available. Parking remains a separate destination. The core role IDs are rear/front/left/right; only
 rear assignment and display are currently exposed. There are no vehicle-specific
 IDs, parking guidelines, audio capture or simulated production pictures.
 
@@ -48,7 +47,7 @@ export IHS_PREFIX="$HOME/dev/ivi-build/out/usr/local"
 cd "$ARGO"
 cargo build --manifest-path native/camera/Cargo.toml --locked --release
 cmake -S native/camera/argo-camera-view -B native/camera/argo-camera-view/build \
-  -DIHS_PREFIX="$IHS_PREFIX" -DCMAKE_BUILD_TYPE=Release
+  -DIHS_PREFIX="$IHS_PREFIX" -DARGO_WITH_SURROUND=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build native/camera/argo-camera-view/build -j2
 cargo test --manifest-path native/camera/Cargo.toml --locked
 cargo clippy --manifest-path native/camera/Cargo.toml --locked --all-targets -- -D warnings

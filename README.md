@@ -14,7 +14,7 @@ Lua plugins, normalized vehicle signals, events, storage and optional SocketCAN.
 The Home dashboard extends projection to the stationary dock, with a floating media strip
 above the dock. Host control size is adjustable independently of
 projection resolution and DPI. Climate uses optional vehicle-integration capabilities and confirmed feedback,
-with a separately labelled simulation mode. Manual Rear Camera uses an isolated V4L2 daemon
+with a separately labelled simulation mode. Basic Rear Camera uses an isolated V4L2 daemon
 and native IHS surface, with stable device assignment and stale-frame blanking.
 
 ## Capabilities
@@ -33,7 +33,7 @@ and native IHS surface, with stable device assignment and stale-frame blanking.
 - Focused Settings sections, host volume/mute, Material 3 appearance and persistent preferences.
 - Vehicle telemetry, simulation, optional SocketCAN, audio focus policy and
   explicitly enabled host power integration.
-- Manual rear-camera capture, native aspect-fit display and bounded loss recovery;
+- Basic rear-camera capture, generic reverse activation, native aspect-fit display and bounded loss recovery;
   automatic reverse/PDC activation remains unsupported.
 - External vehicle bundles and permission-controlled Lua host-state reads through
   `argo_host.snapshot()`.
@@ -73,4 +73,6 @@ Argo's CarPlay/LIVI Link work was heavily informed by **f-io / Lasse Heitgres â€
 LIVI**. Thank you to the LIVI contributors for their native CarPlay, iAP2 and MFi
 reference work. See [CREDITS.md](CREDITS.md) and the
 [pinned architecture/provenance review](docs/carplay-livi-review.md).
-CarPlay projection remains incomplete; this acknowledgement implies no endorsement.
+Wired CarPlay development includes locally exercised video, touch, audio and voice; wireless and broader acceptance remain unfinished. This acknowledgement implies no endorsement.
+
+[Standard Edition stabilization](docs/standard-edition.md) documents the separate frontend compositions, basic camera default, current automated behavior and remaining acceptance work.

@@ -1,3 +1,5 @@
+import 'projection_recovery.dart';
+
 import 'dart:async';
 
 import '../audio/audio_service.dart';
@@ -27,7 +29,8 @@ abstract interface class ProjectionService {
 }
 
 /// Protocol-neutral projection state and its integration with Argo audio focus.
-final class DefaultProjectionService implements ProjectionService {
+final class DefaultProjectionService
+    implements ProjectionService, ProjectionRecovery {
   DefaultProjectionService._({
     required this.backend,
     required this.audio,
@@ -72,6 +75,10 @@ final class DefaultProjectionService implements ProjectionService {
   final StreamController<ProjectionSnapshot> _changes =
       StreamController<ProjectionSnapshot>.broadcast(sync: true);
   final Map<String, AudioFocusHandle> _focusHandles = {};
+  final Map<String, double> _focusDuckingGains = {};
+  final Map<String, double> _duckLevels = {};
+  final Map<String, ProjectionDucking> _duckTargets = {};
+  final Map<String, Timer> _duckTimers = {};
   final Set<String> _registeredAudioSources = {};
   ProjectionSnapshot _current;
   StreamSubscription<ProjectionSnapshot>? _backendSubscription;
@@ -98,6 +105,24 @@ final class DefaultProjectionService implements ProjectionService {
 
   @override
   Stream<ProjectionSnapshot> get changes => _changes.stream;
+
+  @override
+  void invalidateRecovery() {
+    if (backend case final ProjectionRecovery recovery) {
+      recovery.invalidateRecovery();
+    }
+  }
+
+  @override
+  Future<void> recover(
+    ProjectionSwitchRecovery decision, {
+    bool returnToPrevious = false,
+  }) {
+    if (backend case final ProjectionRecovery recovery) {
+      return recovery.recover(decision, returnToPrevious: returnToPrevious);
+    }
+    return Future.error(StateError('Projection recovery is unavailable'));
+  }
 
   @override
   Future<void> connect(String deviceId) => backend.connect(deviceId);
@@ -153,6 +178,8 @@ final class DefaultProjectionService implements ProjectionService {
       activeSessionId: snapshot.activeSessionId,
       failureMessage: snapshot.failureMessage,
       audioFailure: _audioFailure,
+      failure: snapshot.failure,
+      switchRecovery: snapshot.switchRecovery,
     );
     if (next == _current) return;
     _current = next;
@@ -191,8 +218,59 @@ final class DefaultProjectionService implements ProjectionService {
     });
   }
 
+  void _updatePhoneDucking() {
+    final sessions = (_authoritative ?? backend.current).sessions;
+    final live = {
+      for (final s in sessions)
+        if (s.state != ProjectionSessionState.disconnected &&
+            s.state != ProjectionSessionState.failed)
+          s.id,
+    };
+    for (final id in _duckTargets.keys.toList()) {
+      if (live.contains(id) &&
+          sessions.any((s) => s.id == id && s.phoneDucking != null)) {
+        continue;
+      }
+      _duckTargets.remove(id);
+      _duckLevels.remove(id);
+      _duckTimers.remove(id)?.cancel();
+    }
+    for (final session in sessions) {
+      final target = session.phoneDucking;
+      if (!live.contains(session.id) ||
+          target == null ||
+          _duckTargets[session.id] == target) {
+        continue;
+      }
+      _duckTargets[session.id] = target;
+      _duckTimers.remove(session.id)?.cancel();
+      final start = _duckLevels[session.id] ?? 1.0;
+      if (target.rampMs == 0) {
+        _duckLevels[session.id] = target.gain;
+      } else {
+        final clock = Stopwatch()..start();
+        _duckTimers[session.id] = Timer.periodic(
+          const Duration(milliseconds: 40),
+          (timer) {
+            final progress = (clock.elapsedMilliseconds / target.rampMs).clamp(
+              0.0,
+              1.0,
+            );
+            _duckLevels[session.id] = start + (target.gain - start) * progress;
+            if (progress == 1) {
+              timer.cancel();
+              _duckTimers.remove(session.id);
+            }
+            _scheduleAudio();
+          },
+        );
+      }
+    }
+  }
+
   void _scheduleAudio() {
     if (_closed) return;
+    _updatePhoneDucking();
     _audioPending = true;
     if (_audioWork != null) return;
     _audioWork = _reconcileAudio().whenComplete(() {
@@ -264,6 +342,7 @@ final class DefaultProjectionService implements ProjectionService {
     try {
       await audio.unregisterSource(sourceId);
       _registeredAudioSources.remove(sourceId);
+      _focusDuckingGains.remove(sourceId);
       _sourceActivity.remove(sourceId);
       _focusHandles.remove(sourceId);
     } on Object catch (error, stack) {
@@ -282,6 +361,21 @@ final class DefaultProjectionService implements ProjectionService {
         for (final stream in session.audioStreams)
           _audioSourceId(stream): stream,
     };
+    final phoneGains = <String, double>{};
+    for (final session in snapshot.sessions) {
+      final gain = _duckLevels[session.id] ?? 1.0;
+      if (gain >= 1) continue;
+      final stream = ProjectionAudioStream(
+        id: 'phone-requested-duck',
+        sessionId: session.id,
+        role: ProjectionAudioRole.speech,
+        active: true,
+        hasFocus: true,
+      );
+      final id = _audioSourceId(stream);
+      streams[id] = stream;
+      phoneGains[id] = gain;
+    }
     var failed = false;
     for (final sourceId in _registeredAudioSources.toList()) {
       if (streams.containsKey(sourceId)) continue;
@@ -302,6 +396,7 @@ final class DefaultProjectionService implements ProjectionService {
             AudioSource(
               id: sourceId,
               role: audioRoleForProjection(stream.role),
+              gain: phoneGains.containsKey(sourceId) ? 0 : 1,
             ),
           );
           _registeredAudioSources.add(sourceId);
@@ -313,8 +408,20 @@ final class DefaultProjectionService implements ProjectionService {
         }
         if (_closed || generation != _generation) return;
         final wantsFocus = stream.active && stream.hasFocus;
-        if (wantsFocus && !_focusHandles.containsKey(sourceId)) {
-          _focusHandles[sourceId] = await audio.requestFocus(sourceId);
+        if (wantsFocus &&
+            (!_focusHandles.containsKey(sourceId) ||
+                (phoneGains.containsKey(sourceId) &&
+                    _focusDuckingGains[sourceId] != phoneGains[sourceId]))) {
+          final next = await audio.requestFocus(
+            sourceId,
+            duckingGain: phoneGains[sourceId],
+          );
+          final previous = _focusHandles[sourceId];
+          _focusHandles[sourceId] = next;
+          if (phoneGains[sourceId] case final gain?) {
+            _focusDuckingGains[sourceId] = gain;
+          }
+          await previous?.release();
         } else if (!wantsFocus) {
           await _focusHandles[sourceId]?.release();
           _focusHandles.remove(sourceId);
@@ -375,6 +482,10 @@ final class DefaultProjectionService implements ProjectionService {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    for (final timer in _duckTimers.values) {
+      timer.cancel();
+    }
+    _duckTimers.clear();
     await _backendSubscription?.cancel();
     await _audioSubscription?.cancel();
     _retry?.cancel();

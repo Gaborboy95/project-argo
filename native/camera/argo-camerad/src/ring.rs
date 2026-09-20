@@ -106,7 +106,7 @@ impl Ring {
         if width == 0
             || height == 0
             || width > 1920
-            || height > 1080
+            || height > 1920
             || stride < width * 4
             || bytes > CAPACITY
             || data.len() < bytes
@@ -177,6 +177,13 @@ pub fn monotonic_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rotated_full_hd_fits_but_oversized_square_does_not() {
+        let mut ring = Ring::new().unwrap();
+        let pixels = vec![0; CAPACITY];
+        assert!(ring.write(&pixels, 1080, 1920, 1080 * 4, 30, 1).is_ok());
+        assert!(ring.write(&pixels, 1920, 1920, 1920 * 4, 30, 1).is_err());
+    }
     #[test]
     fn sequence_guard_and_invalidation() {
         let mut r = Ring::new().unwrap();

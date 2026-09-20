@@ -13,6 +13,25 @@ abstract final class AppSettingKeys {
     throw const FormatException('Expected stable camera identity');
   }
 
+  static final setupStep = SettingKey<int>(
+    id: 'setup.assistant.step',
+    defaultValue: 0,
+    serialize: (value) => value,
+    deserialize: _boundedInt('setup.assistant.step', 0, 9),
+  );
+
+  static final cameraConfiguration = SettingKey<String>(
+    id: 'camera.rear.configuration',
+    defaultValue: '{}',
+    serialize: (value) => value,
+    deserialize: (value) {
+      if (value is! String || value.length > 4096) {
+        throw const FormatException('Invalid camera configuration');
+      }
+      return value;
+    },
+  );
+
   static final cameraRear = SettingKey<String>(
     id: 'camera.rear',
     defaultValue: '',
@@ -198,6 +217,8 @@ abstract final class AppSettingKeys {
 
   static SettingsSchema createSchema() => SettingsSchema()
     ..register(cameraRear)
+    ..register(setupStep)
+    ..register(cameraConfiguration)
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)
