@@ -21,6 +21,7 @@ def main():
         files = [f for f in source.iterdir() if f.is_file() and f.name.lower().startswith(('license', 'licence', 'copying', 'copyright', 'notice'))]
         if not files:
             files = [f for f in source.glob('*/*') if f.is_file() and f.name.lower().startswith(('license', 'licence', 'copying', 'copyright', 'notice')) and '.git' not in f.parts]
+        files = sorted(files)
         for file in files:
             destination = a.output / name / file.name
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -42,7 +43,7 @@ def main():
         index.append({'component': 'dart/' + item['name'], 'files': collect('dart/' + item['name'], source)})
     for name, path in [('ihs', a.ihs), ('veloce', a.veloce), ('argo', a.argo)]:
         index.append({'component': name, 'files': collect(name, path)})
-    for path in (a.ihs / 'third_party').iterdir():
+    for path in sorted((a.ihs / 'third_party').iterdir()):
         if path.is_dir(): index.append({'component': 'ihs/' + path.name, 'files': collect('ihs/' + path.name, path)})
     lua = a.veloce / 'packages/veloce_lua_native/third_party/lua/src/lua.h'
     if lua.exists():
