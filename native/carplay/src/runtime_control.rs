@@ -105,6 +105,23 @@ impl Control {
             .try_send(command)
             .map_err(|_| io::Error::other("CarPlay input queue unavailable"))
     }
+    // Cancellation has its own watch channel and never needs queue capacity.
+    fn end_session(&self, presentation: &mut Presentation) {
+        presentation.active = false;
+        presentation.visible = false;
+        presentation.pointers.clear();
+        self.disconnect.send_replace(true);
+    }
+
+    fn terminal_command(
+        &self,
+        presentation: &mut Presentation,
+        command: Command,
+    ) -> io::Result<()> {
+        self.command(command)
+            .inspect_err(|_| self.end_session(presentation))
+    }
+
     async fn request(&self, request: Request) -> io::Result<Value> {
         let mut presentation = self.presentation.lock().await;
         let session = match &request {
@@ -121,6 +138,11 @@ impl Control {
         if session != self.session {
             return Err(io::Error::other("stale session"));
         }
+        if *self.disconnect.borrow()
+            && !matches!(request, Request::Status | Request::Disconnect { .. })
+        {
+            return Err(io::Error::other("session ended; reconnect required"));
+        }
         match request {
             Request::Status => {
                 let information = self.information.borrow().clone();
@@ -133,25 +155,35 @@ impl Control {
                 );
             }
             Request::Activate { .. } => {
-                presentation.revision = presentation
+                let revision = presentation
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("presentation revision exhausted"))?;
+                let release_audio = self.information.borrow().audio_available;
+                // Reserve the entire operation before any observable mutation or send.
+                let permits = self
+                    .commands
+                    .try_reserve_many(if release_audio { 2 } else { 1 })
+                    .map_err(|_| io::Error::other("CarPlay input queue unavailable"))?;
+                for (index, permit) in permits.enumerate() {
+                    permit.send(if index == 0 {
+                        Command::Keyframe
+                    } else {
+                        Command::ReleaseAudio
+                    });
+                }
+                presentation.revision = revision;
                 presentation.active = true;
                 presentation.visible = true;
-                self.command(Command::Keyframe)?;
-                if self.information.borrow().audio_available {
-                    self.command(Command::ReleaseAudio)?;
-                }
             }
             Request::Visibility { visible, .. } => {
-                presentation.visible = visible;
                 if !visible {
+                    self.terminal_command(&mut presentation, Command::ReleaseTouches)?;
                     presentation.pointers.clear();
-                    self.command(Command::ReleaseTouches)?;
                 } else if presentation.active {
                     self.command(Command::Keyframe)?;
                 }
+                presentation.visible = visible;
             }
             Request::Touch {
                 pointer,
@@ -171,8 +203,8 @@ impl Control {
                     return Err(io::Error::other("invalid coordinates"));
                 }
                 if matches!(phase, Phase::Cancel) {
+                    self.terminal_command(&mut presentation, Command::ReleaseTouches)?;
                     presentation.pointers.clear();
-                    self.command(Command::ReleaseTouches)?;
                 } else {
                     let video = self.video.borrow();
                     let description = video
@@ -184,13 +216,11 @@ impl Control {
                             if presentation.pointers.contains_key(&pointer) {
                                 return Err(io::Error::other("duplicate touch"));
                             }
-                            let slot = (0..2)
+                            (0..2)
                                 .find(|slot| {
                                     !presentation.pointers.values().any(|value| value == slot)
                                 })
-                                .ok_or_else(|| io::Error::other("touch capacity"))?;
-                            presentation.pointers.insert(pointer, slot);
-                            slot
+                                .ok_or_else(|| io::Error::other("touch capacity"))?
                         }
                         _ => *presentation
                             .pointers
@@ -198,13 +228,17 @@ impl Control {
                             .ok_or_else(|| io::Error::other("unknown touch"))?,
                     };
                     let down = !matches!(phase, Phase::Up);
-                    self.command(Command::Touch {
+                    let command = Command::Touch {
                         slot,
                         down,
                         x: (x * description.width as f64).round() as u16,
                         y: (y * description.height as f64).round() as u16,
-                    })?;
-                    if !down {
+                    };
+                    if down {
+                        self.command(command)?;
+                        presentation.pointers.insert(pointer, slot);
+                    } else {
+                        self.terminal_command(&mut presentation, command)?;
                         presentation.pointers.remove(&pointer);
                     }
                 }
@@ -224,11 +258,9 @@ impl Control {
                 })?;
             }
             Request::Disconnect { .. } => {
-                presentation.active = false;
-                presentation.visible = false;
-                presentation.pointers.clear();
-                self.command(Command::ReleaseTouches)?;
-                self.disconnect.send_replace(true);
+                self.end_session(&mut presentation);
+                // Best effort only: teardown must survive a full/closed input queue.
+                let _ = self.command(Command::ReleaseTouches);
             }
             Request::MicrophoneSource { source, .. } => {
                 if source.is_empty()
@@ -295,6 +327,189 @@ async fn handle(mut socket: UnixStream, owner: Arc<Control>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture(capacity: usize) -> (Control, mpsc::Receiver<Command>) {
+        use crate::media::*;
+        let description = Description {
+            protocol: Protocol::CarPlay,
+            plane: Plane::Main,
+            codec: Codec::H264,
+            colorimetry: Colorimetry::Bt709,
+            range: ColorRange::Limited,
+            framing: Framing::AnnexB,
+            width: 800,
+            height: 480,
+            fps_num: 30,
+            fps_den: 1,
+            session: 7,
+        };
+        let video = Video {
+            description,
+            first_frame: watch::channel(true).1,
+            stream: VideoStream::new(description, &[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 1])
+                .unwrap(),
+        };
+        let (commands, received) = mpsc::channel(capacity);
+        (
+            Control::new(
+                7,
+                "fixture".into(),
+                watch::channel(Some(video)).1,
+                watch::channel(SessionInfo::default()).1,
+                watch::channel(wired::State::StartSessionSent).1,
+                commands,
+                watch::channel(false).0,
+            ),
+            received,
+        )
+    }
+
+    fn touch(phase: Phase) -> Request {
+        Request::Touch {
+            session: 7,
+            pointer: 42,
+            phase,
+            x: 0.5,
+            y: 0.5,
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_bypasses_full_and_closed_input_queues() {
+        for closed in [false, true] {
+            let (control, mut received) = fixture(1);
+            control
+                .request(Request::Activate { session: 7 })
+                .await
+                .unwrap();
+            if closed {
+                received.close();
+            }
+            control
+                .request(Request::Disconnect { session: 7 })
+                .await
+                .unwrap();
+            assert!(*control.disconnect.borrow());
+            let state = control.presentation.lock().await;
+            assert!(!state.active && !state.visible && state.pointers.is_empty());
+            drop(state);
+            assert!(
+                control
+                    .request(Request::Activate { session: 7 })
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn activation_reserves_all_commands_before_committing() {
+        let (control, mut received) = fixture(2);
+        // Keyframe would fit, but the accompanying audio command would not.
+        let info = SessionInfo {
+            audio_available: true,
+            ..Default::default()
+        };
+        let mut control = control;
+        control.information = watch::channel(info).1;
+        control.commands.try_send(Command::Night(false)).unwrap();
+        assert!(
+            control
+                .request(Request::Activate { session: 7 })
+                .await
+                .is_err()
+        );
+        let state = control.presentation.lock().await;
+        assert!(!state.active && !state.visible);
+        assert_eq!(state.revision, 0);
+        drop(state);
+        assert!(matches!(received.try_recv(), Ok(Command::Night(false))));
+        assert!(received.try_recv().is_err());
+        received.close();
+        assert!(
+            control
+                .request(Request::Activate { session: 7 })
+                .await
+                .is_err()
+        );
+        assert_eq!(control.presentation.lock().await.revision, 0);
+    }
+
+    #[tokio::test]
+    async fn rejected_down_does_not_allocate_a_pointer() {
+        let (control, _received) = fixture(1);
+        control
+            .request(Request::Activate { session: 7 })
+            .await
+            .unwrap();
+        assert!(control.request(touch(Phase::Down)).await.is_err());
+        assert!(control.presentation.lock().await.pointers.is_empty());
+        assert!(!*control.disconnect.borrow());
+    }
+
+    #[tokio::test]
+    async fn terminal_input_failure_ends_session_instead_of_losing_release() {
+        for terminal in [
+            touch(Phase::Up),
+            touch(Phase::Cancel),
+            Request::Visibility {
+                session: 7,
+                visible: false,
+            },
+        ] {
+            for closed in [false, true] {
+                let (control, mut received) = fixture(1);
+                control
+                    .request(Request::Activate { session: 7 })
+                    .await
+                    .unwrap();
+                received.recv().await.unwrap();
+                control.request(touch(Phase::Down)).await.unwrap();
+                if closed {
+                    received.close();
+                }
+                // Build a fresh request for each queue mode.
+                let request = match terminal {
+                    Request::Touch {
+                        phase: Phase::Up, ..
+                    } => touch(Phase::Up),
+                    Request::Touch { .. } => touch(Phase::Cancel),
+                    _ => Request::Visibility {
+                        session: 7,
+                        visible: false,
+                    },
+                };
+                assert!(control.request(request).await.is_err());
+                assert!(*control.disconnect.borrow());
+                let state = control.presentation.lock().await;
+                assert!(!state.active && !state.visible && state.pointers.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_cannot_end_current_input() {
+        let (control, mut received) = fixture(2);
+        control
+            .request(Request::Activate { session: 7 })
+            .await
+            .unwrap();
+        received.recv().await.unwrap();
+        control.request(touch(Phase::Down)).await.unwrap();
+        assert!(
+            control
+                .request(Request::Disconnect { session: 6 })
+                .await
+                .is_err()
+        );
+        assert!(!*control.disconnect.borrow());
+        assert_eq!(control.presentation.lock().await.pointers.len(), 1);
+        control
+            .request(Request::Disconnect { session: 7 })
+            .await
+            .unwrap();
+        assert!(*control.disconnect.borrow());
+    }
+
     #[tokio::test]
     async fn activation_advances_presentation_and_hidden_input_is_rejected() {
         let (commands, mut received) = mpsc::channel(8);

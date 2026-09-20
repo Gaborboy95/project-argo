@@ -159,6 +159,16 @@ The shared `wired_runtime` is now used by both the example and `argo-carplayd
 backoff after a minute-long session, and stores pairing under
 `$XDG_STATE_HOME/argo-carplay` (default `~/.local/state/argo-carplay`). It owns one
 receiver at a time and cleans up session resources before retrying. Explicit user
+Native control admission is bounded. Activation reserves both keyframe and audio
+release commands before changing presentation state. A rejected touch-down does
+not allocate a contact; a rejected show request retains the previous visibility.
+If an accepted contact cannot be released (up, cancel or hide), the session is
+cancelled through its independent watch channel and requires reconnection.
+Disconnect uses that same path even when the input queue is full or closed.
+Stale session IDs and new commands after cancellation are rejected. These queue
+failure paths have automated coverage; phone-side teardown still needs physical
+acceptance under load.
+
 Disconnect suppresses automatic reconnect until wired mode is restarted; a
 remembered-device Connect action is still needed.
 
