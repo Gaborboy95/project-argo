@@ -34,7 +34,12 @@ Reverse/PDC presentation is composed against `CameraService` for both providers.
 Fresh normalized vehicle signals are required. Incoming projection updates cannot
 cover a selected camera page. Navigation and reverse invalidate failed-switch
 recovery; late activation is hidden instead of restoring an expired decision.
-The complete target vehicle/projection arbitration matrix still needs acceptance.
+Reverse owns presentation above local modal panels, selected projection and normal
+pages. Explicit navigation while reverse is active replaces the deferred return
+destination; it cannot dismiss reverse. Camera configuration controls are blocked
+during reverse. An ended, failed or replaced prior projection returns to the local
+media page. Both phone protocols have automated reverse/failure/replacement tests;
+physical vehicle/projection acceptance remains open.
 
 ## Recovery and audio
 
@@ -75,8 +80,13 @@ stationary state or complete engine-side benchmark cancellation/readiness work.
 Front/rear mat templates show two required mat forms. Guided layout uses measured
 bumper/body-to-inner-corner-row distance and centre offset; coordinates and yaw
 are derived using explicitly described corner ordering. No mat dimensions are
-guessed. Raw coordinates remain under Advanced. Import/export chooser, complete
-manual review tools, capture storage and job-generation work remain open.
+guessed. Raw coordinates remain under Advanced. Calibration and lens-profile
+import/export use an application-owned home-folder browser, bounded to 2 MiB JSON
+files and 2048 directory entries. Links are excluded, export never overwrites,
+and import never activates. Engine schema/hash validation remains authoritative.
+The same-user filesystem and engine inbox remain trusted; this is not a sandbox
+against a concurrent filesystem attacker. Complete manual review tools, protected
+collection storage explanations and job-generation work remain open.
 
 The first-run assistant persists its current step, resumes and can be reopened
 under Settings → System. Optional steps can be skipped. It reuses current audio,

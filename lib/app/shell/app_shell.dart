@@ -65,12 +65,18 @@ class _AppShellState extends State<AppShell> {
   int? _automaticPreviousIndex;
   String? _automaticOwner;
   CameraRole? _automaticPreviousRole;
+  String? _automaticPreviousProjection;
   bool _mediaVisible = true;
   String? _panel, _climateSide;
   double? _volume;
+  // Presentation priority: reverse > local modal > selected projection > page.
+  bool get _reverseOwnsPresentation => _automaticOwner == 'reverse';
   bool get _modal => _panel != null;
-  void _togglePanel(String panel) =>
-      setState(() => _panel = _panel == panel ? null : panel);
+  void _togglePanel(String panel) {
+    if (_reverseOwnsPresentation) return;
+    setState(() => _panel = _panel == panel ? null : panel);
+  }
+
   void _dismissPanel() => setState(() {
     _panel = null;
     _climateSide = null;
@@ -141,7 +147,20 @@ class _AppShellState extends State<AppShell> {
   void _onAutomaticCamera(CameraPresentationRequest? request) {
     if (!mounted) return;
     if (request == null) {
-      final previous = _automaticPreviousIndex;
+      var previous = _automaticPreviousIndex;
+      final projectionId = _automaticPreviousProjection;
+      _automaticPreviousProjection = null;
+      if (projectionId != null && _projection != null) {
+        final session = selectedProjectionSession(_projection!.current);
+        if (session?.id != projectionId ||
+            (session?.state != ProjectionSessionState.ready &&
+                session?.state != ProjectionSessionState.streaming)) {
+          final host = widget.environment.moduleRegistry.modules.indexWhere(
+            (m) => m.id == 'media',
+          );
+          if (host >= 0) previous = host;
+        }
+      }
       if (_automaticOwner != null && previous != null) {
         _automaticOwner = null;
         _automaticPreviousIndex = null;
@@ -171,6 +190,9 @@ class _AppShellState extends State<AppShell> {
     if (_panel != null) _dismissPanel();
     if (_automaticPreviousIndex == null) {
       _automaticPreviousRole = _camera?.current.activeRole;
+      _automaticPreviousProjection = _home && _projection != null
+          ? selectedProjectionSession(_projection!.current)?.id
+          : null;
     }
     _automaticPreviousIndex ??= _selectedIndex;
     _automaticOwner = request.owner;
@@ -381,6 +403,7 @@ class _AppShellState extends State<AppShell> {
                           geometry.dockHeight + DashboardGeometry.mediaEdgeGap,
                       child: Visibility(
                         visible:
+                            !_reverseOwnsPresentation &&
                             _mediaVisible &&
                             (_panel == null || _panel == 'media'),
                         maintainState: true,
@@ -388,7 +411,11 @@ class _AppShellState extends State<AppShell> {
                           collapsedHeight: geometry.closedMediaHeight,
                           expandedHeight: sheetHeight,
                           open: _panel == 'media',
-                          onOpen: () => setState(() => _panel = 'media'),
+                          onOpen: () {
+                            if (!_reverseOwnsPresentation) {
+                              setState(() => _panel = 'media');
+                            }
+                          },
                           onClose: () {
                             if (_panel == 'media') {
                               _dismissPanel();
@@ -436,6 +463,7 @@ class _AppShellState extends State<AppShell> {
                             ? services.get<ClimateService>()
                             : null,
                         onClimate: (side) => setState(() {
+                          if (_reverseOwnsPresentation) return;
                           _panel = _panel == 'climate' && _climateSide == side
                               ? null
                               : 'climate';
@@ -565,9 +593,12 @@ class _AppShellState extends State<AppShell> {
                   ? CameraActivityScope(
                       active: module == modules[_selectedIndex],
                       onManualSelection: _manualCameraSelection,
-                      child: module.builder(
-                        context,
-                        widget.environment.services,
+                      child: AbsorbPointer(
+                        absorbing: _reverseOwnsPresentation,
+                        child: module.builder(
+                          context,
+                          widget.environment.services,
+                        ),
                       ),
                     )
                   : module.builder(context, widget.environment.services),
@@ -585,6 +616,7 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _manualCameraSelection() {
+    if (_reverseOwnsPresentation) return;
     _automaticCamera?.manualSelection();
     _automaticOwner = null;
     _automaticPreviousIndex = null;
@@ -599,6 +631,29 @@ class _AppShellState extends State<AppShell> {
   }) {
     if (_projection case final ProjectionRecovery recovery) {
       recovery.invalidateRecovery();
+    }
+    if (!automatic && _reverseOwnsPresentation) {
+      // A newer explicit destination replaces the old restore decision, but
+      // cannot cover a fresh reverse request. Phone focus never enters here.
+      if (!phoneRequested) {
+        _automaticPreviousIndex = index;
+        _automaticPreviousRole = cameraRole;
+        _automaticPreviousProjection =
+            widget.environment.moduleRegistry.modules[index].id == 'home' &&
+                _projection != null
+            ? selectedProjectionSession(_projection!.current)?.id
+            : null;
+        ++_navigationEpoch;
+        final id = widget.environment.moduleRegistry.modules[index].id;
+        unawaited(
+          _settings.set(AppSettingKeys.lastModule, id).catchError((
+            Object error,
+          ) {
+            debugPrint('Could not save queued navigation: $error');
+          }),
+        );
+      }
+      return;
     }
     if (!automatic) {
       _manualCameraSelection();

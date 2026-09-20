@@ -14,6 +14,8 @@ import 'calibration_fields.dart';
 import 'lens_profile_selector.dart';
 import 'mat_setup_step.dart';
 import 'marker_review_view.dart';
+import 'exchange_browser.dart';
+import '../../shared/argo_components.dart';
 
 class CalibrationHome extends StatefulWidget {
   const CalibrationHome({
@@ -277,24 +279,12 @@ class _HomeState extends State<CalibrationHome> {
   }
 
   Future<void> _importRig() async {
-    final state = await _manager.call('exchange_list');
-    if (!mounted) return;
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Import rig calibration'),
-        children: [
-          Text('Engine inbox: ${state['inbox']}'),
-          for (final file in state['imports'] as List)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, '$file'),
-              child: Text('$file'),
-            ),
-        ],
-      ),
+    final result = await CalibrationExchange.importFile(
+      context,
+      _manager,
+      lensProfile: false,
     );
-    if (name == null) return;
-    final result = await _manager.call('exchange_import', {'name': name});
+    if (result == null || !mounted) return;
     _revision = result['revision'] as String? ?? '';
     if (result['calibration'] is Map) {
       _draft =
@@ -464,13 +454,15 @@ class _HomeState extends State<CalibrationHome> {
         await _manager.call('activate', {'revision': _revision});
         _message = 'Active revision $_revision';
       }),
-      _button('Export JSON', () async {
+      _button('Export calibration', () async {
         if (_revision.isEmpty) throw StateError('Save a candidate first');
-        final r = await _manager.call('exchange_export', {
-          'kind': 'rig',
-          'id': _revision,
-        });
-        _message = 'Exported ${r['name']} to ${r['directory']}';
+        final saved = await CalibrationExchange.exportFile(
+          context,
+          _manager,
+          kind: 'rig',
+          id: _revision,
+        );
+        if (saved) _message = 'Calibration exported to the selected folder';
       }),
       _button('Roll back', () async {
         _message = '${await _manager.call('rollback')}';
@@ -537,9 +529,17 @@ class _HomeState extends State<CalibrationHome> {
                     '${((r['used_bytes'] as num) / 1048576).toStringAsFixed(1)} MiB / 256 MiB • ${r['protected_count']} referenced captures';
               }),
               _button('Clean old unused calibration captures', () async {
+                if (!await confirmArgoAction(
+                  context,
+                  title: 'Clean unused captures?',
+                  explanation: 'Remove unreferenced captures older than one hour. Saved calibrations and referenced captures are preserved.',
+                  action: 'Clean captures',
+                )) {
+                  return;
+                }
                 final r = await _manager.call('capture_storage_clean');
                 _message =
-                    'Reclaimed ${r['reclaimed_bytes']} bytes; referenced and recent captures kept';
+                    'Reclaimed ${((r['reclaimed_bytes'] as num) / 1048576).toStringAsFixed(1)} MiB; referenced and recent captures kept';
               }),
               if (!_continue) ...[
                 if (_draft != null)

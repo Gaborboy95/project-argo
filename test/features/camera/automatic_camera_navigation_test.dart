@@ -1,5 +1,10 @@
 import 'dart:async';
 
+import 'package:argo/core/projection/in_memory_projection_backend.dart';
+import 'package:argo/core/projection/projection_models.dart';
+import 'package:argo/core/projection/projection_service.dart';
+import 'package:argo/core/projection/projection_types.dart';
+
 import 'package:argo/app/argo_environment.dart';
 import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
@@ -57,7 +62,7 @@ class NormalizedVehicle implements VehicleDataService {
 
 void main() {
   testWidgets(
-    'automatic request restores only its owned navigation; manual Home cancels it',
+    'reverse owns presentation until release and then uses newest explicit navigation',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 960);
       tester.view.devicePixelRatio = 1;
@@ -77,7 +82,7 @@ void main() {
         ..register<CameraService>(camera)
         ..register<CameraPresentationService>(automatic);
       final modules = AppModuleRegistry();
-      for (final id in ['home', 'camera']) {
+      for (final id in ['home', 'camera', 'settings']) {
         modules.register(
           AppModule(
             id: id,
@@ -108,9 +113,15 @@ void main() {
       vehicle.emit(CameraVehicleSignals.reverse, true);
       await tester.pumpAndSettle();
       expect(find.text('camera content'), findsOneWidget);
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      expect(find.text('camera content'), findsOneWidget);
       await tester.tap(find.byTooltip('Home'));
       await tester.pumpAndSettle();
       vehicle.emit(CameraVehicleSignals.reverse, true);
+      await tester.pumpAndSettle();
+      expect(find.text('camera content'), findsOneWidget);
+      vehicle.emit(CameraVehicleSignals.reverse, false);
       await tester.pumpAndSettle();
       expect(find.text('home content'), findsOneWidget);
       expect(settings.get(AppSettingKeys.lastModule), 'home');
@@ -123,6 +134,105 @@ void main() {
       await tester.pumpAndSettle();
     },
   );
+  for (final protocol in ProjectionProtocol.values) {
+    for (final change in ['unchanged', 'failed', 'replacement']) {
+      testWidgets(
+        '$protocol reverse preserves ownership across $change projection',
+        (tester) async {
+          tester.view.physicalSize = const Size(1280, 960);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          final settings = await SettingsService.load(
+            schema: AppSettingKeys.createSchema(),
+            store: MemoryCameraSettings(),
+          );
+          final vehicle = NormalizedVehicle(), camera = CameraFixture();
+          final automatic = CameraPresentationService(
+            vehicle,
+            policy: CameraPresentationPolicy(hold: Duration.zero),
+          );
+          ProjectionSnapshot snapshot(
+            String id,
+            ProjectionSessionState state,
+          ) => ProjectionSnapshot(
+            backendAvailable: true,
+            activeSessionId: id,
+            sessions: [
+              ProjectionSession(
+                id: id,
+                device: ProjectionDevice(
+                  id: 'phone',
+                  displayName: 'Phone',
+                  protocol: protocol,
+                  transport: ProjectionTransport.usb,
+                ),
+                state: state,
+              ),
+            ],
+          );
+          final backend = InMemoryProjectionBackend(
+            initial: snapshot('original', ProjectionSessionState.ready),
+          );
+          final projection = _DirectProjectionService(backend);
+          final services = ServiceRegistry()
+            ..register(settings)
+            ..register<CameraService>(camera)
+            ..register<CameraPresentationService>(automatic)
+            ..register<ProjectionService>(projection);
+          final modules = AppModuleRegistry();
+          for (final id in ['home', 'camera', 'media']) {
+            modules.register(
+              AppModule(
+                id: id,
+                label: id,
+                icon: Icons.circle,
+                builder: (_, _) => Text('$id content'),
+              ),
+            );
+          }
+          await tester.pumpWidget(
+            MaterialApp(
+              home: AppShell(
+                environment: ArgoEnvironment(
+                  services: services,
+                  moduleRegistry: modules,
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          vehicle.emit(CameraVehicleSignals.reverse, true);
+          await tester.pumpAndSettle();
+          projection.activations.clear();
+          if (change == 'failed')
+            backend.emit(snapshot('original', ProjectionSessionState.failed));
+          if (change == 'replacement')
+            backend.emit(snapshot('replacement', ProjectionSessionState.ready));
+          await tester.pumpAndSettle();
+          expect(find.text('camera content'), findsOneWidget);
+          expect(projection.activations, isEmpty);
+          vehicle.emit(CameraVehicleSignals.reverse, false);
+          await tester.pumpAndSettle();
+          expect(
+            find.text(change == 'unchanged' ? 'home content' : 'media content'),
+            findsOneWidget,
+          );
+          expect(
+            projection.activations,
+            change == 'unchanged' ? ['original'] : isEmpty,
+          );
+          await tester.pumpWidget(const SizedBox());
+          unawaited(automatic.close());
+          unawaited(vehicle.close());
+          unawaited(camera.close());
+          unawaited(projection.close());
+          await settings.close();
+          await tester.pumpAndSettle();
+        },
+      );
+    }
+  }
   test('steering wheel values cannot enter road-wheel overlay contract; PDC requires measured region', () {
     expect(
       () => CameraVehicleSignals.roadWheelAngle.decode(4.0),
@@ -144,4 +254,51 @@ void main() {
       [1.0, 0.2, 0.3],
     );
   });
+}
+
+final class _DirectProjectionService implements ProjectionService {
+  _DirectProjectionService(this.backend);
+  final InMemoryProjectionBackend backend;
+  Completer<void>? hold, activationHold;
+  final activations = <String>[];
+  final connections = <String>[];
+  final visibility = <(String, bool)>[];
+  @override
+  ProjectionSnapshot get current => backend.current;
+  @override
+  Stream<ProjectionSnapshot> get changes => backend.changes;
+  @override
+  Future<void> activate(String sessionId) async {
+    activations.add(sessionId);
+    await activationHold?.future;
+  }
+
+  @override
+  Future<void> close() => backend.close();
+  @override
+  Future<void> connect(String deviceId) async {
+    connections.add(deviceId);
+  }
+
+  @override
+  Future<void> disconnect(String sessionId) => backend.disconnect(sessionId);
+  @override
+  Future<void> sendButton(
+    String sessionId,
+    ProjectionInputButton button, {
+    required bool pressed,
+  }) => backend.sendButton(sessionId, button, pressed: pressed);
+  @override
+  Future<void> sendRotary(String sessionId, int detents) =>
+      backend.sendRotary(sessionId, detents);
+  @override
+  Future<void> sendTouch(String sessionId, ProjectionTouch touch) async {
+    await backend.sendTouch(sessionId, touch);
+    if (touch.phase == ProjectionTouchPhase.down) await hold?.future;
+  }
+
+  @override
+  Future<void> setVideoVisibility(String streamId, bool visible) async {
+    visibility.add((streamId, visible));
+  }
 }

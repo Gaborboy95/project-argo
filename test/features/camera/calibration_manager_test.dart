@@ -203,7 +203,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Wide lens • [1920, 1080]'));
       await tester.pumpAndSettle();
-      expect(find.text('Export'), findsOneWidget);
+      expect(find.text('Export lens profile'), findsOneWidget);
       await tester.tap(find.text('rear • rear-id'));
       await tester.pump();
       await tester.tap(find.text('Use profile for selected matching cameras'));
