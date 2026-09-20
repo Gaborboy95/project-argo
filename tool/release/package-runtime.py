@@ -162,7 +162,7 @@ exec "$runtime/bin/{binary}" {options}"$@"
         epoch = int(definition['source_date_epoch'])
         for path in stage.rglob('*'): os.utime(path, (epoch, epoch), follow_symlinks=False)
         output = args.output / f'argo-runtime_{args.version}_amd64.deb'
-        subprocess.run(['dpkg-deb', '--root-owner-group', '-Zxz', '--build', str(stage), str(output)], check=True, env={**os.environ, 'SOURCE_DATE_EPOCH': str(epoch)})
+        subprocess.run(['dpkg-deb', '--root-owner-group', '--threads-max=2', '-Zxz', '--build', str(stage), str(output)], check=True, env={**os.environ, 'SOURCE_DATE_EPOCH': str(epoch)})
         (args.output / (output.name + '.sha256')).write_text(sha(output) + '  ' + output.name + '\n')
         print(output)
 
