@@ -3,9 +3,17 @@
 version = 4
 
 [[package]]
+name = "argo-audio-ownership"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "argo-projectiond"
 version = "0.1.0"
 dependencies = [
+ "argo-audio-ownership",
  "bluer",
  "futures-lite",
  "futures-util",

@@ -31,6 +31,20 @@ Settings default base: Linux `XDG_CONFIG_HOME` or `$HOME/.config`; Windows
 The runtime native integrations are not all supported merely because a settings
 path exists on an OS.
 
+## CarPlay development diagnostics
+
+`ARGO_CARPLAY_DIAGNOSTICS=1` enables a read-only LIVI Link card on Linux;
+unset/`0` leaves it absent. Managed bundles containing `carplay_control=1` enable
+it by default unless explicitly disabled. The separate daemon uses the desktop
+user's `$XDG_RUNTIME_DIR/project-argo/carplay.sock`. Wired-capable releases also
+accept validated `carplay.json` enable/display/audio-output configuration; see the
+[supervised wired mode](carplay.md#supervised-wired-development-mode). Radio, codec
+and remembered-device controls are not yet exposed.
+`ARGO_LIVI_LINK_ADDRESS` is a trusted foreground CLI/daemon IPv4 diagnostic
+override only; the default re-discovers `livi-link.local` for every transaction.
+It is not a Flutter setting or managed environment option. See
+[configuration bounds, timing and limitations](carplay.md).
+
 ## Projection
 
 | Variable | Default / accepted values | Reader, timing, prerequisites and safe example |
@@ -444,3 +458,7 @@ vehicle decoding, steering or braking outputs are included. Signal lock remains
 separate from frame arrival: a capture adapter's arriving no-signal picture is
 not proof of optical camera health. Current capture cards report optical signal
 as unverified in Argo.
+
+Wired CarPlay may opt into `"usb_lease": true` in `carplay.json` after installing
+the [fixed polkit helper](carplay.md#automatic-usb-configuration-lease). This keeps
+the receiver unprivileged and restores normal USB mode on daemon shutdown.

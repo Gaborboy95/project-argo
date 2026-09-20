@@ -324,6 +324,8 @@ class _ProjectionViewState extends State<ProjectionView>
       viewType: ProjectionView.viewType,
       creationParams: <String, Object?>{
         if (widget.stream != null) 'streamId': widget.stream!.id,
+        if (widget.stream?.nativeViewParameters != null)
+          'nativeMediaParams': widget.stream!.nativeViewParameters!,
         'cropPixels': [
           widget.stream?.width ?? 1280,
           widget.stream?.height ?? 720,

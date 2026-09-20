@@ -1,3 +1,5 @@
+import '../../core/projection/carplay_settings_service.dart';
+import '../../core/projection/carplay_link_diagnostics.dart';
 import '../../core/camera/parking_model_service.dart';
 import '../../core/camera/camera_service.dart';
 import '../../features/camera/camera_page.dart';
@@ -83,6 +85,13 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          projection: services.get<ProjectionService>(),
+          carPlaySettings: services.contains<CarPlaySettingsService>()
+              ? services.get<CarPlaySettingsService>()
+              : null,
+          carPlayDiagnostics: services.contains<CarPlayLinkDiagnostics>()
+              ? services.get<CarPlayLinkDiagnostics>()
+              : null,
           models: services.contains<ParkingModelService>()
               ? services.get<ParkingModelService>()
               : null,

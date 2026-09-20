@@ -13,6 +13,7 @@ linux-usb = ["dep:futures-lite", "dep:nusb"]
 linux-media = ["dep:gstreamer", "dep:gstreamer-app"]
 
 [dependencies]
+argo-audio-ownership = { path = "../../audio-ownership" }
 nusb = { version = "0.2.7", features = ["tokio"], optional = true }
 tokio = { version = "1.47", features = ["io-util", "process", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 futures-lite = { version = "2.6", optional = true }

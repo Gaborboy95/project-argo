@@ -18,6 +18,8 @@ import tempfile
 import time
 
 UNITS = ('argo-app.service', 'argo-projectiond.service')
+CARPLAY_UNIT = 'argo-carplayd.service'
+ALL_UNITS = (*UNITS, CARPLAY_UNIT)
 REQUIRED = ('bin/argo-projectiond', 'lib/libapp.so', 'lib/libargo_projection_view.so',
             'lib/libveloce_lua_native.so', 'lib/libflutter_engine.so', 'lib/libsqlite3.so', 'data/icudtl.dat',
             'data/flutter_assets/AssetManifest.bin')
@@ -25,7 +27,8 @@ IHS_FILES = ('bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_vie
 # Explicit common whitelist. Identity is read only in the daemon exec branch.
 COMMON = {'ARGO_AUDIO_BACKEND', 'ARGO_PROJECTION_BACKEND', 'ARGO_PROJECTION_LOG_LEVEL',
           'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE',
-          'ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS', 'ARGO_PROJECTION_RENDER_TEST'}
+          'ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS', 'ARGO_PROJECTION_RENDER_TEST',
+          'ARGO_CARPLAY_DIAGNOSTICS'}
 DAEMON = {'ARGO_ANDROID_AUTO_CERT_FILE', 'ARGO_ANDROID_AUTO_KEY_FILE',
           'ARGO_ANDROID_AUTO_HEVC', 'ARGO_ANDROID_AUTO_PROTOCOL_VERSION'}
 
@@ -63,6 +66,40 @@ def save(path, value):
 
 def read(path):
     return json.loads(path.read_text())
+
+
+def carplay_arguments(configuration, manifest):
+    allowed = {'enabled', 'width', 'height', 'width_mm', 'height_mm', 'audio_sink', 'audio_source', 'usb_lease'}
+    if not isinstance(configuration, dict) or set(configuration) - allowed:
+        raise ValueError('Unknown CarPlay configuration option')
+    if type(configuration.get('enabled', False)) is not bool:
+        raise ValueError('CarPlay enabled must be boolean')
+    if not configuration.get('enabled', False):
+        return []
+    if manifest.get('carplay_wired') != 1 or manifest.get('projection_media_contract') != 1:
+        raise ValueError('Wired CarPlay requires a matched receiver and media contract')
+    arguments = ['--wired']
+    for name, lower, upper in [('width', 320, 1920), ('height', 240, 1080),
+                               ('width_mm', 50, 1000), ('height_mm', 30, 1000)]:
+        value = configuration.get(name)
+        if type(value) is not int or not lower <= value <= upper:
+            raise ValueError('Invalid CarPlay ' + name)
+        arguments.append(str(value))
+    if 'audio_sink' in configuration:
+        sink = configuration['audio_sink']
+        if not isinstance(sink, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', sink):
+            raise ValueError('Invalid CarPlay audio sink')
+        arguments.extend(['--audio', sink])
+    if 'audio_source' in configuration:
+        source = configuration['audio_source']
+        if 'audio_sink' not in configuration or not isinstance(source, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', source):
+            raise ValueError('CarPlay audio source requires an output and a valid source name')
+        arguments.extend(['--microphone', source])
+    if type(configuration.get('usb_lease', False)) is not bool:
+        raise ValueError('CarPlay usb_lease must be boolean')
+    if configuration.get('usb_lease', False):
+        arguments.append('--usb-lease')
+    return arguments
 
 
 class Deployment:
@@ -117,6 +154,18 @@ class Deployment:
             raise ValueError('Release requires IPC6/IPC7 and managed application control v1')
         if manifest.get('ipc') == 7 and manifest.get('native_view_contract') != 1:
             raise ValueError('IPC7 requires the matched ARVW native View Area contract v1')
+        carplay = [(bundle / f).is_file() for f in ('bin/argo-carplayd', 'bin/argo-carplayctl')]
+        if any(carplay) or manifest.get('carplay_control') is not None:
+            if not all(carplay) or manifest.get('carplay_control') != 1:
+                raise ValueError('CarPlay diagnostics require daemon, control tool and carplay_control=1')
+            if any(not os.access(bundle / f, os.X_OK) for f in ('bin/argo-carplayd', 'bin/argo-carplayctl')):
+                raise ValueError('CarPlay diagnostic binaries must be executable')
+        if manifest.get('carplay_wired') is not None and (
+                manifest.get('carplay_wired') != 1 or manifest.get('carplay_control') != 1
+                or manifest.get('projection_media_contract') != 1):
+            raise ValueError('Invalid wired CarPlay release contract')
+        if manifest.get('projection_media_contract') not in (None, 1):
+            raise ValueError('Unsupported projection media contract')
         camera = [(bundle / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
         external = manifest.get('camera_mode') == 'external'
         if external:
@@ -200,7 +249,11 @@ class Deployment:
         return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
 
     def active(self):
-        return [unit for unit in UNITS if self.status(unit).get('ActiveState') not in ('inactive', 'failed')]
+        return [unit for unit in ALL_UNITS if self.status(unit).get('ActiveState') not in (None, 'inactive', 'failed')]
+
+    def release_units(self, release):
+        manifest = read(release / 'argo-release.json')
+        return (*UNITS, CARPLAY_UNIT) if manifest.get('carplay_control') == 1 else UNITS
 
     def select_link(self, release):
         temporary = self.config / '.current-release.new'
@@ -209,14 +262,14 @@ class Deployment:
         os.replace(temporary, self.current)
 
     def confirmed_stop(self):
-        present = [unit for unit in ('argo.target', *UNITS) if self.status(unit).get('LoadState') != 'not-found']
+        present = [unit for unit in ('argo.target', *ALL_UNITS) if self.status(unit).get('LoadState') != 'not-found']
         if present:
             self.systemctl('stop', *present)
         if self.active():
             raise RuntimeError('Services have not stopped; selection unchanged')
         if (self.state / 'firewall-owned.json').exists():
             raise RuntimeError('Owned firewall cleanup remains unconfirmed; selection unchanged')
-        for unit, role in zip(UNITS, ('app', 'daemon')):
+        for unit, role in zip(ALL_UNITS, ('app', 'daemon', 'carplay')):
             status = self.status(unit)
             if status.get('Result') not in (None, '', 'success'):
                 raise RuntimeError(unit + ' failed cleanup; inspect journal before selecting another release')
@@ -229,27 +282,30 @@ class Deployment:
         if release.parent != self.releases.resolve():
             raise ValueError('Stage this bundle before selection')
         self.validate(release)
-        for unit, program in zip(UNITS, ('homescreen', 'argo-projectiond')):
+        for unit, program in zip(ALL_UNITS, ('homescreen', 'argo-projectiond', 'argo-carplayd')):
             managed_pid = int(self.status(unit).get('MainPID', '0'))
             if program_pids(program) - {managed_pid}:
                 raise RuntimeError('Stop foreground ' + program + ' before selecting a release')
         previous = self.current.resolve() if self.current.exists() else None
         was_active = self.active()
         target_active = self.status('argo.target').get('ActiveState') == 'active'
-        restart = ['argo.target'] if target_active and set(was_active) == set(UNITS) else was_active
+        full_target = target_active and set(UNITS).issubset(was_active)
+        new_units = self.release_units(release)
+        resume = list(new_units) if full_target else [unit for unit in was_active if unit in new_units]
+        restart = ['argo.target'] if full_target else resume
         self.confirmed_stop()
         with self.lock('selection'):
             if self.active():
                 raise RuntimeError('Concurrent service start; selection unchanged')
             self.select_link(release)
         try:
-            if was_active:
-                self.systemctl('reset-failed', *UNITS, check=False)
+            if restart:
+                self.systemctl('reset-failed', *ALL_UNITS, check=False)
                 self.systemctl('start', *restart)
                 # Starting target alone does not wait for its Wants jobs.
-                for unit in was_active:
+                for unit in resume:
                     self.systemctl('start', unit)
-                if any(self.status(unit).get('ActiveState') != 'active' for unit in was_active):
+                if any(self.status(unit).get('ActiveState') != 'active' for unit in resume):
                     raise RuntimeError('New release did not become ready')
         except (RuntimeError, subprocess.SubprocessError) as error:
             print('New release startup failed; stopping services before rollback: ' + str(error), file=sys.stderr)
@@ -266,8 +322,8 @@ class Deployment:
                         raise RuntimeError('Startup failed; live process prevents rollback selection') from error
                     self.select_link(previous)
                 if clean:
-                    self.systemctl('reset-failed', *UNITS, check=False)
-                    self.systemctl('start', *restart)
+                    self.systemctl('reset-failed', *ALL_UNITS, check=False)
+                    self.systemctl('start', *(['argo.target'] if full_target else was_active))
                     for unit in was_active:
                         self.systemctl('start', unit)
             raise RuntimeError('New release failed; previous selection restored. ' +
@@ -275,7 +331,7 @@ class Deployment:
                                 'Services remain stopped; inspect cleanup in the journal.')) from error
         if previous and previous != release:
             save(self.config / 'previous-release.json', str(previous))
-        print('Selected ' + str(release) + (' (started)' if was_active else ' (stopped)'))
+        print('Selected ' + str(release) + (' (started)' if resume else ' (stopped)'))
 
     def runtime(self):
         root = Path(os.environ['XDG_RUNTIME_DIR']) / 'project-argo'
@@ -334,28 +390,42 @@ class Deployment:
             raise ValueError('No active graphical session')
         with self.lock('selection'):
             bundle = self.current.resolve(strict=True)
-            self.validate(bundle)
+            manifest = self.validate(bundle)
+            if role == 'carplay' and manifest.get('carplay_control') != 1:
+                raise ValueError('Selected release has no CarPlay diagnostic component')
             # Refuse an independent foreground instance on another socket/release.
-            executable = 'argo-projectiond' if role == 'daemon' else 'homescreen'
+            executable = {'daemon': 'argo-projectiond', 'carplay': 'argo-carplayd', 'app': 'homescreen'}[role]
             if program_pids(executable):
                 raise RuntimeError('An existing ' + executable + ' must finish cleanup first')
-            self.recover_guard(previous_boot=managed and role == 'daemon')
+            if role != 'carplay':
+                self.recover_guard(previous_boot=managed and role == 'daemon')
             if managed:
                 save(self.marker(role), {'result': 'running', 'invocation': os.environ['INVOCATION_ID'],
                                          'release': str(bundle)})
         configuration = self.settings()
+        carplay_path = self.config / 'carplay.json'
+        carplay_args = (carplay_arguments(read(carplay_path) if carplay_path.exists() else {}, manifest)
+                        if manifest.get('carplay_wired') == 1 else [])
         # No ambient ARGO/loader options or daemon identity can leak into the app.
         env = {k: v for k, v in os.environ.items() if not k.startswith(('ARGO_', 'VELOCE_', 'LD_'))}
         env.update({'ARGO_MODE': 'production', 'ARGO_PROJECTION_BACKEND': 'android-auto',
                     'ARGO_AUDIO_BACKEND': 'pipewire', 'ARGO_HOST_POWER_BACKEND': 'disabled'})
         env.update(configuration.get('environment', {}))
+        if carplay_args:
+            env['ARGO_CARPLAY_ENABLED'] = '1'
+        if manifest.get('carplay_control') == 1:
+            env.setdefault('ARGO_CARPLAY_DIAGNOSTICS', '1')
+        elif env.get('ARGO_CARPLAY_DIAGNOSTICS') == '1':
+            raise ValueError('CarPlay diagnostics require a release with carplay_control=1')
         runtime = self.runtime()
         env['ARGO_PROJECTION_SOCKET'] = str(runtime / 'projection.sock')
         env['ARGO_PROJECTION_MEDIA_SOCKET'] = str(runtime / 'video.sock')
         env['ARGO_WIRELESS_BUNDLE'] = str(bundle)
         if managed:
             env['ARGO_MANAGED_RESULT'] = str(self.marker(role))
-        if role == 'daemon':
+        if role == 'carplay':
+            command = [str(bundle / 'bin/argo-carplayd'), *carplay_args]
+        elif role == 'daemon':
             daemon = read(self.config / 'daemon.json')
             if set(daemon) - DAEMON or any(not isinstance(v, str) for v in daemon.values()):
                 raise ValueError('Unknown daemon configuration option')
@@ -411,13 +481,35 @@ class Deployment:
             return json.loads(result)
 
     def ready(self, role):
-        deadline = time.monotonic() + (20 if role == 'daemon' else 30)
+        deadline = time.monotonic() + (30 if role == 'app' else 20)
         while time.monotonic() < deadline:
             try:
                 if role == 'app':
                     reply = self.app_request('status')
                     if reply and reply.get('ready') and reply.get('invocation') == os.environ.get('INVOCATION_ID'):
                         return
+                elif role == 'carplay':
+                    with socket.socket(socket.AF_UNIX) as client:
+                        client.settimeout(1)
+                        client.connect(str(self.runtime() / 'carplay.sock'))
+                        client.sendall(b'status\n')
+                        reply = b''
+                        while b'\n' not in reply and len(reply) < 4096:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise ValueError('CarPlay readiness response deadline')
+                            client.settimeout(min(1, remaining))
+                            chunk = client.recv(4096 - len(reply))
+                            if not chunk:
+                                break
+                            reply += chunk
+                        if reply.endswith(b'\n'):
+                            health = json.loads(reply)
+                            if (isinstance(health, dict) and type(health.get('contract')) is int
+                                    and health['contract'] == 1
+                                    and health.get('implementation') == 'diagnostics-only'
+                                    and health.get('session_validated') is False):
+                                return
                 else:
                     with socket.socket(socket.AF_UNIX) as client:
                         client.settimeout(1)
@@ -506,7 +598,7 @@ def main():
     sub.add_parser('rollback'); sub.add_parser('list')
     p = sub.add_parser('autoconnect'); p.add_argument('source', choices=['wireless', 'music', 'calls']); p.add_argument('value', choices=['on', 'off'])
     for verb in ('foreground', '_run', '_ready', '_stopped'):
-        p = sub.add_parser(verb); p.add_argument('role', choices=['app', 'daemon'])
+        p = sub.add_parser(verb); p.add_argument('role', choices=['app', 'daemon', 'carplay'])
     sub.add_parser('_stop-app')
     sub.add_parser('quit')
     args = parser.parse_args()
@@ -523,7 +615,7 @@ def main():
         elif args.command == 'uninstall':
             d.confirmed_stop()
             d.systemctl('disable', 'argo.target', check=False)
-            for name in (*UNITS, 'argo.target'):
+            for name in (*ALL_UNITS, 'argo.target'):
                 (d.home / '.config/systemd/user' / name).unlink(missing_ok=True)
             (d.home / '.local/bin/argoctl').unlink(missing_ok=True)
             d.systemctl('daemon-reload')

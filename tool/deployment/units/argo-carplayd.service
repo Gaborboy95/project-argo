@@ -1,0 +1,25 @@
+[Unit]
+Description=Argo CarPlay and LIVI Link service
+PartOf=argo.target
+ConditionPathExists=%h/.config/project-argo/current-release/bin/argo-carplayd
+After=dbus.socket
+StartLimitIntervalSec=90
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart="%h/.local/bin/argoctl" _run carplay
+ExecStartPost="%h/.local/bin/argoctl" _ready carplay
+ExecStopPost="%h/.local/bin/argoctl" _stopped carplay
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+TimeoutStartSec=25
+TimeoutStopSec=8
+KillMode=control-group
+UMask=0077
+# The fixed USB lease uses pkexec; the daemon itself remains the desktop user.
+NoNewPrivileges=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=argo-carplayd

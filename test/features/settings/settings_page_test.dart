@@ -1,3 +1,5 @@
+import 'package:argo/core/projection/carplay_settings_service.dart';
+
 import 'dart:async';
 
 import 'package:argo/core/audio/audio_service.dart';
@@ -49,6 +51,47 @@ class _Connectivity extends Fake implements ConnectivityService {
 }
 
 void main() {
+  testWidgets(
+    'CarPlay remains visible without Android Auto and fits the dashboard',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = CarPlaySettingsService(socketPath: '/unused');
+      addTearDown(service.close);
+      service.available = true;
+      service.current = {
+        'phase': 'Waiting for iPhone',
+        'running': true,
+        'settings': {
+          'enabled': true,
+          'auto_connect': true,
+          'width': 1280,
+          'height': 720,
+          'fps': 30,
+          'right_hand_drive': false,
+        },
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SettingsPage(audio: _Audio(), carPlaySettings: service),
+          ),
+        ),
+      );
+      await tester.tap(find.text('CarPlay'));
+      await tester.pumpAndSettle();
+      expect(find.text('Apple CarPlay'), findsOneWidget);
+      expect(find.text('Enable CarPlay'), findsOneWidget);
+      expect(find.text('Auto-connect'), findsOneWidget);
+      expect(find.text('Connect'), findsOneWidget);
+      expect(find.text('Android Auto'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('focused settings keep pairing visible and fit the Mu viewport', (
     tester,
   ) async {

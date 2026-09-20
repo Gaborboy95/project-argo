@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:argo/core/projection/carplay_link_diagnostics.dart';
 import 'package:argo/app/projection_composition.dart';
 import 'package:argo/core/audio/audio_service.dart';
 import 'package:argo/core/audio/in_memory_audio_backend.dart';
@@ -129,6 +132,55 @@ void main() {
     });
   });
 
+  test(
+    'CarPlay health is opt-in, independent of AA, and lifecycle owned',
+    () async {
+      final runtime = await Directory.systemTemp.createTemp(
+        'argo-carplay-app-',
+      );
+      addTearDown(() => runtime.delete(recursive: true));
+      final settings = await SettingsService.load(
+        schema: AppSettingKeys.createSchema(),
+        store: _MemoryStore(),
+      );
+      addTearDown(settings.close);
+      final audio = await DefaultAudioService.start(
+        backend: InMemoryAudioBackend(),
+        settings: settings,
+        diagnostics: DiagnosticsService(),
+      );
+      addTearDown(audio.close);
+      final services = ServiceRegistry()
+        ..register(settings)
+        ..register<AudioService>(audio);
+      final lifecycle = AppLifecycleCoordinator();
+      addTearDown(lifecycle.shutdown);
+      final projection = await registerProjectionServices(
+        services: services,
+        lifecycle: lifecycle,
+        diagnostics: DiagnosticsService(),
+        environment: {
+          'ARGO_CARPLAY_DIAGNOSTICS': '1',
+          'ARGO_PROJECTION_BACKEND': 'disabled',
+          'XDG_RUNTIME_DIR': runtime.path,
+        },
+        isLinux: true,
+        transportFactory: (_) => throw StateError('No AA daemon in fixture'),
+      );
+      final health = services.get<CarPlayLinkDiagnostics>();
+      await health.refresh();
+      expect(health.current.serviceAvailable, isFalse);
+      expect(
+        services.get<ProjectionBackend>(),
+        isA<DisabledProjectionBackend>(),
+      );
+      expect(projection.current.sessions, isEmpty);
+      final ended = health.changes.drain<void>();
+      await lifecycle.shutdown();
+      await ended;
+    },
+  );
+
   test('registers disabled projection and lifecycle cleans it up', () async {
     final settings = await SettingsService.load(
       schema: AppSettingKeys.createSchema(),
@@ -154,6 +206,7 @@ void main() {
 
     expect(services.get<ProjectionService>(), same(projection));
     expect(services.contains<ProjectionBackend>(), isTrue);
+    expect(services.contains<CarPlayLinkDiagnostics>(), isFalse);
     await lifecycle.shutdown();
     await audio.close();
     await settings.close();

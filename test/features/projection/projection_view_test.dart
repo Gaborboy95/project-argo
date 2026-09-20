@@ -1,3 +1,5 @@
+import 'package:argo/core/climate/climate_service.dart';
+import 'package:argo/core/diagnostics/diagnostics_service.dart';
 import 'package:argo/app/app.dart';
 import 'package:argo/app/shell/dashboard_dock.dart';
 import 'package:argo/app/shell/dashboard_geometry.dart';
@@ -32,6 +34,81 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('Home activates an unselected replacement; Media does not', (
+    tester,
+  ) async {
+    final backend = InMemoryProjectionBackend(
+      initial: ProjectionSnapshot(backendAvailable: true),
+    );
+    final service = _DirectProjectionService(backend);
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: _GeometryStore(),
+    );
+    final modules = AppModuleRegistry()
+      ..register(
+        AppModule(
+          id: 'home',
+          label: 'Home',
+          icon: Icons.home,
+          builder: (_, _) => ProjectionPage(projection: service),
+        ),
+      )
+      ..register(
+        AppModule(
+          id: 'media',
+          label: 'Media',
+          icon: Icons.music_note,
+          builder: (_, _) => const SizedBox(),
+        ),
+      );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          environment: ArgoEnvironment(
+            services: ServiceRegistry()
+              ..register(settings)
+              ..register<ProjectionService>(service),
+            moduleRegistry: modules,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    ProjectionSnapshot connected(String id) => ProjectionSnapshot(
+      backendAvailable: true,
+      sessions: [
+        ProjectionSession(
+          id: id,
+          state: ProjectionSessionState.ready,
+          device: const ProjectionDevice(
+            id: 'phone',
+            displayName: 'iPhone',
+            protocol: ProjectionProtocol.carPlay,
+            transport: ProjectionTransport.usb,
+          ),
+        ),
+      ],
+    );
+    backend.emit(connected('first'));
+    await tester.pumpAndSettle();
+    expect(service.activations, ['first']);
+    backend.emit(ProjectionSnapshot(backendAvailable: false));
+    await tester.pump();
+    backend.emit(connected('replacement'));
+    await tester.pumpAndSettle();
+    expect(service.activations, ['first', 'replacement']);
+    await tester.tap(find.byTooltip('Apps'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Media'));
+    await tester.pumpAndSettle();
+    backend.emit(connected('hidden-replacement'));
+    await tester.pumpAndSettle();
+    expect(service.activations, ['first', 'replacement']);
+    await tester.pumpWidget(const SizedBox());
+    await service.close();
+    await settings.close();
+  });
   testWidgets(
     'IHS emits a platform-view layer with matching ID and maps input once',
     (tester) async {
@@ -264,6 +341,20 @@ void main() {
       final service = _DirectProjectionService(backend);
       final media = CachedMediaSessionService();
       final mediaSource = ProjectionMediaSource(service, media);
+      // The production dock only opens climate for declared, available zones.
+      // Supply the capability fixture required by these modal-ownership checks.
+      final climate = VehicleClimateService(
+        capabilities: ClimateCapabilities(
+          zones: {
+            'front_left': ClimateTemperatureRange(18, 26, .5),
+            'front_right': ClimateTemperatureRange(18, 26, .5),
+          },
+        ),
+        publish: (_) async {},
+        authorize: (_) async => false,
+        diagnostics: DiagnosticsService(),
+      )..invalidate(available: true);
+      addTearDown(climate.close);
       final settings = await SettingsService.load(
         schema: AppSettingKeys.createSchema(),
         store: _GeometryStore(),
@@ -290,6 +381,7 @@ void main() {
           environment: ArgoEnvironment(
             services: ServiceRegistry()
               ..register(settings)
+              ..register<ClimateService>(climate)
               ..register<ProjectionService>(service),
             moduleRegistry: modules,
           ),

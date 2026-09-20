@@ -134,6 +134,17 @@ power/audio adapters: select disabled explicitly.
 
 ## Projection contract
 
+CarPlay development is isolated in `native/carplay` and `argo-carplayd`. The
+process defaults to Link diagnostics and can opt into supervised wired phone
+sessions. Diagnostic and session sockets are separate; AA IPC7 remains unchanged.
+`ARGO_CARPLAY_ENABLED=1` composes the CarPlay adapter through the shared
+`MultiplexProjectionBackend`. Pairing persists outside the runtime directory,
+while per-session sockets, USB handles and network resources are released on exit.
+The existing view accepts optional ARV2 metadata and bounded ARPM/1 encoded video;
+legacy AA ARVW/raw-stream input remains the default. See [CarPlay scope](carplay.md),
+[LIVI architecture/provenance](carplay-livi-review.md) and the
+[native media contract](../native/projection/argo-projection-view/README.md).
+
 ```text
 Flutter features → ProjectionService → backend → bounded Unix control IPC
                                                ↓

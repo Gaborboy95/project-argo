@@ -1,3 +1,8 @@
+import '../../core/projection/carplay_settings_service.dart';
+import '../../core/projection/projection_service.dart';
+import 'carplay_settings_card.dart';
+import '../../core/projection/carplay_link_diagnostics.dart';
+import 'carplay_link_settings_card.dart';
 import '../../core/camera/parking_model_service.dart';
 import 'models/model_manager_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
@@ -21,6 +26,9 @@ class SettingsPage extends StatefulWidget {
     this.projectionSettings,
     this.settings,
     this.connectivity,
+    this.carPlayDiagnostics,
+    this.carPlaySettings,
+    this.projection,
     this.exit,
     this.models,
     super.key,
@@ -31,12 +39,15 @@ class SettingsPage extends StatefulWidget {
   final ProjectionSettingsService? projectionSettings;
   final SettingsService? settings;
   final ConnectivityService? connectivity;
+  final CarPlayLinkDiagnostics? carPlayDiagnostics;
+  final CarPlaySettingsService? carPlaySettings;
+  final ProjectionService? projection;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  int selected = 0;
+  String? selectedSection;
   @override
   Widget build(BuildContext context) {
     final sections = <(String, IconData, Widget)>[
@@ -47,24 +58,48 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             AudioSettingsCard(audio: widget.audio),
             if (widget.connectivity != null)
-              MicrophoneCard(service: widget.connectivity!),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                child: MicrophoneCard(service: widget.connectivity!),
+              ),
           ],
         ),
       ),
-      if (widget.connectivity != null)
+      if (widget.connectivity != null || widget.carPlayDiagnostics != null)
         (
           'Devices',
           Icons.devices_outlined,
-          ConnectivitySettingsCard(
-            service: widget.connectivity!,
-            settings: widget.settings,
+          Column(
+            children: [
+              if (widget.connectivity != null)
+                ConnectivitySettingsCard(
+                  service: widget.connectivity!,
+                  settings: widget.settings,
+                ),
+            ],
           ),
         ),
       if (widget.projectionSettings != null)
         (
-          'Projection',
+          'Android Auto',
           Icons.directions_car_outlined,
           ProjectionSettingsCard(service: widget.projectionSettings!),
+        ),
+      if (widget.carPlaySettings != null || widget.carPlayDiagnostics != null)
+        (
+          'CarPlay',
+          Icons.phone_iphone,
+          Column(
+            children: [
+              if (widget.carPlaySettings != null)
+                CarPlaySettingsCard(
+                  service: widget.carPlaySettings!,
+                  projection: widget.projection,
+                ),
+              if (widget.carPlayDiagnostics != null)
+                CarPlayLinkSettingsCard(service: widget.carPlayDiagnostics!),
+            ],
+          ),
         ),
       if (widget.settings != null)
         (
@@ -86,7 +121,12 @@ class _SettingsPageState extends State<SettingsPage> {
         ApplicationSettingsCard(exit: widget.exit!),
       ));
     }
-    final index = selected.clamp(0, sections.length - 1);
+    final requestedSection =
+        selectedSection ??
+        (widget.carPlaySettings != null ? 'CarPlay' : 'Sound');
+    final index = sections
+        .indexWhere((section) => section.$1 == requestedSection)
+        .clamp(0, sections.length - 1);
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     return LayoutBuilder(
@@ -105,7 +145,7 @@ class _SettingsPageState extends State<SettingsPage> {
               borderRadius: BorderRadius.circular(16),
               child: InkWell(
                 borderRadius: BorderRadius.circular(16),
-                onTap: () => setState(() => selected = i),
+                onTap: () => setState(() => selectedSection = sections[i].$1),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 18,
@@ -252,11 +292,8 @@ class _SettingsPageState extends State<SettingsPage> {
                               label: Text(
                                 'Pairing request from ${snapshot.data!.prompt!.name} — review in Devices',
                               ),
-                              onPressed: () => setState(
-                                () => selected = sections.indexWhere(
-                                  (s) => s.$1 == 'Devices',
-                                ),
-                              ),
+                              onPressed: () =>
+                                  setState(() => selectedSection = 'Devices'),
                             ),
                           ),
                         )

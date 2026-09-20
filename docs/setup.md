@@ -321,6 +321,20 @@ before connecting music. No Engine, IHS or native-view rebuild is needed for an
 application/daemon-only release; preserve those compatible native assets from the
 working bundle while replacing the application build and daemon.
 
+### CarPlay development releases
+
+The prepared LIVI Link does not need provisioning. Build the separate Rust
+diagnostic tools and query MFi/Wi-Fi without modifying firmware using the
+[CarPlay runbook](carplay.md). Full wired/wireless projection remains incomplete.
+The optional `argo-carplayd.service` runs as the desktop user and is part of
+argo.target, independently of AA and surround-camerad. Updated argoctl validates
+both CarPlay binaries/control contract and retains compatibility with older
+releases. Wired-capable releases additionally require `carplay_wired=1` and
+`projection_media_contract=1`, recorded with `--carplay-wired
+--projection-media-contract 1`. USB mode switching requires the narrow administrator-authorized helper; see
+[automatic USB lease setup](carplay.md#automatic-usb-configuration-lease). Use fresh staged bundles and preserve the existing
+camera mode/assets.
+
 ### View Area release compatibility
 
 View/Safe Area uses IPC7 and native view creation contract ARVW v1. Stage all three matched components (application, daemon, native view); Engine and IHS are unchanged. The deployment utility accepts retained IPC6 releases for rollback and requires native_view_contract 1 for IPC7. Daemon-only replacement must match the bundle IPC version. Update the installed utility using the existing idempotent installation command before selecting IPC7. Keys and preferences stay outside releases.

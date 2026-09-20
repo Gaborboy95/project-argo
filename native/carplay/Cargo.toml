@@ -1,0 +1,52 @@
+[package]
+name = "argo-carplay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Argo native CarPlay interoperability and LIVI Link diagnostics"
+publish = false
+
+[features]
+default = []
+airplay = ["linux-usbmuxd"]
+linux-usb = ["dep:nusb"]
+linux-audio = ["airplay", "dep:gstreamer", "dep:gstreamer-app"]
+linux-usbmuxd = ["dep:plist", "dep:openssl", "dep:tokio-openssl"]
+
+[dependencies]
+argo-audio-ownership = { path = "../audio-ownership" }
+gstreamer = { version = "=0.24.5", optional = true }
+gstreamer-app = { version = "=0.24.5", optional = true }
+nusb = { version = "=0.2.7", features = ["tokio"], optional = true }
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+libc = "0.2.189"
+socket2 = "0.6.5"
+# Exact version: bounded event parsing uses plist's explicitly unstable stream API.
+plist = { version = "=1.10.1", features = ["enable_unstable_features_that_may_break_with_minor_version_bumps"], optional = true }
+openssl = { version = "0.10.75", optional = true }
+tokio-openssl = { version = "0.6.5", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util"] }
+
+[[bin]]
+name = "argo-carplayctl"
+path = "src/bin/argo-carplayctl.rs"
+
+[[bin]]
+name = "argo-carplayd"
+path = "src/bin/argo-carplayd.rs"
+
+[[example]]
+name = "wired_probe"
+required-features = ["linux-usbmuxd"]
+
+[[example]]
+name = "usb_network_probe"
+required-features = ["linux-usb"]
+
+[[example]]
+name = "wired_session"
+required-features = ["airplay", "linux-usb"]

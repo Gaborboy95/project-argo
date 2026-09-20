@@ -43,7 +43,15 @@ final class ProjectionVideoStream {
     this.visible = true,
     this.focused = true,
     this.presentationRevision = 0,
-  }) {
+    List<int>? nativeViewParameters,
+  }) : nativeViewParameters = nativeViewParameters == null
+           ? null
+           : List.unmodifiable(nativeViewParameters) {
+    if (nativeViewParameters != null &&
+        (nativeViewParameters.length != 40 ||
+            nativeViewParameters.any((v) => v < 0 || v > 255))) {
+      throw ArgumentError("Invalid native projection descriptor");
+    }
     if (id.trim().isEmpty || sessionId.trim().isEmpty) {
       throw ArgumentError(
         'Projection stream and session IDs must not be empty.',
@@ -74,6 +82,7 @@ final class ProjectionVideoStream {
   final bool visible;
   final bool focused;
   final int presentationRevision;
+  final List<int>? nativeViewParameters;
 
   @override
   bool operator ==(Object other) =>
@@ -89,7 +98,14 @@ final class ProjectionVideoStream {
       safeInsets == other.safeInsets &&
       visible == other.visible &&
       focused == other.focused &&
-      presentationRevision == other.presentationRevision;
+      presentationRevision == other.presentationRevision &&
+      (nativeViewParameters == null
+          ? other.nativeViewParameters == null
+          : other.nativeViewParameters != null &&
+                _listEquals(
+                  nativeViewParameters!,
+                  other.nativeViewParameters!,
+                ));
 
   @override
   int get hashCode => Object.hash(
@@ -105,6 +121,7 @@ final class ProjectionVideoStream {
     visible,
     focused,
     presentationRevision,
+    nativeViewParameters == null ? null : Object.hashAll(nativeViewParameters!),
   );
 }
 

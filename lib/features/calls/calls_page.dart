@@ -305,7 +305,7 @@ class MicrophoneCard extends StatelessWidget {
               }}',
             ),
           const Text(
-            'The selected input is mixed to mono. Use an ADC mix node to choose channel weights. No echo cancellation or beamforming is applied by Argo.',
+            'The selected input is mixed to mono. Use an ADC mix node to choose channel weights. CarPlay calls use echo cancellation; Bluetooth calls and Android Auto do not.',
           ),
         ],
       );

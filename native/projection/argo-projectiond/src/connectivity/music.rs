@@ -91,7 +91,19 @@ async fn command(program: &str, args: &[String]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 pub(crate) async fn graph() -> Result<Vec<Value>, String> {
-    serde_json::from_slice(&command("pw-dump", &[]).await?).map_err(|e| e.to_string())
+    decode_graph(&command("pw-dump", &[]).await?)
+}
+// Some Bluetooth devices publish malformed UTF-8 in descriptive properties.
+// Preserve structural validation without losing every audio node over one label.
+fn decode_graph(bytes: &[u8]) -> Result<Vec<Value>, String> {
+    serde_json::from_str(&String::from_utf8_lossy(bytes)).map_err(|e| e.to_string())
+}
+#[cfg(test)]
+#[test]
+fn graph_tolerates_invalid_device_label_but_rejects_invalid_json() {
+    let nodes=decode_graph(b"[{\"info\":{\"props\":{\"node.name\":\"source\",\"node.description\":\"bad \xff label\"}}}]").unwrap();
+    assert_eq!(nodes[0]["info"]["props"]["node.name"], "source");
+    assert!(decode_graph(b"[{broken]").is_err());
 }
 fn props(v: &Value) -> &Value {
     &v["info"]["props"]
@@ -251,8 +263,7 @@ impl Music {
         }
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if !graph()
-                    .await?
+                if !decode_graph(&command("pw-dump", &["PipeWire:Interface:Link".into()]).await?)?
                     .iter()
                     .any(|l| props(l)["argo.music.owner"] == self.owner)
                 {

@@ -180,6 +180,26 @@ class _AppShellState extends State<AppShell> {
       _waitingSession = null;
     }
     if (mounted) setState(() {});
+    // Home owns presentation intent, including a replacement session after
+    // unplug. A freshly connected backend may deliberately start unselected.
+    // Never activate it while another page (particularly Camera) owns the UI.
+    if (_home &&
+        snapshot.activeSessionId == null &&
+        session != null &&
+        (session.state == ProjectionSessionState.ready ||
+            session.state == ProjectionSessionState.streaming) &&
+        (previous == null ||
+            previous.state == ProjectionSessionState.connecting)) {
+      final epoch = _navigationEpoch;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            _home &&
+            epoch == _navigationEpoch &&
+            selectedProjectionSession(_projection!.current)?.id == session.id) {
+          _resumeHome();
+        }
+      });
+    }
   }
 
   void _resumeHome() {

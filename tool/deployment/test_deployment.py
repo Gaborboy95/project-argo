@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 loader = importlib.machinery.SourceFileLoader('argoctl', str(Path(__file__).with_name('argoctl')))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -37,7 +37,7 @@ class Manager(a.Deployment):
                 raise subprocess.CalledProcessError(1, 'start')
             self.running.update(args[1:])
             if 'argo.target' in args:
-                self.running.update(a.UNITS)
+                self.running.update(self.release_units(self.current.resolve()))
         return subprocess.CompletedProcess(args, 0, '', '')
 
 
@@ -83,6 +83,128 @@ class DeploymentTest(unittest.TestCase):
         (self.source / 'bin/argo-camerad').write_text('changed binary')
         with self.assertRaisesRegex(ValueError, 'hash mismatch'):
             self.d.validate(self.source)
+
+    def carplay_bundle(self):
+        manifest = a.read(self.source / 'argo-release.json')
+        for name in ('argo-carplayd', 'argo-carplayctl'):
+            relative = 'bin/' + name
+            path = self.source / relative
+            path.write_text(name)
+            path.chmod(0o755)
+            manifest['sha256'][relative] = a.digest(path)
+        manifest.update(carplay_control=1, carplay_scope='diagnostics-only')
+        a.save(self.source / 'argo-release.json', manifest)
+        return self.d.stage(self.source, 'carplay')
+
+    def test_optional_carplay_requires_a_matched_pair_and_contract(self):
+        bundle = self.carplay_bundle()
+        self.d.validate(bundle)
+        manifest = a.read(bundle / 'argo-release.json')
+        manifest['carplay_control'] = 2
+        a.save(bundle / 'argo-release.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'CarPlay diagnostics'):
+            self.d.validate(bundle)
+        manifest['carplay_control'] = 1
+        a.save(bundle / 'argo-release.json', manifest)
+        (bundle / 'bin/argo-carplayctl').unlink()
+        with self.assertRaisesRegex(ValueError, 'CarPlay diagnostics'):
+            self.d.validate(bundle)
+        self.d.validate(self.first)
+
+    def test_carplay_service_follows_release_selection_and_old_release_rollback(self):
+        bundle = self.carplay_bundle()
+        self.d.running = {'argo.target', *a.UNITS}
+        self.d.select(bundle)
+        self.assertEqual(self.d.running, {'argo.target', *a.ALL_UNITS})
+        self.d.select(self.first)
+        self.assertEqual(self.d.running, {'argo.target', *a.UNITS})
+        self.d.select(bundle)
+        self.d.fail_start = True
+        with self.assertRaisesRegex(RuntimeError, 'previous selection restored'):
+            self.d.select(self.first)
+        self.assertEqual(self.d.running, {'argo.target', *a.ALL_UNITS})
+        self.assertEqual(self.d.current.resolve(), bundle)
+
+    def test_carplay_only_downgrade_stops_without_an_empty_start_command(self):
+        bundle = self.carplay_bundle()
+        self.d.select(bundle)
+        self.d.running = {a.CARPLAY_UNIT}
+        self.d.operations.clear()
+        self.d.select(self.first)
+        self.assertEqual(self.d.current.resolve(), self.first)
+        self.assertEqual(self.d.running, set())
+        self.assertFalse(any(command[0] == 'start' for command in self.d.operations))
+
+    def test_carplay_readiness_rejects_wrong_shape_and_contract_then_recovers(self):
+        replies = [b'[]\n', b'{"contract":true}\n',
+                   b'{"contract":1,"implementation":"native-carplay","session_validated":true}\n',
+                   b'{"contract":1,"implementation":"diagnostics-only","session_validated":false}\n']
+        peers = []
+        for reply in replies:
+            peer = MagicMock()
+            peer.__enter__.return_value = peer
+            peer.recv.return_value = reply
+            peers.append(peer)
+        with patch.object(a.socket, 'socket', side_effect=peers), \
+                patch.object(self.d, 'runtime', return_value=self.d.home), \
+                patch.object(a.time, 'sleep'):
+            self.d.ready('carplay')
+        self.assertTrue(all(peer.sendall.call_args.args == (b'status\n',) for peer in peers))
+
+    def test_carplay_readiness_deadline_bounds_a_dripping_response(self):
+        peer = MagicMock()
+        peer.__enter__.return_value = peer
+        peer.recv.return_value = b' '
+        with patch.object(a.socket, 'socket', return_value=peer), \
+                patch.object(self.d, 'runtime', return_value=self.d.home), \
+                patch.object(a.time, 'sleep'), \
+                patch.object(a.time, 'monotonic', side_effect=[0, 0, 1, 21, 21]):
+            with self.assertRaisesRegex(RuntimeError, 'readiness probe'):
+                self.d.ready('carplay')
+        self.assertEqual(peer.recv.call_count, 1)
+
+    def test_wired_carplay_configuration_is_typed_and_contract_gated(self):
+        config = dict(enabled=True, width=1280, height=720, width_mm=200,
+                      height_mm=112, audio_sink='bluez_output.fixture.1')
+        manifest = dict(carplay_wired=1, projection_media_contract=1)
+        self.assertEqual(a.carplay_arguments(config, manifest),
+                         ['--wired', '1280', '720', '200', '112', '--audio', 'bluez_output.fixture.1'])
+        self.assertEqual(a.carplay_arguments(dict(config, usb_lease=True), manifest)[-1], '--usb-lease')
+        self.assertEqual(a.carplay_arguments(dict(config, audio_source='alsa_input.fixture', usb_lease=True), manifest)[-3:], ['--microphone', 'alsa_input.fixture', '--usb-lease'])
+        with self.assertRaises(ValueError):
+            a.carplay_arguments(dict(config, audio_source='source;command'), manifest)
+        no_output = dict(config, audio_source='source')
+        del no_output['audio_sink']
+        with self.assertRaises(ValueError):
+            a.carplay_arguments(no_output, manifest)
+        for changes in [dict(width=True), dict(height=99999), dict(enabled='true'),
+                        dict(audio_sink='speaker; command'), dict(raw_command='anything'), dict(usb_lease='yes')]:
+            with self.assertRaises(ValueError):
+                a.carplay_arguments(dict(config, **changes), manifest)
+        with self.assertRaises(ValueError):
+            a.carplay_arguments(config, {})
+        self.assertEqual(a.carplay_arguments(dict(enabled=False), {}), [])
+
+    def test_carplay_launch_is_unprivileged_isolated_and_gates_health_ui(self):
+        bundle = self.carplay_bundle()
+        self.d.select(bundle)
+        with patch.dict(a.os.environ, {'WAYLAND_DISPLAY': 'test',
+                'DBUS_SESSION_BUS_ADDRESS': 'unix:path=test',
+                'XDG_RUNTIME_DIR': str(self.d.home),
+                'ARGO_ANDROID_AUTO_KEY_FILE': '/must-not-leak',
+                'ARGO_LIVI_LINK_ADDRESS': '192.0.2.2'}), patch.object(a.os, 'execve') as execute:
+            self.d.launch('carplay', managed=False)
+            binary, command, environment = execute.call_args.args
+            self.assertEqual(binary, str(bundle / 'bin/argo-carplayd'))
+            self.assertEqual(command, [binary])
+            self.assertEqual(environment['ARGO_CARPLAY_DIAGNOSTICS'], '1')
+            self.assertNotIn('ARGO_ANDROID_AUTO_KEY_FILE', environment)
+            self.assertNotIn('ARGO_LIVI_LINK_ADDRESS', environment)
+        self.d.select(self.first)
+        with patch.dict(a.os.environ, {'WAYLAND_DISPLAY': 'test',
+                'DBUS_SESSION_BUS_ADDRESS': 'unix:path=test'}):
+            with self.assertRaisesRegex(ValueError, 'no CarPlay'):
+                self.d.launch('carplay', managed=False)
 
     def test_external_camera_mode_and_legacy_rollback(self):
         manifest = a.read(self.source / 'argo-release.json')

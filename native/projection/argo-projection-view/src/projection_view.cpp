@@ -1,5 +1,9 @@
 #include "view_area.h"
+#include "media_contract.h"
+#include "media_gstreamer.h"
+#include "media_io.h"
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <ihs/platform_view.h>
@@ -22,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -72,6 +77,10 @@ struct ViewState {
   GstElement* pipeline = nullptr;
   GstElement* app_sink = nullptr;
   int media_fd = -1;
+  bool framed_media = false;
+  argo::media::Description media_description{};
+  std::atomic<bool> media_stopping{false};
+  std::thread media_reader;
   std::mutex mutex;
   bool suspended = false;
   gbm_device* allocator = nullptr;
@@ -126,9 +135,13 @@ struct ViewState {
   }
 
   void StopPipeline() {
+    media_stopping = true;
     if (media_fd >= 0) shutdown(media_fd, SHUT_RDWR);
     if (pipeline != nullptr) {
       gst_element_set_state(pipeline, GST_STATE_NULL);
+    }
+    if (media_reader.joinable()) media_reader.join();
+    if (pipeline != nullptr) {
       gst_object_unref(pipeline);
       pipeline = nullptr;
       app_sink = nullptr;
@@ -137,6 +150,63 @@ struct ViewState {
       close(media_fd);
       media_fd = -1;
     }
+  }
+
+  void ReadFramedMedia(GstAppSrc* source) {
+    argo::media::RecordReader reader(media_fd, media_stopping);
+    argo::media::Validator validator(media_description);
+    std::array<std::uint8_t, argo::media::kHeaderSize> header_bytes{};
+    std::vector<std::uint8_t> payload;
+    std::vector<std::uint8_t> annex_configuration;
+    bool have_timestamp = false;
+    std::uint64_t first_timestamp = 0;
+    while (!media_stopping.load()) {
+      reader.BeginRecord(!have_timestamp);
+      argo::media::Header header;
+      if (!reader.Read(header_bytes) || !argo::media::ParseHeader(header_bytes, header)) break;
+      payload.resize(header.size);
+      if (!reader.Read(payload) || !validator.Accept(header, payload)) break;
+      if (header.kind == argo::media::Kind::kDescription) continue;
+      if (header.kind == argo::media::Kind::kConfig) {
+        if (media_description.framing == argo::media::Framing::kLengthPrefixed) {
+          GstBuffer* buffer = gst_buffer_new_allocate(nullptr, payload.size(), nullptr);
+          if (buffer == nullptr) break;
+          gst_buffer_fill(buffer, 0, payload.data(), payload.size());
+          GstCaps* caps = argo::media::EncodedCaps(media_description, buffer);
+          gst_app_src_set_caps(source, caps);
+          gst_caps_unref(caps);
+          gst_buffer_unref(buffer);
+        } else annex_configuration = payload;
+        continue;
+      }
+      // AU-aligned parsers must receive parameter sets with the first access
+      // unit, never as a standalone picture without VCL data.
+      const std::size_t prefix = !have_timestamp || (header.flags & 2) != 0
+          ? annex_configuration.size() : 0;
+      GstBuffer* buffer = gst_buffer_new_allocate(
+          nullptr, prefix + payload.size(), nullptr);
+      if (buffer == nullptr) break;
+      if (prefix != 0) gst_buffer_fill(buffer, 0, annex_configuration.data(), prefix);
+      gst_buffer_fill(buffer, prefix, payload.data(), payload.size());
+      if (!have_timestamp) {
+        first_timestamp = header.timestamp_ns;
+        have_timestamp = true;
+      }
+      GST_BUFFER_PTS(buffer) = header.timestamp_ns - first_timestamp;
+      GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale_int(
+          GST_SECOND, media_description.fps_den, media_description.fps_num);
+      if ((header.flags & 1) == 0) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+      if ((header.flags & 2) != 0) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+      // Block with a bounded queue instead of dropping dependent encoded frames.
+      // StopPipeline flushes appsrc before joining this worker.
+      if (gst_app_src_push_buffer(source, buffer) != GST_FLOW_OK) break;
+    }
+    if (!media_stopping.load()) {
+      std::fprintf(stderr, "Argo projection: ARPM/1 media ended or failed validation; session stream closed\n");
+      shutdown(media_fd, SHUT_RDWR);
+      gst_app_src_end_of_stream(source);
+    }
+    gst_object_unref(source);
   }
 
   bool StartPipeline() {
@@ -166,10 +236,14 @@ struct ViewState {
       }
       std::fprintf(stderr, "Argo renderer test: pattern=%s; native source 1280x720, no intermediate resize; filtering owned by IHS\n", pattern.c_str());
     } else {
-      const char* override_path = std::getenv("ARGO_PROJECTION_MEDIA_SOCKET");
+      const bool carplay = framed_media && media_description.protocol == argo::media::Protocol::kCarPlay;
+      const char* override_path = std::getenv(carplay ? "ARGO_CARPLAY_MEDIA_SOCKET" :
+          framed_media ? "ARGO_PROJECTION_MEDIA_V1_SOCKET" : "ARGO_PROJECTION_MEDIA_SOCKET");
       const char* runtime = std::getenv("XDG_RUNTIME_DIR");
       const std::string resolved = override_path != nullptr ? override_path :
-          std::string(runtime != nullptr ? runtime : "/run") + "/argo/projection-video.sock";
+          std::string(runtime != nullptr ? runtime : "/run") +
+          (carplay ? "/argo/carplay-video.sock" : framed_media ?
+           "/argo/projection-video-v1.sock" : "/argo/projection-video.sock");
       const char* socket_path = resolved.c_str();
       if (resolved.empty() || resolved.front() != '/' || resolved.back() == '/' ||
           resolved.find_first_of(" \t\r\n\v\f") == 0 ||
@@ -178,7 +252,8 @@ struct ViewState {
         std::fprintf(stderr, "Argo projection: invalid media socket endpoint\n");
         return false;
       }
-      media_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      media_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC |
+          (framed_media ? SOCK_NONBLOCK : 0), 0);
       if (media_fd < 0) {
         return false;
       }
@@ -189,13 +264,31 @@ struct ViewState {
         return false;
       }
       std::strncpy(address.sun_path, socket_path, sizeof(address.sun_path) - 1);
-      if (connect(media_fd, reinterpret_cast<sockaddr*>(&address),
-                  sizeof(address)) != 0) {
-        StopPipeline();
-        return false;
+      if (connect(media_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        bool connected = false;
+        if (framed_media && errno == EINPROGRESS) {
+          pollfd item{media_fd, POLLOUT, 0};
+          int failure = 0;
+          socklen_t size = sizeof(failure);
+          connected = poll(&item, 1, 500) > 0 &&
+              getsockopt(media_fd, SOL_SOCKET, SO_ERROR, &failure, &size) == 0 && failure == 0;
+        }
+        if (!connected) {
+          StopPipeline();
+          return false;
+        }
       }
 
-      source =
+      if (framed_media) {
+        source = "appsrc name=projection_source is-live=true format=time "
+            "block=true max-buffers=3 max-bytes=8388608 max-time=0 ! ";
+        source += media_description.codec == argo::media::Codec::kH264 ? "h264parse ! " : "h265parse ! ";
+        source += media_description.codec == argo::media::Codec::kH264 ? "video/x-h264," : "video/x-h265,";
+        source += "width=" + std::to_string(media_description.width) +
+            ",height=" + std::to_string(media_description.height) + " ! ";
+        source += "decodebin ! identity name=projection_color ! videoconvert ! "
+            "video/x-raw,format=BGRx,width=[1,1920],height=[1,1080] ! ";
+      } else source =
           "fdsrc fd=" + std::to_string(media_fd) +
           " do-timestamp=true ! queue max-size-buffers=8 ! "
           // parsebin typefinds Annex-B H.264/H.265 and selects the parser.
@@ -238,8 +331,32 @@ struct ViewState {
                                nullptr);
     gst_object_unref(app_sink);
     app_sink = nullptr;
-    return gst_element_set_state(pipeline, GST_STATE_PLAYING) !=
-           GST_STATE_CHANGE_FAILURE;
+    if (framed_media) {
+      GstElement* color = gst_bin_get_by_name(GST_BIN(pipeline), "projection_color");
+      GstPad* pad = color != nullptr ? gst_element_get_static_pad(color, "sink") : nullptr;
+      if (color != nullptr) gst_object_unref(color);
+      if (pad == nullptr) { StopPipeline(); return false; }
+      gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+                       argo::media::ApplyDecodedColor, &media_description, nullptr);
+      gst_object_unref(pad);
+    }
+    if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      StopPipeline();
+      return false;
+    }
+    if (framed_media) {
+      GstElement* source_element = gst_bin_get_by_name(GST_BIN(pipeline), "projection_source");
+      if (source_element == nullptr) { StopPipeline(); return false; }
+      auto* app_source = GST_APP_SRC(source_element);
+      if (media_description.framing == argo::media::Framing::kAnnexB) {
+        GstCaps* caps = argo::media::EncodedCaps(media_description);
+        gst_app_src_set_caps(app_source, caps);
+        gst_caps_unref(caps);
+      }
+      media_stopping = false;
+      media_reader = std::thread([this, app_source] { ReadFramedMedia(app_source); });
+    }
+    return true;
   }
 
   bool FindAllocator() {
@@ -527,6 +644,11 @@ struct ViewState {
       // IHS owns the exported fd and bounds its retired-import history.
       frame.struct_size = offsetof(IhsFrame, buffer_id);
       frame.format = grant.format;
+      if (framed_media) {
+        // videoconvert has already expanded the declared YUV range to RGB.
+        frame.color_space = media_description.color == argo::media::Color::kBt709 ? IHS_COLOR_SPACE_BT709 : IHS_COLOR_SPACE_BT601;
+        frame.color_range = IHS_COLOR_RANGE_FULL;
+      }
       frame.format.modifier = modifier;
       frame.width = frame_width;
       frame.height = frame_height;
@@ -573,8 +695,8 @@ struct ViewState {
     IhsFrame frame{
         .struct_size = sizeof(frame),
         .format = grant.format,
-        .color_space = IHS_COLOR_SPACE_BT709,
-        .color_range = IHS_COLOR_RANGE_LIMITED,
+        .color_space = framed_media && media_description.color == argo::media::Color::kBt601 ? IHS_COLOR_SPACE_BT601 : IHS_COLOR_SPACE_BT709,
+        .color_range = framed_media ? IHS_COLOR_RANGE_FULL : IHS_COLOR_RANGE_LIMITED,
         .reserved = {0, 0},
         .width = frame_width,
         .height = frame_height,
@@ -606,7 +728,21 @@ GstFlowReturn OnSample(GstAppSink* sink, gpointer user_data) {
   GstMapInfo mapping{};
   if (buffer != nullptr && caps != nullptr &&
       gst_video_info_from_caps(&info, caps) &&
+      GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_BGRx &&
+      GST_VIDEO_INFO_WIDTH(&info) > 0 && GST_VIDEO_INFO_WIDTH(&info) <= 1920 &&
+      GST_VIDEO_INFO_HEIGHT(&info) > 0 && GST_VIDEO_INFO_HEIGHT(&info) <= 1080 &&
+      GST_VIDEO_INFO_PLANE_STRIDE(&info, 0) >= GST_VIDEO_INFO_WIDTH(&info) * 4 &&
       gst_buffer_map(buffer, &mapping, GST_MAP_READ)) {
+    const auto rows = static_cast<std::size_t>(GST_VIDEO_INFO_HEIGHT(&info));
+    const auto stride = static_cast<std::size_t>(GST_VIDEO_INFO_PLANE_STRIDE(&info, 0));
+    const auto offset = static_cast<std::size_t>(GST_VIDEO_INFO_PLANE_OFFSET(&info, 0));
+    const auto row_bytes = static_cast<std::size_t>(GST_VIDEO_INFO_WIDTH(&info)) * 4;
+    if (offset > mapping.size || rows - 1 > (mapping.size - offset) / stride ||
+        row_bytes > mapping.size - offset - (rows - 1) * stride) {
+      gst_buffer_unmap(buffer, &mapping);
+      gst_sample_unref(sample);
+      return GST_FLOW_ERROR;
+    }
         if (!state->reported_first_decoded_frame.exchange(true)) {
 
           std::fprintf(
@@ -619,7 +755,7 @@ GstFlowReturn OnSample(GstAppSink* sink, gpointer user_data) {
               GST_VIDEO_INFO_PLANE_STRIDE(&info, 0),
               mapping.size);
         }
-    state->SubmitRgb(mapping.data, GST_VIDEO_INFO_PLANE_STRIDE(&info, 0),
+    state->SubmitRgb(mapping.data + offset, GST_VIDEO_INFO_PLANE_STRIDE(&info, 0),
                      GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info));
     gst_buffer_unmap(buffer, &mapping);
   }
@@ -643,7 +779,10 @@ void SetSuspended(void* user_data, std::uint8_t suspended) {
     std::scoped_lock lock(state->mutex);
     state->suspended = suspended != 0;
   }
-  if (state->pipeline != nullptr) {
+  // A framed producer has bounded writes. Keep consuming its encoded dependency
+  // chain while locally hidden; SubmitRgb suppresses presentation. Pausing the
+  // reader here would eventually disconnect an otherwise healthy phone stream.
+  if (state->pipeline != nullptr && !state->framed_media) {
     gst_element_set_state(state->pipeline,
                           state->suspended ? GST_STATE_PAUSED
                                            : GST_STATE_PLAYING);
@@ -672,6 +811,19 @@ int Create(const IhsPvCreateInfo* info, void*, IhsPlatformView* view,
       std::strcmp(backend, "disabled") != 0) {
     std::fprintf(stderr, "Argo renderer test: create rejected: requires ARGO_PROJECTION_BACKEND=disabled\n");
     return IHS_PV_ERR_INVALID;
+  }
+  if (info->params != nullptr && info->params_size >= 4 && std::memcmp(info->params, "ARV2", 4) == 0) {
+    argo::media::ViewParameters parameters;
+    if (state->renderer_test || !argo::media::ParseViewParameters(
+        std::span<const std::uint8_t>(info->params, info->params_size), parameters)) return IHS_PV_ERR_INVALID;
+    state->framed_media = true;
+    state->media_description = parameters.description;
+    state->encoded_width = parameters.description.width;
+    state->encoded_height = parameters.description.height;
+    state->crop_left = parameters.left;
+    state->crop_top = parameters.top;
+    state->crop_right = parameters.right;
+    state->crop_bottom = parameters.bottom;
   }
   if (info->params_size == 20 && info->params != nullptr && std::memcmp(info->params, "ARVW", 4) == 0) {
     const auto* p = info->params;
@@ -731,4 +883,9 @@ argo_projection_view_register() {
 extern "C" __attribute__((visibility("default"))) void
 argo_projection_view_unregister() {
   ihs_pv_unregister_factory(kViewType);
+}
+
+extern "C" __attribute__((visibility("default"))) std::uint32_t
+argo_projection_view_media_contract_version() {
+  return 1;
 }

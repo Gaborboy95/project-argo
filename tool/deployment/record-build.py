@@ -21,6 +21,8 @@ def main():
     p.add_argument('path', type=Path)
     p.add_argument('--ihs-prefix', type=Path)
     p.add_argument('--camera-mode', choices=['legacy', 'external'], default='legacy')
+    p.add_argument('--projection-media-contract', type=int, choices=[1])
+    p.add_argument('--carplay-wired', action='store_true')
     args = p.parse_args()
     ipc = (ROOT / 'native/projection/argo-projectiond/src/ipc.rs').read_text()
     version = int(re.search(r'pub const VERSION: u16 = (\d+);', ipc)[1])
@@ -31,6 +33,12 @@ def main():
     record = {'schema': 1, 'ipc': version, 'source': source,
               'source_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain']))}
     record['source_diff_sha256'] = hashlib.sha256(subprocess.check_output(['git', '-C', str(ROOT), 'diff', 'HEAD', '--binary'])).hexdigest()
+    # New feature files must be represented in dirty-build provenance too.
+    untracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '--others', '--exclude-standard', '-z'])
+    record['source_untracked_sha256'] = {
+        name: sha(ROOT / name) for name in untracked.decode().split('\0')
+        if name and (ROOT / name).is_file()
+    }
     if args.kind == 'daemon':
         record['sha256'] = sha(args.path)
         output = Path(str(args.path) + '.json')
@@ -51,6 +59,26 @@ def main():
         record['managed_control'] = 1
         if version >= 7:
             record['native_view_contract'] = 1  # ARVW negotiated crop parameters
+        carplay = [(args.path / f).is_file() for f in ('bin/argo-carplayd', 'bin/argo-carplayctl')]
+        if any(carplay):
+            if not all(carplay):
+                p.error('CarPlay diagnostics require both daemon and control tool')
+            for name in ('argo-carplayd', 'argo-carplayctl'):
+                version_output = subprocess.check_output([str(args.path.resolve() / 'bin' / name), '--version'], text=True, timeout=5)
+                if 'control=1' not in version_output:
+                    p.error('CarPlay binary control contract mismatch')
+            record['carplay_control'] = 1
+            record['carplay_scope'] = 'diagnostics-only'
+            if args.carplay_wired:
+                output = subprocess.check_output([str(args.path.resolve() / 'bin/argo-carplayd'), '--version'], text=True, timeout=5)
+                if 'wired=true' not in output or args.projection_media_contract != 1:
+                    p.error('Wired CarPlay requires a wired-capable daemon and media contract 1')
+                record['carplay_wired'] = 1
+                record['carplay_scope'] = 'wired-development'
+        elif args.carplay_wired:
+            p.error('Wired CarPlay requires daemon and control tool')
+        if args.projection_media_contract:
+            record['projection_media_contract'] = args.projection_media_contract
         record['ihs_sha256'] = {f: sha(args.ihs_prefix / f) for f in (
             'bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_view.h')}
         record['ihs_contract'] = 'tool/projection/README.md#ihs-base-and-local-patch'

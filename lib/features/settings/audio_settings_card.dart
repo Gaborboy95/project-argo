@@ -23,7 +23,7 @@ class AudioSettingsCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 s.backendAvailable
-                    ? 'Output · ${s.selectedOutput ?? 'System default'}'
+                    ? 'Output · ${s.selectedOutput == null || s.selectedOutput == '@DEFAULT_AUDIO_SINK@' ? 'System default' : s.selectedOutput}'
                     : 'Host audio is unavailable. Use the release launcher with PipeWire running; ARGO_AUDIO_BACKEND=disabled turns these controls off.',
               ),
               const SizedBox(height: 20),

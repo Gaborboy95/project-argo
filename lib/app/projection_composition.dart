@@ -1,3 +1,8 @@
+import '../core/projection/carplay_settings_service.dart';
+import '../core/projection/multiplex_projection_backend.dart';
+import '../integrations/projection/carplay_projection_backend.dart';
+import '../core/projection/carplay_link_diagnostics.dart';
+import '../integrations/projection/carplay_link_diagnostics_client.dart';
 import '../integrations/bluetooth/bluetooth_call_audio.dart';
 
 import 'dart:io';
@@ -34,6 +39,41 @@ Future<ProjectionService> registerProjectionServices({
   ProjectionControlTransportFactory? transportFactory,
   ProjectionViewRegistry Function({String? libraryPath})? viewRegistryLoader,
 }) async {
+  final carPlayEnabled = environment['ARGO_CARPLAY_ENABLED'] == '1';
+  if (carPlayEnabled &&
+      (!(isLinux ?? Platform.isLinux) ||
+          environment['ARGO_PROJECTION_RENDER_TEST'] == '1')) {
+    throw ArgumentError(
+      'Native CarPlay requires a normal Linux projection session.',
+    );
+  }
+  final carPlayDiagnostics = environment['ARGO_CARPLAY_DIAGNOSTICS'];
+  if (carPlayDiagnostics != null &&
+      carPlayDiagnostics != '0' &&
+      carPlayDiagnostics != '1') {
+    throw ArgumentError('ARGO_CARPLAY_DIAGNOSTICS must be 0 or 1.');
+  }
+  if (carPlayDiagnostics == '1' || carPlayEnabled) {
+    if (!(isLinux ?? Platform.isLinux)) {
+      throw UnsupportedError('LIVI Link diagnostics require Linux.');
+    }
+    final runtime = environment['XDG_RUNTIME_DIR'];
+    if (runtime == null || !runtime.startsWith('/') || runtime.endsWith('/')) {
+      throw ArgumentError(
+        'LIVI Link diagnostics require an absolute XDG_RUNTIME_DIR.',
+      );
+    }
+    final health = CarPlayLinkDiagnosticsClient(
+      socketPath: '$runtime/project-argo/carplay.sock',
+    );
+    lifecycle.registerShutdown(
+      name: 'carplay.diagnostics',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: health.close,
+    );
+    services.register<CarPlayLinkDiagnostics>(health);
+    health.start();
+  }
   final renderTest = ProjectionRenderTest.fromEnvironment(environment);
   final preferences = await ProjectionSettingsService.load(
     services.get<SettingsService>(),
@@ -129,7 +169,9 @@ Future<ProjectionService> registerProjectionServices({
 
   final backendType = ProjectionBackendType.fromEnvironment(environment);
   ProjectionViewRegistry? viewRegistry;
-  if (renderTest.enabled || backendType == ProjectionBackendType.androidAuto) {
+  if (renderTest.enabled ||
+      backendType == ProjectionBackendType.androidAuto ||
+      carPlayEnabled) {
     try {
       viewRegistry = (viewRegistryLoader ?? IhsProjectionViewRegistry.load)(
         libraryPath: environment['ARGO_PROJECTION_VIEW_LIBRARY'],
@@ -149,8 +191,39 @@ Future<ProjectionService> registerProjectionServices({
       );
     }
   }
+  final ProjectionBackend presentationBackend;
+  if (carPlayEnabled) {
+    final carPlaySettings = CarPlaySettingsService(
+      socketPath:
+          '${environment['XDG_RUNTIME_DIR']}/project-argo/carplay-settings.sock',
+      selectedMicrophone: () =>
+          connectivity?.connectivity.voice?['selected'] as String?,
+    );
+    services.register<CarPlaySettingsService>(carPlaySettings);
+    lifecycle.registerShutdown(
+      name: 'carplay.settings',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: carPlaySettings.close,
+    );
+    await carPlaySettings.start();
+    final carPlay = CarPlayProjectionBackend(
+      selectedMicrophone: () =>
+          connectivity?.connectivity.voice?['selected'] as String?,
+      microphoneMuted: () => connectivity?.connectivity.voice?['muted'] == true,
+      socketPath: projectionEndpoint(
+        environment,
+        'ARGO_CARPLAY_SOCKET',
+        'carplay-control.sock',
+      ),
+    );
+    presentationBackend = backend.protocol == null
+        ? carPlay
+        : MultiplexProjectionBackend([backend, carPlay]);
+  } else {
+    presentationBackend = backend;
+  }
   final projection = await DefaultProjectionService.start(
-    backend: backend,
+    backend: presentationBackend,
     audio: services.get<AudioService>(),
     diagnostics: diagnostics,
   );
@@ -179,7 +252,7 @@ Future<ProjectionService> registerProjectionServices({
       ),
     )
     ..register<ProjectionRenderTest>(renderTest)
-    ..register<ProjectionBackend>(backend)
+    ..register<ProjectionBackend>(presentationBackend)
     ..register<ProjectionService>(projection);
   if (viewRegistry != null) {
     services.register<ProjectionViewRegistry>(viewRegistry);

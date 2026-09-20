@@ -2,7 +2,7 @@
 Description=Project Argo graphical deployment
 After=default.target
 PartOf=graphical-session.target
-Wants=argo-projectiond.service argo-app.service
+Wants=argo-projectiond.service argo-app.service argo-carplayd.service
 
 [Install]
 WantedBy=graphical-session.target

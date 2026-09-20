@@ -40,30 +40,83 @@ pub async fn graph() -> Result<Vec<Value>, String> {
 pub fn props(node: &Value) -> &Value {
     &node["info"]["props"]
 }
+fn pulse_inputs(bytes: &[u8]) -> Result<Vec<Input>, String> {
+    let sources: Vec<Value> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    Ok(sources
+        .iter()
+        .filter(|s| {
+            s["properties"]["device.class"] != "monitor"
+                && s["properties"]["device.api"] != "bluez5"
+                && s["monitor_source"].as_str().unwrap_or("").is_empty()
+        })
+        .filter_map(|s| {
+            let id = s["name"].as_str()?;
+            if id.is_empty() || id.len() > 256 || id.ends_with(".monitor") {
+                return None;
+            }
+            Some(Input {
+                id: id.into(),
+                name: s["description"]
+                    .as_str()
+                    .unwrap_or("Microphone input")
+                    .chars()
+                    .take(256)
+                    .collect(),
+            })
+        })
+        .take(32)
+        .collect())
+}
+#[cfg(test)]
+#[test]
+fn pulse_fallback_excludes_speaker_monitors_and_bluetooth_inputs() {
+    let inputs=pulse_inputs(br#"[{"name":"adc","description":"USB input","monitor_source":"","properties":{"device.class":"sound","device.api":"alsa"}},{"name":"output.monitor","monitor_source":"output","properties":{"device.class":"monitor"}},{"name":"bt","properties":{"device.api":"bluez5"}}]"#).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].id, "adc");
+    assert!(pulse_inputs(b"invalid").is_err());
+}
 impl Voice {
     pub async fn refresh(&self) -> Result<(), String> {
-        let nodes = graph().await?;
-        let inputs = nodes
-            .iter()
-            .filter(|n| {
-                props(n)["media.class"] == "Audio/Source"
-                    && props(n)["device.api"] != "bluez5"
-                    && !props(n)["factory.name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .contains("bluez5")
-            })
-            .filter_map(|n| {
-                Some(Input {
-                    id: props(n)["node.name"].as_str()?.into(),
-                    name: props(n)["node.description"]
-                        .as_str()
-                        .unwrap_or("Microphone input")
-                        .into(),
+        let inputs = match graph().await {
+            Ok(nodes) => nodes
+                .iter()
+                .filter(|n| {
+                    props(n)["media.class"] == "Audio/Source"
+                        && props(n)["device.api"] != "bluez5"
+                        && !props(n)["factory.name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .contains("bluez5")
                 })
-            })
-            .take(32)
-            .collect::<Vec<_>>();
+                .filter_map(|n| {
+                    Some(Input {
+                        id: props(n)["node.name"].as_str()?.into(),
+                        name: props(n)["node.description"]
+                            .as_str()
+                            .unwrap_or("Microphone input")
+                            .into(),
+                    })
+                })
+                .take(32)
+                .collect::<Vec<_>>(),
+            Err(_) => {
+                // A malformed property on an unrelated output must not hide inputs.
+                let output = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::process::Command::new("/usr/bin/pactl")
+                        .args(["--format=json", "list", "sources"])
+                        .kill_on_drop(true)
+                        .output(),
+                )
+                .await
+                .map_err(|_| "Microphone inventory timed out")?
+                .map_err(|e| e.to_string())?;
+                if !output.status.success() || output.stdout.len() > 4 * 1024 * 1024 {
+                    return Err("Microphone inventory unavailable".into());
+                }
+                pulse_inputs(&output.stdout)?
+            }
+        };
         self.state.send_modify(|s| {
             if s.selected.is_empty() && inputs.len() == 1 {
                 s.selected = inputs[0].id.clone();
@@ -98,6 +151,8 @@ impl Voice {
             .clone()
             .try_acquire_owned()
             .map_err(|_| "Microphone is already owned by another voice session")?;
+        let process_lease =
+            argo_audio_ownership::MicrophoneLease::acquire().map_err(|e| e.to_string())?;
         self.refresh().await?;
         let selected = self.state.borrow().selected.clone();
         if !self.state.borrow().inputs.iter().any(|n| n.id == selected) {
@@ -106,18 +161,23 @@ impl Voice {
         self.state.send_modify(|s| s.owner = owner.into());
         Ok(Lease {
             _permit: Some(permit),
+            process_lease: Some(process_lease),
             voice: self.clone(),
             source: selected,
         })
     }
 }
 pub struct Lease {
+    process_lease: Option<argo_audio_ownership::MicrophoneLease>,
     _permit: Option<OwnedSemaphorePermit>,
     voice: Voice,
     pub source: String,
 }
 impl Lease {
     pub(crate) fn poison(&mut self) {
+        if let Some(lease) = self.process_lease.take() {
+            lease.poison();
+        }
         if let Some(permit) = self._permit.take() {
             permit.forget();
         }
@@ -326,6 +386,7 @@ mod tests {
         let voice = Voice::default();
         let permit = voice.lease.clone().try_acquire_owned().unwrap();
         let mut lease = Lease {
+            process_lease: None,
             _permit: Some(permit),
             voice: voice.clone(),
             source: "adc.mix".into(),

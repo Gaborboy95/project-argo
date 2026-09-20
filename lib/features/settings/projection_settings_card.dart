@@ -261,7 +261,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                   if (caps == null)
                     const Text('Audio format capabilities unavailable.'),
                   const Text(
-                    'Per-stream focus gain is separate from system master volume. Microphone capture is not implemented.',
+                    'Per-stream focus gain is separate from system master volume. Microphone selection and mute are shared with Sound settings.',
                   ),
                 ],
               ),

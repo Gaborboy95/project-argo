@@ -1,5 +1,14 @@
 # Projection build reference
 
+CarPlay's separate diagnostic/protocol crate builds with
+`cargo build --locked --offline --release --manifest-path native/carplay/Cargo.toml`.
+The [CarPlay runbook](../../docs/carplay.md) defines tests, optional usbmuxd library,
+Link checks and managed release integration. It does not yet supply a complete
+phone session. Native ARPM/1 is separate from AA IPC7 and ARVW; see the
+[encoded media contract](../../native/projection/argo-projection-view/README.md)
+for H.264/H.265 framing, color/range, limits and native tests. Rebuild the view in
+a fresh directory against matched IHS. No Engine/IHS dependency update is required.
+
 This is the authoritative build/dependency reference for the Linux AA daemon,
 IHS platform view and release bundles. [Setup](../../docs/setup.md) defines the
 reference layout and one current launch workflow. [Wireless](../../docs/wireless.md)

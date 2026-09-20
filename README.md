@@ -54,6 +54,8 @@ PBAP phone interoperability remains unverified. Wallpaper/shaders are not implem
 - [Configuration](docs/configuration.md): environment, settings, defaults and timing.
 - [Media sources and Bluetooth music](docs/media.md): routing, controls, setup and limits.
 - [Wireless Android Auto](docs/wireless.md): pairing, AP, admission, retry and diagnosis.
+- [Native CarPlay development](docs/carplay.md): prepared LIVI Link diagnostics,
+  wired IHS video/touch and Spotify audio, supervised receiver, and remaining Siri/call/wireless work.
 - [Compatibility and limitations](docs/status.md): tested scope and unsupported work.
 - [Projection build reference](tool/projection/README.md): matching SDK/IHS requirements,
   safe daemon staging, native-view build and renderer diagnostics.
@@ -64,3 +66,11 @@ PBAP phone interoperability remains unverified. Wallpaper/shaders are not implem
 
 Synthetic workflows: [vehicle bundles](tool/vehicle_integrations/README.md),
 [audio control](tool/audio/README.md), [host power](tool/host_power/README.md).
+
+## Acknowledgements
+
+Argo's CarPlay/LIVI Link work was heavily informed by **f-io / Lasse Heitgres —
+LIVI**. Thank you to the LIVI contributors for their native CarPlay, iAP2 and MFi
+reference work. See [CREDITS.md](CREDITS.md) and the
+[pinned architecture/provenance review](docs/carplay-livi-review.md).
+CarPlay projection remains incomplete; this acknowledgement implies no endorsement.

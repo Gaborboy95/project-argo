@@ -122,10 +122,22 @@ class _IhsProjectionController extends PlatformViewController {
     return _enqueue(() async {
       if (_disposed) return;
       final crop = creationParams['cropPixels'] as List<int>?;
-      final encoded = crop == null
+      final native = creationParams['nativeMediaParams'] as List<int>?;
+      if (native != null &&
+          (native.length != 40 ||
+              native.any((v) => v < 0 || v > 255) ||
+              native[0] != 0x41 ||
+              native[1] != 0x52 ||
+              native[2] != 0x56 ||
+              native[3] != 0x32)) {
+        throw ArgumentError('Invalid native projection media parameters');
+      }
+      final encoded = native != null
+          ? ByteData.sublistView(Uint8List.fromList(native))
+          : crop == null
           ? const StandardMessageCodec().encodeMessage(creationParams)!
           : ByteData(20);
-      if (crop != null) {
+      if (native == null && crop != null) {
         if (crop.length != 6 || crop.any((v) => v < 0 || v > 65535)) {
           throw ArgumentError('Invalid projection crop');
         }
