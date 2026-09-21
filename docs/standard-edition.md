@@ -126,6 +126,8 @@ The development `argo-runtime` package has passed Debian 13 install/reinstall,
 upgrade/remove/purge, data-preservation, corrupt-archive, checksum and loader checks.
 It needs no development toolchain on the target. User services start only through
 an explicit desktop/session launch. Host deployment and graphical/physical
-acceptance were not performed. Clean-container execution, independent compilation
-reproducibility and publication licensing remain open; identical-input package
-assembly is reproducible. See the build artifact continuation report for evidence.
+acceptance were not performed. Two fresh builds in the same pinned, isolated Debian
+root, without the private surround checkout and with empty dependency caches,
+produced byte-for-byte identical Standard 3 packages. Docker itself was not used.
+Publication licensing/signing remains open. Stop the Argo session before upgrading
+its runtime assets. See the build artifact continuation report for evidence.

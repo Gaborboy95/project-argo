@@ -22,11 +22,12 @@ mkdir -p build/debian-builder
 docker run --rm -v "$PWD:/source:ro" -v "$PWD/build/debian-builder:/workspace" argo-standard-builder
 ```
 
-The container recipe pins the Debian image digest and Debian snapshot. It has
-not been executed in this environment, which has no Docker/Podman. The actual
-validated public-input build used fresh Flutter, Pub and Cargo directories on
-the existing Debian builder, with its package inventory retained. This proves
-public source/cache independence, not yet the complete container recipe.
+The recipe pins the Debian image digest and Debian snapshot. Docker/Podman were
+absent, so validation used the Bubblewrap entry point below with a disposable
+Debian root provisioned from those same inputs and build dependencies. Two fresh
+workspaces, each with empty Flutter/Pub/Cargo caches and no private surround
+checkout, produced byte-for-byte identical Standard 3 packages. The Docker engine
+entry point itself was not executed. Builder package inventory is retained.
 
 Equivalent entry point in a provisioned disposable builder:
 
@@ -52,6 +53,8 @@ After transferring the `.deb` and its checksum file to a Debian 13 amd64 target:
 
 ```sh
 sha256sum -c argo-runtime_1.0.0~standard.3_amd64.deb.sha256
+# Stop an existing Argo session before upgrading its immutable runtime assets:
+systemctl --user stop argo-standard.target
 sudo apt install ./argo-runtime_1.0.0~standard.3_amd64.deb
 argoctl doctor --json
 argo-session
@@ -98,14 +101,15 @@ python3 tool/release/test-lifecycle.py \
   --root /disposable/debian-root \
   --proot /tools/proot/usr/bin/proot \
   --proot-library /tools/proot/usr/lib/x86_64-linux-gnu \
-  --previous /artifacts/argo-runtime_1.0.0~standard.1_amd64.deb \
+  --previous /artifacts/argo-runtime_1.0.0~standard.2_amd64.deb \
   --package /artifacts/argo-runtime_1.0.0~standard.3_amd64.deb \
   --log /artifacts/lifecycle.log
 ```
 
 This checks fresh install, reinstall, real package-version upgrade, remove,
 install again, purge with retained user state, truncated archive rejection,
-package integrity, native loading and the absence of development tools. The
+package integrity, native loading, installed launcher help, a single shared IHS
+library instance and the absence of development tools. The
 separate initial empty-root `dpkg -i` test must fail specifically for missing
 dependencies before resolving them with `apt`. `lifecycle.json` records completed
 checks. PRoot has limitations translating modern access checks and resolving
@@ -123,10 +127,16 @@ or certify a GPU driver. Python is used by `argoctl`, not as a build environment
 ## Evidence and remaining release work
 
 The artifact directory contains logs, package checksums, Debian root provenance,
-builder package inventory and an implementation report. Repacking identical
-inputs checks deterministic package assembly; it does not prove independently
-reproducible compilation on two clean builders. Checksums are integrity checks,
-not release signatures.
+builder package inventory and an implementation report. Two independent clean
+compilations in the same pinned Debian root produced identical complete packages.
+This does not establish reproducibility across different hosts or toolchains.
+Compare independent outputs with:
+
+```sh
+python3 tool/release/compare-builds.py FIRST.deb SECOND.deb --output comparison.json
+```
+
+Checksums are integrity checks, not release signatures.
 
 Notices include Flutter engine notices, Dart package licenses, Rust metadata and
 license files, IHS third-party notices and supplemental ImGui/Apache text. Argo
