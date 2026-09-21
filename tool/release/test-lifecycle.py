@@ -61,6 +61,7 @@ def main():
         if integrity.strip(): raise RuntimeError('Installed files do not match package checksums: ' + integrity)
         for binary in ['argo-carplayd', 'argo-carplayctl']:
             run('load ' + binary, ['/usr/lib/argo/runtime/bin/' + binary, '--version'], read_only=True)
+        run('installed launcher help', ['/usr/bin/argo', '--help'], read_only=True)
         # This checks every ELF and dynamically loaded native asset, not only launchers.
         output = run('loader closure', ['/bin/sh', '-c', 'set -e; for f in /usr/lib/argo/runtime/bin/* /usr/lib/argo/runtime/lib/*.so*; do ldd "$f"; done'], read_only=True)
         if 'not found' in output: raise RuntimeError('Unresolved runtime dependency')
