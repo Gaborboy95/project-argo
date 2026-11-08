@@ -12,6 +12,9 @@ class CarPlaySettingsService {
     this.selectedAudioOutput,
   });
   final String socketPath;
+
+  /// Null preserves preferences while inventory is unknown. Empty explicitly
+  /// clears an absent microphone; nonempty identifies a confirmed input.
   final String? Function()? selectedMicrophone;
   final String? Function()? selectedAudioOutput;
   final _changes = StreamController<void>.broadcast();
@@ -123,7 +126,7 @@ class CarPlaySettingsService {
     _notify();
   }
 
-  Map<String, String> _sharedAudioPatch() {
+  Map<String, Object?> _sharedAudioPatch() {
     final settings = current['settings'] as Map? ?? const {};
     final sink = selectedAudioOutput?.call();
     final source = selectedMicrophone?.call();
@@ -132,6 +135,8 @@ class CarPlaySettingsService {
     return {
       if (selectedSink != null && selectedSink != settings['audio_sink'])
         'audio_sink': selectedSink,
+      if (source == '' && settings['audio_source'] != null)
+        'audio_source': null,
       if (source != null &&
           source.isNotEmpty &&
           effectiveSink is String &&

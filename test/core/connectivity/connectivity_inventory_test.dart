@@ -30,6 +30,75 @@ Map<String, Object> device(
 }) => {'id': id, 'name': name, 'paired': paired, 'connected': connected};
 
 void main() {
+  test('projection microphone uses only fresh exact selected input and never a monitor fallback', () {
+    String? selection(Map<String, dynamic> voice, {String phase = 'idle'}) {
+      final json = snapshot([])
+        ..['voice'] = voice
+        ..['phase'] = phase;
+      return ConnectivitySnapshot.fromJson(json).selectedProjectionMicrophone;
+    }
+
+    final available = <String, dynamic>{
+      'inventory_available': true,
+      'selected': 'usb.adc',
+      'inputs': [
+        {'id': 'usb.adc', 'name': 'USB microphone'},
+      ],
+    };
+    expect(selection(available), 'usb.adc');
+    // Microphone availability is independent of wireless/adapter availability.
+    expect(selection(available, phase: 'unavailable'), 'usb.adc');
+    expect(selection({...available, 'inventory_available': false}), isNull);
+    expect(selection({...available}..remove('inventory_available')), isNull);
+    expect(selection({...available, 'inputs': null}), isNull);
+    expect(selection({...available, 'selected': ''}), '');
+    expect(selection({...available, 'selected': 'remembered.but.missing'}), '');
+    expect(selection({...available, 'inputs': <Object>[]}), '');
+    expect(
+      selection({
+        'inventory_available': true,
+        'selected': 'speaker.monitor',
+        'inputs': [
+          {'id': 'speaker.monitor', 'name': 'Speaker monitor'},
+        ],
+      }),
+      '',
+    );
+    const disconnected = ConnectivitySnapshot(
+      voice: {
+        'inventory_available': true,
+        'selected': 'usb.adc',
+        'inputs': [
+          {'id': 'usb.adc'},
+        ],
+      },
+    );
+    expect(disconnected.selectedProjectionMicrophone, isNull);
+  });
+
+  test('projection microphone preserves a remembered choice through probe loss and replug', () {
+    ConnectivitySnapshot state(
+      bool available,
+      List<Map<String, String>> inputs,
+    ) => ConnectivitySnapshot.fromJson(
+      snapshot([])
+        ..['voice'] = {
+          'inventory_available': available,
+          'selected': 'usb.adc',
+          'inputs': inputs,
+        },
+    );
+    final source = [
+      {'id': 'usb.adc', 'name': 'USB microphone'},
+    ];
+    expect(state(true, source).selectedProjectionMicrophone, 'usb.adc');
+    expect(state(false, source).selectedProjectionMicrophone, isNull);
+    final unplugged = state(true, []);
+    expect(unplugged.selectedProjectionMicrophone, '');
+    expect(unplugged.voice!['selected'], 'usb.adc');
+    expect(state(true, source).selectedProjectionMicrophone, 'usb.adc');
+  });
+
   test('selected, prompt, audio and call references share normalized endpoint identity', () {
     final json = snapshot([
       device('hci0/aa:bb:00:00:00:01', 'Phone', paired: true),

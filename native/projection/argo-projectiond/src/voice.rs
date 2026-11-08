@@ -16,6 +16,7 @@ pub struct Input {
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub inputs: Vec<Input>,
+    pub inventory_available: bool,
     pub selected: String,
     pub muted: bool,
     pub owner: String,
@@ -99,8 +100,46 @@ impl Voice {
         self.lease.clone().try_acquire_owned().unwrap()
     }
     pub async fn refresh(&self) -> Result<(), String> {
+        self.refresh_with_probe(Self::probe_inputs()).await
+    }
+    async fn refresh_with_probe(
+        &self,
+        probe: impl std::future::Future<Output = Result<Vec<Input>, String>>,
+    ) -> Result<(), String> {
         self.state
             .send_modify(|s| s.ownership = argo_audio_ownership::state().into());
+        let inputs = match probe.await {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                self.state.send_modify(|s| {
+                    // Keep the saved selection and last known inputs, but do
+                    // not let consumers treat them as a current inventory.
+                    s.inventory_available = false;
+                    if s.owner != "cleanup uncertain" {
+                        s.detail = "Microphone inventory unavailable".into();
+                    }
+                });
+                return Err(error);
+            }
+        };
+        self.state.send_modify(|s| {
+            if s.selected.is_empty() && inputs.len() == 1 {
+                s.selected = inputs[0].id.clone();
+            }
+            if s.owner != "cleanup uncertain" {
+                s.detail = if inputs.iter().any(|n| n.id == s.selected) {
+                    "Selected input available"
+                } else {
+                    "Connect/select the USB ADC or its mixed PipeWire input"
+                }
+                .into();
+            }
+            s.inputs = inputs;
+            s.inventory_available = true;
+        });
+        Ok(())
+    }
+    async fn probe_inputs() -> Result<Vec<Input>, String> {
         let inputs = match graph().await {
             Ok(nodes) => nodes
                 .iter()
@@ -141,21 +180,7 @@ impl Voice {
                 pulse_inputs(&output.stdout)?
             }
         };
-        self.state.send_modify(|s| {
-            if s.selected.is_empty() && inputs.len() == 1 {
-                s.selected = inputs[0].id.clone();
-            }
-            if s.owner != "cleanup uncertain" {
-                s.detail = if inputs.iter().any(|n| n.id == s.selected) {
-                    "Selected input available"
-                } else {
-                    "Connect/select the USB ADC or its mixed PipeWire input"
-                }
-                .into();
-            }
-            s.inputs = inputs;
-        });
-        Ok(())
+        Ok(inputs)
     }
     pub fn select(&self, name: &str) -> Result<(), String> {
         let s = self.state.borrow();
@@ -435,6 +460,88 @@ mod tests {
     use super::*;
     use futures_util::FutureExt;
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn inventory_probe_distinguishes_empty_success_from_stale_failed_inputs() {
+        let voice = Voice::default();
+        assert_eq!(
+            serde_json::to_value(voice.state.borrow().clone()).unwrap()["inventory_available"],
+            false
+        );
+        voice.select("remembered.adc").unwrap();
+        voice
+            .refresh_with_probe(async {
+                Ok(vec![Input {
+                    id: "remembered.adc".into(),
+                    name: "USB ADC".into(),
+                }])
+            })
+            .await
+            .unwrap();
+        assert!(voice.state.borrow().inventory_available);
+        assert_eq!(voice.state.borrow().inputs.len(), 1);
+        assert_eq!(
+            voice
+                .refresh_with_probe(async { Err("probe failed".into()) })
+                .await,
+            Err("probe failed".into())
+        );
+        let failed = voice.state.borrow().clone();
+        assert!(!failed.inventory_available);
+        assert_eq!(failed.selected, "remembered.adc");
+        assert_eq!(failed.inputs[0].id, "remembered.adc");
+        assert_eq!(failed.detail, "Microphone inventory unavailable");
+
+        voice
+            .refresh_with_probe(async { Ok(Vec::new()) })
+            .await
+            .unwrap();
+        let empty = voice.state.borrow().clone();
+        assert!(empty.inventory_available);
+        assert!(empty.inputs.is_empty());
+        assert_eq!(empty.selected, "remembered.adc");
+    }
+
+    #[tokio::test]
+    async fn inventory_availability_does_not_flap_during_probe_or_capture_updates() {
+        let voice = Voice::default();
+        voice
+            .refresh_with_probe(async {
+                Ok(vec![Input {
+                    id: "adc".into(),
+                    name: "USB ADC".into(),
+                }])
+            })
+            .await
+            .unwrap();
+        assert_eq!(voice.state.borrow().selected, "adc");
+        let (complete, result) = tokio::sync::oneshot::channel();
+        let mut refresh = Box::pin(voice.refresh_with_probe(async { result.await.unwrap() }));
+        assert!(refresh.as_mut().now_or_never().is_none());
+        assert!(voice.state.borrow().inventory_available);
+
+        let lease = Lease {
+            process_lease: None,
+            _permit: Some(voice.reserve_capture_for_test()),
+            voice: voice.clone(),
+            source: "adc".into(),
+        };
+        voice.state.send_modify(|s| {
+            s.owner = "setupTest".into();
+            s.testing = true;
+            s.test_peak = 0.5;
+        });
+        assert!(voice.state.borrow().inventory_available);
+        drop(lease);
+        assert!(voice.state.borrow().owner.is_empty());
+        assert!(voice.state.borrow().inventory_available);
+        assert!(complete.send(Err("inventory lost".into())).is_ok());
+        assert!(refresh.await.is_err());
+        assert!(!voice.state.borrow().inventory_available);
+        voice.state.send_modify(|s| s.owner = "androidAuto".into());
+        assert!(!voice.state.borrow().inventory_available);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn pcm_select_cancellation_retains_partial_samples_and_stall_is_bounded() {
         let (mut writer, reader) = tokio::io::duplex(1280);

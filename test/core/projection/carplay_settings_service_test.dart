@@ -6,6 +6,77 @@ import 'package:argo/core/projection/carplay_settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('unknown microphone inventory preserves preferences, known absence clears once and replug restores', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'jbl.present',
+      'audio_source': 'old.usb.adc',
+    });
+    String? microphone;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => 'jbl.present',
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    expect(receiver.configures, isEmpty);
+    expect(receiver.settings['audio_source'], 'old.usb.adc');
+    microphone = '';
+    await service.refresh();
+    expect(receiver.configures.single['settings'], {'audio_source': null});
+    expect(receiver.settings['audio_source'], isNull);
+    expect((service.current['settings'] as Map)['audio_source'], isNull);
+    await Future.wait([service.refresh(), service.refresh()]);
+    expect(receiver.configures, hasLength(1));
+    microphone = null;
+    await service.refresh();
+    expect(receiver.configures, hasLength(1));
+    microphone = 'usb.adc';
+    await service.refresh();
+    expect(receiver.configures.last['settings'], {'audio_source': 'usb.adc'});
+    expect(receiver.settings['audio_source'], 'usb.adc');
+    await service.refresh();
+    expect(receiver.configures, hasLength(2));
+    expect(
+      receiver.requests.every(
+        (r) => {'status', 'configure'}.contains(r['action']),
+      ),
+      isTrue,
+    );
+  });
+
+  test('connect awaits confirmed microphone absence before advertising the next session', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'jbl.present',
+      'audio_source': 'old.usb.adc',
+    });
+    String? microphone;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => 'jbl.present',
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    receiver.configureGate = Completer<void>();
+    microphone = '';
+    final connecting = service.connect();
+    await receiver.configureSeen.future.timeout(const Duration(seconds: 2));
+    expect(receiver.connectSinks, isEmpty);
+    receiver.configureGate!.complete();
+    await connecting;
+    expect(receiver.connectSinks, ['jbl.present']);
+    expect(receiver.connectSources, [null]);
+    expect(receiver.configures.single['settings'], {'audio_source': null});
+    expect(service.failure, isNull);
+  });
+
   test('shared output and microphone update next-connection settings without receiver actions', () async {
     final receiver = await _Receiver.start({
       'audio_sink': 'old.missing',
@@ -288,6 +359,7 @@ class _Receiver {
   final Map<String, dynamic> settings;
   final requests = <Map<String, dynamic>>[];
   final connectSinks = <Object?>[];
+  final connectSources = <Object?>[];
   final sockets = <Socket>{};
   final work = <Future<void>>{};
   final configureSeen = Completer<void>();
@@ -339,6 +411,7 @@ class _Receiver {
           }
         case 'connect':
           connectSinks.add(settings['audio_sink']);
+          connectSources.add(settings['audio_source']);
       }
       socket.writeln(
         jsonEncode(

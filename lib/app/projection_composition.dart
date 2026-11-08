@@ -196,11 +196,12 @@ Future<ProjectionService> registerProjectionServices({
   }
   final ProjectionBackend presentationBackend;
   if (carPlayEnabled) {
+    String? selectedMicrophone() =>
+        connectivity?.connectivity.selectedProjectionMicrophone;
     final carPlaySettings = CarPlaySettingsService(
       socketPath:
           '${environment['XDG_RUNTIME_DIR']}/project-argo/carplay-settings.sock',
-      selectedMicrophone: () =>
-          connectivity?.connectivity.voice?['selected'] as String?,
+      selectedMicrophone: selectedMicrophone,
       selectedAudioOutput: () {
         final audio = services.get<AudioService>().current;
         return audio.backendAvailable ? audio.selectedOutput : null;
@@ -214,8 +215,7 @@ Future<ProjectionService> registerProjectionServices({
     );
     await carPlaySettings.start();
     final carPlay = CarPlayProjectionBackend(
-      selectedMicrophone: () =>
-          connectivity?.connectivity.voice?['selected'] as String?,
+      selectedMicrophone: selectedMicrophone,
       microphoneMuted: () => connectivity?.connectivity.voice?['muted'] == true,
       socketPath: projectionEndpoint(
         environment,

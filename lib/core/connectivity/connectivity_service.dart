@@ -203,6 +203,25 @@ final class ConnectivitySnapshot {
   final Map<String, dynamic>? music, calls, voice;
   final int? stopped;
 
+  /// Null means input inventory is unknown; empty means a fresh inventory
+  /// confirms there is no usable selected microphone. Never choose a fallback
+  /// or mistake a speaker monitor for an input.
+  String? get selectedProjectionMicrophone {
+    final status = voice;
+    if (!daemonConnected || status?['inventory_available'] != true) return null;
+    final inputs = status?['inputs'];
+    if (inputs is! List) return null;
+    final selected = status?['selected'];
+    if (selected is! String ||
+        selected.isEmpty ||
+        selected.toLowerCase().endsWith('.monitor')) {
+      return '';
+    }
+    return inputs.any((input) => input is Map && input['id'] == selected)
+        ? selected
+        : '';
+  }
+
   /// All protocols share this address-based inventory. Do not merge by name:
   /// different phones can legitimately use the same alias.
   List<ConnectivityDeviceGroup> get deviceGroups {
