@@ -390,9 +390,9 @@ pub mod nusb_backend {
 
     const GOOGLE_VENDOR_ID: u16 = 0x18d1;
     const ACCESSORY_PRODUCT_IDS: [u16; 6] = [0x2d00, 0x2d01, 0x2d02, 0x2d03, 0x2d04, 0x2d05];
-    const ANDROID_PHONE_VENDOR_IDS: [u16; 12] = [
-        0x04e8, 0x0bb4, 0x0fce, 0x1004, 0x12d1, 0x18d1, 0x19d2, 0x22b8, 0x2717, 0x2a70, 0x2d95,
-        0x413c,
+    const ANDROID_PHONE_VENDOR_IDS: [u16; 13] = [
+        0x04e8, 0x0bb4, 0x0fce, 0x1004, 0x12d1, 0x18d1, 0x19d2, 0x22b8, 0x22d9, 0x2717, 0x2a70,
+        0x2d95, 0x413c,
     ];
     #[cfg(target_os = "linux")]
     const CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);

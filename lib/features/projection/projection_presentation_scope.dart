@@ -7,14 +7,18 @@ class ProjectionPresentationScope extends InheritedWidget {
     super.key,
     required this.waiting,
     this.error,
+    this.bottomOverlayHeight = 0,
     required super.child,
   });
   final bool waiting;
   final String? error;
+  final double bottomOverlayHeight;
 
   static ProjectionPresentationScope? of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<ProjectionPresentationScope>();
   @override
   bool updateShouldNotify(ProjectionPresentationScope oldWidget) =>
-      waiting != oldWidget.waiting || error != oldWidget.error;
+      waiting != oldWidget.waiting ||
+      error != oldWidget.error ||
+      bottomOverlayHeight != oldWidget.bottomOverlayHeight;
 }

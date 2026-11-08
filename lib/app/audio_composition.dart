@@ -32,9 +32,10 @@ Future<VehicleAudioControlBridge> registerAudioServices({
   );
   diagnostics.info(
     'audio.backend',
-    audio.current.backendAvailable
-        ? 'Audio backend ready.'
-        : 'Audio backend disabled.',
+    audio.current.failure?.summary ??
+        (audio.current.backendAvailable
+            ? 'Audio backend ready.'
+            : 'Audio backend disabled.'),
   );
 
   final veloce = services.get<VeloceRuntime>();

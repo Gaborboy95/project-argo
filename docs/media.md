@@ -96,6 +96,12 @@ The release launcher defaults to `ARGO_AUDIO_BACKEND=pipewire`; explicit `disabl
 is still respected. Settings → Sound controls the actual default output's volume
 and mute. Volume follows the drag and commits once on release. Host failures are
 visible. Balance/fader/EQ appear only when the backend implements them.
+The saved output is resolved before restoring any levels. An absent or ambiguous
+saved output, or an unavailable desktop audio service, leaves Argo running with an
+actionable Sound error. The saved output remains selected; volume, mute and test
+tone are disabled so they cannot affect a different desktop default. Reconnect
+the output and use Retry, or explicitly select another discovered output. Output
+selection reads its current level without copying an old device's volume/mute.
 
 References: [LIVI AA metadata at b8651d7](https://github.com/f-io/LIVI/blob/b8651d795e5f84871d7454ce25e6ff6fb79e03d5/src/main/services/projection/driver/aa/stack/channels/MediaInfoChannel.ts),
 [BlueZ 5.82 MediaPlayer](https://github.com/bluez/bluez/blob/5.82/doc/org.bluez.MediaPlayer.rst),
@@ -305,6 +311,11 @@ on the real ADC before use. Argo does not add acoustic echo cancellation, noise
 suppression or beamforming. A prepared PipeWire input may provide that processing.
 
 AA uses channel 9, 16 kHz mono signed 16-bit PCM and 20 ms frames. An open request
+may arrive immediately after ChannelOpen without a separate AV setup exchange;
+the sole advertised PCM format remains authoritative. An explicit setup still
+validates the requested codec. Missing/occupied host capture returns a microphone
+OPEN failure while projection continues, and an early close is acknowledged.
+An open request
 succeeds only after capture produces a complete frame. The native session sends
 OPEN response/START and encrypted audio through the existing serialized AA
 transport. A bounded credit window follows the phone's acknowledgements, drops

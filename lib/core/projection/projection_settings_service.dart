@@ -49,6 +49,14 @@ final class ProjectionSettingsService {
   }
 
   void setViewport(double width, double height, double mediaHeight) {
+    if (!width.isFinite ||
+        !height.isFinite ||
+        !mediaHeight.isFinite ||
+        width <= 0 ||
+        height <= 0 ||
+        mediaHeight < 0) {
+      return;
+    }
     final next = (width, height, mediaHeight);
     if (_closed || _viewport == next) return;
     _viewport = next;
@@ -185,13 +193,15 @@ final class ProjectionSettingsService {
     try {
       await persist(settings, value);
       requested = value;
-      await backend!.requestConfiguration(effective);
-      _sentViewport = effective;
+      final sent = effective;
+      await backend!.requestConfiguration(sent);
+      _sentViewport = sent;
     } on Object catch (error) {
       notice = 'Projection preference update failed: $error';
     } finally {
       saving = false;
       _notify();
+      _scheduleViewport();
     }
   }
 

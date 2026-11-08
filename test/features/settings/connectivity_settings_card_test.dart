@@ -2,6 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:argo/core/connectivity/connectivity_preferences.dart';
+import 'package:argo/core/connectivity/device_connection_service.dart';
+import 'package:argo/core/connectivity/device_hub_models.dart';
+import 'package:argo/core/projection/projection_models.dart';
+import 'package:argo/core/projection/projection_types.dart';
+import 'package:argo/features/settings/device_hub_card.dart';
 import 'package:argo/core/settings/app_setting_keys.dart';
 import 'package:argo/core/settings/settings_service.dart';
 import 'package:argo/core/settings/json_file_settings_store.dart';
@@ -12,6 +17,87 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'Devices wrapper delegates the inventory and configuration links without connection commands',
+    (tester) async {
+      final service = _Connectivity()
+        ..state = const ConnectivitySnapshot(
+          available: true,
+          daemonConnected: true,
+          phase: 'idle',
+          adapter: 'hci0',
+          devices: [
+            ConnectivityDevice(
+              'hci0/AA:00:00:00:00:01',
+              'My phone',
+              true,
+              false,
+            ),
+          ],
+        );
+      final hub = _Hub(service);
+      var aaSettings = 0;
+      var cpSettings = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ListView(
+              children: [
+                ConnectivitySettingsCard(
+                  service: service,
+                  deviceConnections: hub,
+                  onAndroidAutoSettings: () => aaSettings++,
+                  onCarPlaySettings: () => cpSettings++,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceHubCard), findsOneWidget);
+      expect(find.text('My phone'), findsOneWidget);
+      expect(find.text('Connect Android Auto'), findsNothing);
+      expect(find.text('Connect CarPlay'), findsNothing);
+      expect(find.text('Use for Android Auto'), findsNothing);
+      expect(service.targets, isEmpty);
+      for (final label in ['Android Auto settings', 'CarPlay settings']) {
+        final link = find.text(label);
+        await tester.ensureVisible(link);
+        await tester.pumpAndSettle();
+        await tester.tap(link);
+        await tester.pumpAndSettle();
+      }
+      expect((aaSettings, cpSettings), (1, 1));
+      expect(service.targets, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await hub.events.close();
+      await service.changes.close();
+    },
+  );
+
+  testWidgets(
+    'missing device coordinator does not resurrect independent protocol controls',
+    (tester) async {
+      final service = _Connectivity();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ConnectivitySettingsCard(service: service)),
+        ),
+      );
+      expect(
+        find.text('Device management is unavailable in this session.'),
+        findsOneWidget,
+      );
+      expect(find.text('Connect Android Auto'), findsNothing);
+      expect(find.text('Connect CarPlay'), findsNothing);
+      expect(service.targets, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await service.changes.close();
+    },
+  );
+
   test(
     'saved band restores without enabling wireless or taking over a network',
     () async {
@@ -62,7 +148,10 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: SingleChildScrollView(
-              child: ConnectivitySettingsCard(service: service),
+              child: ConnectivitySettingsCard(
+                service: service,
+                mode: ConnectivitySettingsMode.androidAuto,
+              ),
             ),
           ),
         ),
@@ -85,35 +174,41 @@ void main() {
   );
 
   testWidgets(
-    'pairing requires a device-scoped decision and expired prompt disappears',
+    'device hub leaves pairing decisions to the global request overlay',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 720);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final service = _Connectivity();
+      final hub = _Hub(service);
       await tester.pumpWidget(
         MaterialApp(
           theme: ThemeData.dark(useMaterial3: true),
           home: Scaffold(
             body: ListView(
-              children: [ConnectivitySettingsCard(service: service)],
+              children: [
+                ConnectivitySettingsCard(
+                  service: service,
+                  deviceConnections: hub,
+                ),
+              ],
             ),
           ),
         ),
       );
       expect(tester.takeException(), isNull);
-      expect(find.textContaining('hci0/02:00:00:00:00:01'), findsOneWidget);
+      expect(find.text('Confirm match'), findsNothing);
+      expect(find.text('Reject'), findsNothing);
       expect(service.decisions, isEmpty);
-      await tester.tap(find.text('Reject'));
-      await tester.pump();
-      expect(service.decisions.single, ('confirm', 42, false));
       service.state = const ConnectivitySnapshot(available: true);
       service.changes.add(service.state);
+      hub.events.add(null);
       await tester.pump();
       expect(find.text('Confirm match'), findsNothing);
       expect(find.textContaining('123456'), findsNothing);
       await tester.pumpWidget(const SizedBox());
+      await hub.events.close();
       await service.changes.close();
     },
   );
@@ -147,4 +242,32 @@ class _Connectivity implements ConnectivityService {
     targets.add((action, target));
     decisions.add((action, prompt, accept));
   }
+}
+
+class _Hub extends Fake implements DeviceConnectionService {
+  _Hub(this.backend);
+  @override
+  final _Connectivity backend;
+  final events = StreamController<void>.broadcast(sync: true);
+  @override
+  Stream<void> get changes => events.stream;
+  @override
+  List<DeviceHubDevice> get devices => buildDeviceInventory(
+    backend.connectivity,
+    const ProjectionSnapshot.disabled(),
+  );
+  @override
+  bool get busy => false;
+  @override
+  String? get error => null;
+  @override
+  String get selectedId => '';
+  @override
+  bool get autoConnect => true;
+  @override
+  ProjectionProtocol? get pairingProtocol => null;
+  @override
+  ConnectivitySnapshot get connectivity => backend.connectivity;
+  @override
+  bool get carPlayAvailable => true;
 }

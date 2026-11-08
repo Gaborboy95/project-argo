@@ -55,10 +55,11 @@ final class ManagedApplication {
         if (command == 'status') {
           client.writeln(
             jsonEncode({
-              'ready':
-                  rendered &&
-                  !_quitting &&
-                  (connectivity?.connectivity.daemonConnected ?? false),
+              // Backend availability belongs in the UI; losing projection
+              // must not make systemd kill a rendered, controllable app.
+              'ready': rendered && !_quitting,
+              'daemonConnected':
+                  connectivity?.connectivity.daemonConnected ?? false,
               'invocation': environment['INVOCATION_ID'],
             }),
           );

@@ -1,0 +1,29 @@
+diff --git a/shell/view/flutter_view.cc b/shell/view/flutter_view.cc
+index 698f6fa..344be63 100644
+--- a/shell/view/flutter_view.cc
++++ b/shell/view/flutter_view.cc
+@@ -596,7 +596,7 @@ bool FlutterView::Initialize() {
+   // notify display update
+   FlutterEngineDisplay display{};
+   display.struct_size = sizeof(FlutterEngineDisplay);
+-  display.display_id = 1;
++  display.display_id = 0;
+   display.single_display = true;
+   display.refresh_rate =
+       m_display->GetRefreshRate(static_cast<uint32_t>(m_index));
+@@ -749,7 +749,7 @@ void FlutterView::UpdateDisplayMetadata() const {
+ 
+   FlutterEngineDisplay display{};
+   display.struct_size = sizeof(FlutterEngineDisplay);
+-  display.display_id = 1;
++  display.display_id = 0;
+   display.single_display = true;
+   display.refresh_rate =
+       m_display->GetRefreshRate(m_wayland_window->GetOutputIndex());
+@@ -922,4 +922,4 @@ void FlutterView::PetWatchdogViaCallback() {
+     m_flutter_engine->PetWatchdogViaCallback();
+   }
+ }
+-#endif
+\ No newline at end of file
++#endif

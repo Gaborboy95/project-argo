@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../shared/argo_components.dart';
+
 import '../../core/projection/projection_settings_service.dart';
 import '../../core/projection/projection_types.dart';
 
@@ -42,6 +44,10 @@ class ProjectionSettingsCard extends StatelessWidget {
                     ? 'Next connection: not yet validated by the daemon'
                     : 'Next connection (validated): ${state.pending}',
               ),
+              if (service.effective.dpi < p.dpi)
+                const Text(
+                  'Portrait scaling is adjusted to improve map touch.',
+                ),
               if (caps == null)
                 const Text(
                   'Saved preferences remain visible. Connect the daemon to edit supported modes.',
@@ -230,7 +236,7 @@ class ProjectionSettingsCard extends StatelessWidget {
                 Text(
                   'Active View Area: ${_describe(state.active!.viewInsets)}; Safe Area: ${_describe(state.active!.safeInsets)}',
                 ),
-              ExpansionTile(
+              ArgoExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: const Text('Technical details'),
                 childrenPadding: const EdgeInsets.symmetric(vertical: 12),
@@ -279,7 +285,7 @@ class ProjectionSettingsCard extends StatelessWidget {
     ProjectionInsets value,
     bool enabled,
     Future<void> Function(ProjectionInsets) save,
-  ) => ExpansionTile(
+  ) => ArgoExpansionTile(
     title: Text(title),
     children: [
       for (final edge in ['Left', 'Top', 'Right', 'Bottom'])

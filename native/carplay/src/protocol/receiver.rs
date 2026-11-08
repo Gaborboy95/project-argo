@@ -40,6 +40,9 @@ pub struct Display {
     pub height_mm: u16,
     pub fps: u16,
     pub right_hand_drive: bool,
+    /// Encoded-pixel margins. Safe insets are relative to the remaining view.
+    pub view_insets: [u16; 4],
+    pub safe_insets: [u16; 4],
 }
 impl Display {
     pub fn validate(&self) -> Result<()> {
@@ -51,7 +54,76 @@ impl Display {
         {
             return Err(Error::Bounds);
         }
+        let [left, top, right, bottom] = self.view_insets.map(u32::from);
+        let width = u32::from(self.width);
+        let height = u32::from(self.height);
+        if left + right + 1 >= width || top + bottom + 1 >= height {
+            return Err(Error::Bounds);
+        }
+        let [sl, st, sr, sb] = self.safe_insets.map(u32::from);
+        if sl + sr >= width - left - right || st + sb >= height - top - bottom {
+            return Err(Error::Bounds);
+        }
         Ok(())
+    }
+
+    /// Keep landscape encoded tiers while negotiating a taller phone UI inside
+    /// them. Never crop arbitrary UI or let a small host window invalidate saved
+    /// minimum safe margins. Prefer even dimensions for native composition.
+    pub fn for_viewport(&self, width: f64, height: f64, overlay: f64) -> Self {
+        if !width.is_finite()
+            || !height.is_finite()
+            || !overlay.is_finite()
+            || width <= 0.0
+            || height <= 0.0
+            || overlay < 0.0
+            || self.validate().is_err()
+        {
+            return self.clone();
+        }
+        let mut result = self.clone();
+        let [left, top, right, bottom] = self.view_insets;
+        let available_w = self.width - left - right;
+        let available_h = self.height - top - bottom;
+        let aspect = width / height;
+        let min_w = u32::from(self.safe_insets[0]) + u32::from(self.safe_insets[2]) + 1;
+        let min_h = u32::from(self.safe_insets[1]) + u32::from(self.safe_insets[3]) + 1;
+        let even = |value: f64, minimum: u32, maximum: u16| {
+            let target = ((value.floor().clamp(2.0, f64::from(maximum)) as u16) & !1)
+                .max(minimum.min(u32::from(maximum)) as u16);
+            target.min(maximum)
+        };
+        if f64::from(available_w) / f64::from(available_h) > aspect {
+            let content = even(f64::from(available_h) * aspect, min_w, available_w);
+            let margin = available_w - content;
+            result.view_insets[0] += margin / 2;
+            result.view_insets[2] += margin - margin / 2;
+        } else {
+            let content = even(f64::from(available_w) / aspect, min_h, available_h);
+            let margin = available_h - content;
+            result.view_insets[1] += margin / 2;
+            result.view_insets[3] += margin - margin / 2;
+        }
+        let crop = result.crop();
+        let content_w = self.width - crop.left - crop.right;
+        let content_h = self.height - crop.top - crop.bottom;
+        let scale = (width / f64::from(content_w)).min(height / f64::from(content_h));
+        let reserve = (overlay / scale)
+            .ceil()
+            .clamp(0.0, f64::from(content_h - self.safe_insets[1] - 1))
+            as u16;
+        result.safe_insets[3] = self.safe_insets[3].max(reserve);
+        result
+    }
+
+    pub fn crop(&self) -> media::Crop {
+        let [left, top, right, bottom] = self.view_insets;
+        media::Crop {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 }
 #[derive(Clone)]
@@ -59,6 +131,7 @@ pub struct Video {
     pub first_frame: watch::Receiver<bool>,
     pub stream: media::VideoStream,
     pub description: media::Description,
+    pub crop: media::Crop,
 }
 #[derive(Clone, Debug)]
 pub enum Command {
@@ -198,7 +271,35 @@ fn touch_descriptor(display: &Display) -> Vec<u8> {
 /// This is a protocol advertisement, not Argo's application version.
 pub const SOURCE_VERSION: &str = "950.7.1";
 
-fn info(display: &Display, identity: &Identity, audio: bool, microphone: bool) -> Value {
+/// AirPlay rectangle origins are absolute encoded-display coordinates. Argo's
+/// safe margins are relative to the view, so add its origin exactly once.
+/// Wire research: LIVI f6bcc810, native/crates/livi-cp/src/info.rs (e053cfd7).
+fn view_area(display: &Display) -> Value {
+    let [left, top, right, bottom] = display.view_insets.map(u64::from);
+    let [sl, st, sr, sb] = display.safe_insets.map(u64::from);
+    let width = u64::from(display.width) - left - right;
+    let height = u64::from(display.height) - top - bottom;
+    dict([
+        ("originXPixels", number(left)),
+        ("originYPixels", number(top)),
+        ("widthPixels", number(width)),
+        ("heightPixels", number(height)),
+        ("viewAreaTransitionControl", Value::Boolean(false)),
+        ("viewAreaSupportsFocusTransfer", Value::Boolean(false)),
+        (
+            "safeArea",
+            dict([
+                ("originXPixels", number(left + sl)),
+                ("originYPixels", number(top + st)),
+                ("widthPixels", number(width - sl - sr)),
+                ("heightPixels", number(height - st - sb)),
+                ("drawUIOutsideSafeArea", Value::Boolean(true)),
+            ]),
+        ),
+    ])
+}
+
+fn info(display: &Display, device_identifier: &str, audio: bool, microphone: bool) -> Value {
     // Native UI initially owns the screen, but no native audio is playing.
     // Do not permanently take mainAudio on startup. Resource ownership follows
     // actual use: https://developer.apple.com/videos/play/wwdc2016/723/.
@@ -225,7 +326,7 @@ fn info(display: &Display, identity: &Identity, audio: bool, microphone: bool) -
         ("statusFlags", number(4)),
         ("model", string("Argo")),
         ("manufacturer", string("Argo")),
-        ("deviceID", string(&identity.identifier)),
+        ("deviceID", string(device_identifier)),
         ("name", string("Argo")),
         ("rightHandDrive", Value::Boolean(display.right_hand_drive)),
         ("keepAliveLowPower", Value::Boolean(false)),
@@ -258,6 +359,8 @@ fn info(display: &Display, identity: &Identity, audio: bool, microphone: bool) -
                 ("maxFPS", number(display.fps as u64)),
                 ("features", number(8)),
                 ("primaryInputDevice", number(1)),
+                ("initialViewArea", number(0)),
+                ("viewAreas", Value::Array(vec![view_area(display)])),
             ])]),
         ),
         (
@@ -419,7 +522,7 @@ impl Outgoing {
     }
 }
 
-/// Run after successful wired iAP2/MFi authentication, bound to the owned phone network.
+/// Run after successful iAP2/MFi authentication, bound to the owned phone network.
 /// State is shared between connections so a paired phone can reconnect to this owner.
 #[derive(Clone, Default)]
 pub struct AudioOptions {
@@ -469,12 +572,37 @@ pub struct AudioInfo {
     pub metrics: super::audio::Metrics,
 }
 
+#[derive(Clone, Copy, Default)]
+pub enum DeviceIdentity {
+    #[default]
+    Pairing,
+    Bluetooth([u8; 6]),
+}
+impl DeviceIdentity {
+    pub(crate) fn identifier(self, pairing: &Identity) -> Result<String> {
+        match self {
+            Self::Pairing => Ok(pairing.identifier.clone()),
+            Self::Bluetooth(address) => {
+                if address == [0; 6] || address == [255; 6] {
+                    return Err(Error::Bounds);
+                }
+                Ok(address
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(":"))
+            }
+        }
+    }
+}
+
 pub struct Receiver {
     pub information: watch::Sender<SessionInfo>,
     pub pairing_directory: Option<std::path::PathBuf>,
     pub audio: Option<AudioOptions>,
     pub display: Display,
     pub identity: Arc<Identity>,
+    pub device_identity: DeviceIdentity,
     pub peers: Arc<Mutex<Peers>>,
     pub link: LinkClient,
 }
@@ -487,6 +615,7 @@ impl Receiver {
         mut commands: mpsc::Receiver<Command>,
     ) -> Result<()> {
         self.display.validate()?;
+        let device_identifier = self.device_identity.identifier(&self.identity)?;
         if self.audio.is_some() && !cfg!(feature = "linux-audio") {
             return Err(Error::Unsupported);
         }
@@ -582,7 +711,7 @@ impl Receiver {
                         authenticated = true; kind = "application/octet-stream";
                     }
                     ("GET"|"POST", "/info") => {
-                        let capabilities = info(&self.display, &self.identity, self.audio.is_some(), self.audio.as_ref().is_some_and(|a|a.input.is_some()));
+                        let capabilities = info(&self.display, &device_identifier, self.audio.is_some(), self.audio.as_ref().is_some_and(|a|a.input.is_some()));
                         let formats = capabilities.as_dictionary().and_then(|d|d.get("audioFormats")).and_then(Value::as_array);
                         let inputs = formats.map_or(0, |formats| formats.iter().filter(|format| format.as_dictionary().is_some_and(|f| f.contains_key("audioInputFormats"))).count());
                         eprintln!("CarPlay capabilities: version={}, audio={}, output_entries={}, input_entries={}", SOURCE_VERSION, self.audio.is_some(), formats.map_or(0,Vec::len), inputs);
@@ -764,19 +893,47 @@ async fn screen(
     video: watch::Sender<Option<Video>>,
     events: mpsc::Sender<Command>,
 ) -> Result<()> {
-    let mut socket = accept(listener, peer).await?;
+    let socket = accept(listener, peer).await?;
+    receive_screen(socket, key, display, session, video, events).await
+}
+
+async fn receive_screen(
+    mut socket: impl tokio::io::AsyncRead + Unpin,
+    key: [u8; 32],
+    display: Display,
+    session: u64,
+    video: watch::Sender<Option<Video>>,
+    events: mpsc::Sender<Command>,
+) -> Result<()> {
     let mut counter = 0u64;
     let (first_frame, _) = watch::channel(false);
     let mut output: Option<media::VideoStream> = None;
     let mut configuration: Option<Vec<u8>> = None;
     let mut nalu_length = 0usize;
     let started = Instant::now();
+    let first_video_deadline = started + Duration::from_secs(30);
+    let mut ready = false;
     let mut last_keyframe_request = started - Duration::from_secs(1);
     loop {
+        // Control traffic, repeated configuration and undecodable deltas must
+        // not indefinitely hold a session that has never produced a picture.
+        if !ready && Instant::now() >= first_video_deadline {
+            return Err(Error::Timeout);
+        }
+        let read_budget = |idle: Duration| {
+            if ready {
+                idle
+            } else {
+                idle.min(first_video_deadline.saturating_duration_since(Instant::now()))
+            }
+        };
         let mut header = [0; 128];
-        timeout(Duration::from_secs(15), socket.read_exact(&mut header))
-            .await
-            .map_err(|_| Error::Timeout)??;
+        timeout(
+            read_budget(Duration::from_secs(15)),
+            socket.read_exact(&mut header),
+        )
+        .await
+        .map_err(|_| Error::Timeout)??;
         let parsed = ScreenHeader::parse(&header).inspect_err(|_| {
             eprintln!(
                 "Screen header rejected: opcode={}, length={}",
@@ -785,9 +942,12 @@ async fn screen(
             );
         })?;
         let mut body = vec![0; parsed.body_length];
-        timeout(Duration::from_secs(3), socket.read_exact(&mut body))
-            .await
-            .map_err(|_| Error::Timeout)??;
+        timeout(
+            read_budget(Duration::from_secs(3)),
+            socket.read_exact(&mut body),
+        )
+        .await
+        .map_err(|_| Error::Timeout)??;
         match parsed.kind {
             ScreenKind::Ignore => continue,
             ScreenKind::CodecConfiguration => {
@@ -819,6 +979,7 @@ async fn screen(
                     first_frame: first_frame.subscribe(),
                     stream: stream.clone(),
                     description,
+                    crop: display.crop(),
                 }));
                 output = Some(stream);
             }
@@ -836,6 +997,7 @@ async fn screen(
                     .publish(&plain, started.elapsed().as_nanos() as u64, keyframe)
                     .map_err(|_| Error::Malformed)?;
                 if !matches!(outcome, media::PublishOutcome::NeedKeyframe) {
+                    ready = true;
                     first_frame.send_replace(true);
                 }
                 if matches!(outcome, media::PublishOutcome::NeedKeyframe)
@@ -1118,6 +1280,58 @@ mod tests {
             height_mm: 112,
             fps: 30,
             right_hand_drive: false,
+            view_insets: [0; 4],
+            safe_insets: [0; 4],
+        }
+    }
+
+    #[test]
+    fn portrait_view_and_safe_area_use_encoded_origins_once() {
+        let fitted = display().for_viewport(600.0, 680.0, 64.0);
+        fitted.validate().unwrap();
+        assert_eq!(fitted.view_insets, [323, 0, 323, 0]);
+        assert_eq!(fitted.safe_insets, [0, 0, 0, 68]);
+        let area = view_area(&fitted);
+        let area = area.as_dictionary().unwrap();
+        assert_eq!(area["widthPixels"].as_unsigned_integer(), Some(634));
+        assert_eq!(area["heightPixels"].as_unsigned_integer(), Some(720));
+        assert_eq!(area["originXPixels"].as_unsigned_integer(), Some(323));
+        let safe = area["safeArea"].as_dictionary().unwrap();
+        assert_eq!(safe["originXPixels"].as_unsigned_integer(), Some(323));
+        assert_eq!(safe["heightPixels"].as_unsigned_integer(), Some(652));
+
+        let mut manual = display();
+        manual.view_insets = [10, 20, 12, 22];
+        manual.safe_insets = [5, 6, 7, 8];
+        let area = view_area(&manual);
+        let safe = area.as_dictionary().unwrap()["safeArea"]
+            .as_dictionary()
+            .unwrap();
+        assert_eq!(safe["originXPixels"].as_unsigned_integer(), Some(15));
+        assert_eq!(safe["originYPixels"].as_unsigned_integer(), Some(26));
+        assert_eq!(safe["widthPixels"].as_unsigned_integer(), Some(1246));
+        assert_eq!(safe["heightPixels"].as_unsigned_integer(), Some(664));
+    }
+
+    #[test]
+    fn resized_view_preserves_valid_manual_margins_without_panicking() {
+        let mut manual = display();
+        manual.safe_insets = [300, 50, 300, 80];
+        for (width, height, overlay) in [
+            (800.0, 498.0, 48.0),
+            (600.0, 680.0, 64.0),
+            (1.0, 1000.0, 999.0),
+            (1000.0, 1.0, 1.0),
+        ] {
+            let fitted = manual.for_viewport(width, height, overlay);
+            fitted.validate().unwrap();
+            assert!(fitted.safe_insets[3] >= 80);
+            assert_eq!(fitted.safe_insets[0], 300);
+            assert_eq!(fitted.safe_insets[2], 300);
+        }
+        for view in [[1280, 0, 0, 0], [0, 0, 0, 720]] {
+            manual.view_insets = view;
+            assert!(manual.validate().is_err());
         }
     }
     #[cfg(feature = "linux-audio")]
@@ -1191,14 +1405,14 @@ mod tests {
     #[test]
     fn output_capabilities_advertise_only_implemented_formats() {
         let identity = Identity::generate("fixture".into()).unwrap();
-        let disabled = info(&display(), &identity, false, false);
+        let disabled = info(&display(), &identity.identifier, false, false);
         assert!(
             !disabled
                 .as_dictionary()
                 .unwrap()
                 .contains_key("audioFormats")
         );
-        let enabled = info(&display(), &identity, true, false);
+        let enabled = info(&display(), &identity.identifier, true, false);
         let fields = enabled.as_dictionary().unwrap();
         let formats = fields["audioFormats"].as_array().unwrap();
         assert_eq!(formats.len(), 9);
@@ -1225,7 +1439,7 @@ mod tests {
     #[test]
     fn capture_capability_is_limited_to_explicit_pcm_voice_support() {
         let identity = Identity::generate("fixture".into()).unwrap();
-        let enabled = info(&display(), &identity, true, true);
+        let enabled = info(&display(), &identity.identifier, true, true);
         let formats = enabled.as_dictionary().unwrap()["audioFormats"]
             .as_array()
             .unwrap();
@@ -1264,6 +1478,7 @@ mod tests {
             audio: None,
             display: display(),
             identity: Arc::new(Identity::generate("fixture".into()).unwrap()),
+            device_identity: DeviceIdentity::Pairing,
             peers: Arc::new(Mutex::new(Peers::default())),
             link: LinkClient::new(crate::link::LinkConfig::default()).unwrap(),
         };
@@ -1275,6 +1490,30 @@ mod tests {
         assert_eq!(task.await.unwrap(), Err(Error::Unsupported));
         assert!(view.borrow().is_none());
         assert_eq!(phone.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn wireless_info_uses_controller_identity_without_replacing_pairing_keys() {
+        let identity = Identity::generate("persistent-pairing-identity".into()).unwrap();
+        let key = identity.public_key().unwrap();
+        let wired = DeviceIdentity::Pairing.identifier(&identity).unwrap();
+        let wireless = DeviceIdentity::Bluetooth([2, 0, 0, 0, 0, 7])
+            .identifier(&identity)
+            .unwrap();
+        assert_eq!(wired, "persistent-pairing-identity");
+        assert_eq!(wireless, "02:00:00:00:00:07");
+        let capabilities = info(&display(), &wireless, false, false);
+        assert_eq!(
+            capabilities.as_dictionary().unwrap()["deviceID"].as_string(),
+            Some(wireless.as_str())
+        );
+        assert_eq!(identity.identifier, wired);
+        assert_eq!(identity.public_key().unwrap(), key);
+        assert!(
+            DeviceIdentity::Bluetooth([0; 6])
+                .identifier(&identity)
+                .is_err()
+        );
     }
     #[tokio::test]
     async fn interleaved_touch_does_not_cancel_partial_event_ciphertext() {
@@ -1392,5 +1631,98 @@ mod tests {
         );
         media.abort();
         let _ = media.await;
+    }
+
+    async fn screen_packet(phone: &mut tokio::io::DuplexStream, kind: u8, body: &[u8]) {
+        let mut header = [0u8; 128];
+        header[..4].copy_from_slice(&(body.len() as u32).to_le_bytes());
+        header[4] = kind;
+        phone.write_all(&header).await.unwrap();
+        phone.write_all(body).await.unwrap();
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn screen_startup_traffic_cannot_extend_the_first_picture_deadline() {
+        let config = [1, 66, 0, 30, 255, 225, 0, 2, 0x67, 1, 1, 0, 2, 0x68, 1];
+        for traffic in 0..3 {
+            let (host, mut phone) = tokio::io::duplex(4096);
+            let (video, view) = watch::channel(None);
+            let (events, _events_rx) = mpsc::channel(16);
+            let task = tokio::spawn(receive_screen(host, [8; 32], display(), 5, video, events));
+            if traffic != 0 {
+                screen_packet(&mut phone, 1, &config).await;
+            } else {
+                screen_packet(&mut phone, 1, &[]).await;
+            }
+            for counter in 0u64..5 {
+                tokio::time::advance(Duration::from_secs(5)).await;
+                match traffic {
+                    0 => screen_packet(&mut phone, 2, &[]).await,
+                    1 => screen_packet(&mut phone, 1, &config).await,
+                    _ => {
+                        let mut header = [0; 128];
+                        header[..4].copy_from_slice(&22u32.to_le_bytes());
+                        let mut nonce = [0; 12];
+                        nonce[4..].copy_from_slice(&counter.to_le_bytes());
+                        let delta =
+                            pairing::seal(&[8; 32], &nonce, &header, &[0, 0, 0, 2, 0x41, 1])
+                                .unwrap();
+                        screen_packet(&mut phone, 0, &delta).await;
+                    }
+                }
+                assert!(!task.is_finished());
+                assert!(
+                    view.borrow()
+                        .as_ref()
+                        .is_none_or(|v| !*v.first_frame.borrow())
+                );
+            }
+            tokio::time::advance(Duration::from_secs(4)).await;
+            // A partial body just before expiry must also keep the absolute
+            // deadline, rather than acquiring a fresh three-second read budget.
+            let mut header = [0; 128];
+            header[..4].copy_from_slice(&(config.len() as u32).to_le_bytes());
+            header[4] = 1;
+            phone.write_all(&header).await.unwrap();
+            phone.write_all(&config[..1]).await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(2)).await;
+            assert_eq!(task.await.unwrap(), Err(Error::Timeout));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_usable_keyframe_finishes_the_startup_deadline() {
+        let (host, mut phone) = tokio::io::duplex(4096);
+        let (video, mut view) = watch::channel(None);
+        let (events, _events_rx) = mpsc::channel(16);
+        let task = tokio::spawn(receive_screen(host, [8; 32], display(), 5, video, events));
+        let config = [1, 66, 0, 30, 255, 225, 0, 2, 0x67, 1, 1, 0, 2, 0x68, 1];
+        screen_packet(&mut phone, 1, &config).await;
+        let mut first = view
+            .wait_for(|v| v.is_some())
+            .await
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .first_frame
+            .clone();
+        for _ in 0..5 {
+            tokio::time::advance(Duration::from_secs(5)).await;
+            screen_packet(&mut phone, 2, &[]).await;
+        }
+        let mut header = [0; 128];
+        header[..4].copy_from_slice(&22u32.to_le_bytes());
+        let frame = pairing::seal(&[8; 32], &[0; 12], &header, &[0, 0, 0, 2, 0x65, 1]).unwrap();
+        screen_packet(&mut phone, 0, &frame).await;
+        first.wait_for(|ready| *ready).await.unwrap();
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_secs(5)).await;
+            screen_packet(&mut phone, 2, &[]).await;
+            assert!(!task.is_finished());
+        }
+        task.abort();
+        let _ = task.await;
     }
 }

@@ -3,7 +3,7 @@ use crate::protocol::{
     receiver::{Command, SessionInfo, Video},
     wired,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use tokio::{
@@ -13,6 +13,20 @@ use tokio::{
     task::JoinSet,
     time::timeout,
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionTransport {
+    #[default]
+    Usb,
+    Wireless,
+}
+
+impl SessionTransport {
+    pub fn is_usb(&self) -> bool {
+        *self == Self::Usb
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -77,6 +91,7 @@ pub struct Control {
     pub wired: watch::Receiver<wired::State>,
     pub commands: mpsc::Sender<Command>,
     pub disconnect: watch::Sender<bool>,
+    pub transport: SessionTransport,
     presentation: Mutex<Presentation>,
 }
 impl Control {
@@ -89,6 +104,29 @@ impl Control {
         commands: mpsc::Sender<Command>,
         disconnect: watch::Sender<bool>,
     ) -> Self {
+        Self::new_with_transport(
+            session,
+            device_id,
+            video,
+            information,
+            wired,
+            commands,
+            disconnect,
+            SessionTransport::Usb,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_transport(
+        session: u64,
+        device_id: String,
+        video: watch::Receiver<Option<Video>>,
+        information: watch::Receiver<SessionInfo>,
+        wired: watch::Receiver<wired::State>,
+        commands: mpsc::Sender<Command>,
+        disconnect: watch::Sender<bool>,
+        transport: SessionTransport,
+    ) -> Self {
         Self {
             session,
             device_id,
@@ -97,6 +135,7 @@ impl Control {
             wired,
             commands,
             disconnect,
+            transport,
             presentation: Mutex::new(Presentation::default()),
         }
     }
@@ -148,10 +187,10 @@ impl Control {
                 let information = self.information.borrow().clone();
                 let video=self.video.borrow().as_ref().map(|video|{
                     let d=video.description;
-                    json!({"id":"main","width":d.width,"height":d.height,"fps":d.fps_num/d.fps_den,"codec":if d.codec==crate::media::Codec::H264{"h264"}else{"hevc"},"first_frame":*video.first_frame.borrow(),"presentation_revision":presentation.revision,"native_parameters":d.view_parameters(Default::default()).ok().map(|b|b.to_vec())})
+                    json!({"id":"main","width":d.width,"height":d.height,"fps":d.fps_num/d.fps_den,"codec":if d.codec==crate::media::Codec::H264{"h264"}else{"hevc"},"first_frame":*video.first_frame.borrow(),"presentation_revision":presentation.revision,"native_parameters":d.view_parameters(video.crop).ok().map(|b|b.to_vec())})
                 });
                 return Ok(
-                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck}),
+                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"transport":self.transport,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck}),
                 );
             }
             Request::Activate { .. } => {
@@ -207,10 +246,11 @@ impl Control {
                     presentation.pointers.clear();
                 } else {
                     let video = self.video.borrow();
-                    let description = video
+                    let video = video
                         .as_ref()
-                        .ok_or_else(|| io::Error::other("video not ready"))?
-                        .description;
+                        .ok_or_else(|| io::Error::other("video not ready"))?;
+                    let description = video.description;
+                    let crop = video.crop;
                     let slot = match phase {
                         Phase::Down => {
                             if presentation.pointers.contains_key(&pointer) {
@@ -231,8 +271,12 @@ impl Control {
                     let command = Command::Touch {
                         slot,
                         down,
-                        x: (x * description.width as f64).round() as u16,
-                        y: (y * description.height as f64).round() as u16,
+                        x: crop.left
+                            + (x * f64::from(description.width - crop.left - crop.right)).round()
+                                as u16,
+                        y: crop.top
+                            + (y * f64::from(description.height - crop.top - crop.bottom)).round()
+                                as u16,
                     };
                     if down {
                         self.command(command)?;
@@ -352,6 +396,7 @@ mod tests {
         };
         let video = Video {
             description,
+            crop: Default::default(),
             first_frame: watch::channel(true).1,
             stream: VideoStream::new(description, &[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 1])
                 .unwrap(),
@@ -378,6 +423,49 @@ mod tests {
             phase,
             x: 0.5,
             y: 0.5,
+        }
+    }
+
+    #[tokio::test]
+    async fn portrait_crop_matches_native_metadata_and_full_display_touch_axes() {
+        let (mut control, mut received) = fixture(8);
+        let mut video = control.video.borrow().clone().unwrap();
+        video.crop = crate::media::Crop {
+            left: 50,
+            top: 20,
+            right: 40,
+            bottom: 30,
+        };
+        control.video = watch::channel(Some(video)).1;
+        control
+            .request(Request::Activate { session: 7 })
+            .await
+            .unwrap();
+        assert!(matches!(received.recv().await, Some(Command::Keyframe)));
+        let status = control.request(Request::Status).await.unwrap();
+        let params = status["video"]["native_parameters"].as_array().unwrap();
+        assert_eq!(
+            params[32..40],
+            [0, 50, 0, 20, 0, 40, 0, 30].map(Value::from)
+        );
+        for (phase, x, y, expected) in [
+            (Phase::Down, 0.0, 0.0, (50, 20)),
+            (Phase::Up, 1.0, 1.0, (760, 450)),
+        ] {
+            control
+                .request(Request::Touch {
+                    session: 7,
+                    pointer: 42,
+                    phase,
+                    x,
+                    y,
+                })
+                .await
+                .unwrap();
+            match received.recv().await.unwrap() {
+                Command::Touch { x, y, .. } => assert_eq!((x, y), expected),
+                _ => panic!("expected cropped display touch"),
+            }
         }
     }
 

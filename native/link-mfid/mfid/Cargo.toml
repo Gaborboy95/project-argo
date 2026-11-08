@@ -1,0 +1,9 @@
+[package]
+name = "argo-mfi-physical"
+version = "0.1.1"
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+iap2-mfi = { path = "../iap2-mfi" }

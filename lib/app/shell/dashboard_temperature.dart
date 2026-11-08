@@ -194,11 +194,16 @@ class ClimateTemperatureControl extends StatelessWidget {
     required this.side,
     required this.scale,
     this.onTap,
+    this.compact = false,
   });
   final ClimateService? service;
   final String zone, side;
   final double scale;
   final VoidCallback? onTap;
+
+  /// Compact docks open the full climate panel instead of shrinking three
+  /// separate adjustment targets into one short row.
+  final bool compact;
   @override
   Widget build(BuildContext context) => StreamBuilder<ClimateSnapshot>(
     stream: service?.changes,
@@ -215,22 +220,72 @@ class ClimateTemperatureControl extends StatelessWidget {
               style: TextStyle(fontSize: 9, letterSpacing: 1),
             ),
           Expanded(
-            child: DashboardTemperature(
-              side: side,
-              value: value.displayed,
-              range: range,
-              pending: value.pending,
-              failure: value.failure,
-              onChange: range == null
-                  ? null
-                  : (v) => service!.requestTemperature(zone, v),
-              onImmediate: range == null
-                  ? null
-                  : (v) =>
-                        service!.requestTemperature(zone, v, immediate: true),
-              onTap: range == null ? null : onTap,
-              scale: scale,
-            ),
+            child: compact
+                ? Semantics(
+                    button: true,
+                    enabled: range != null && onTap != null,
+                    label: '$side temperature',
+                    value: value.displayed == null
+                        ? 'Unknown'
+                        : '${value.displayed!.toStringAsFixed(1)} degrees',
+                    child: InkWell(
+                      key: ValueKey('temperature-$side'),
+                      onTap: range == null ? null : onTap,
+                      child: Center(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                value.displayed == null
+                                    ? '--'
+                                    : '${value.displayed!.toStringAsFixed(1)}°',
+                                maxLines: 1,
+                                style: TextStyle(
+                                  fontSize: 24 * scale,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (value.pending)
+                                const SizedBox(
+                                  width: 48,
+                                  child: LinearProgressIndicator(minHeight: 2),
+                                ),
+                              if (value.failure != null)
+                                Tooltip(
+                                  message: value.failure!,
+                                  child: Icon(
+                                    Icons.error_outline,
+                                    size: 16,
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : DashboardTemperature(
+                    side: side,
+                    value: value.displayed,
+                    range: range,
+                    pending: value.pending,
+                    failure: value.failure,
+                    onChange: range == null
+                        ? null
+                        : (v) => service!.requestTemperature(zone, v),
+                    onImmediate: range == null
+                        ? null
+                        : (v) => service!.requestTemperature(
+                            zone,
+                            v,
+                            immediate: true,
+                          ),
+                    onTap: range == null ? null : onTap,
+                    scale: scale,
+                  ),
           ),
         ],
       );

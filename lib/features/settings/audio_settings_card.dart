@@ -26,9 +26,22 @@ class AudioSettingsCard extends StatelessWidget {
             children: [
               const ArgoSection(title: 'Sound', children: []),
               const SizedBox(height: 8),
-              Text(
-                s.backendAvailable ? 'System audio output' : 'Host audio is unavailable. Check the desktop audio service, then retry.',
-              ),
+              if (s.failure case final failure?)
+                ArgoStatusPanel(
+                  status: ArgoStatus.failed,
+                  summary: failure.summary,
+                  failure: failure,
+                  onRetry: failure.retryable
+                      ? () => _run(
+                          context,
+                          () => audio.selectOutput(s.selectedOutput),
+                        )
+                      : null,
+                )
+              else
+                Text(
+                  s.backendAvailable ? 'System audio output' : 'Host audio is unavailable. Check the desktop audio service, then retry.',
+                ),
               if (audio.outputSetup case final setup?)
                 AudioOutputSetupCard(audio: audio, setup: setup),
               const SizedBox(height: 20),

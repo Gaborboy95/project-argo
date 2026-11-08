@@ -28,6 +28,7 @@ IHS_FILES = ('bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_vie
 COMMON = {'ARGO_AUDIO_BACKEND', 'ARGO_PROJECTION_BACKEND', 'ARGO_PROJECTION_LOG_LEVEL',
           'ARGO_HOST_POWER_BACKEND', 'ARGO_MODE', 'ARGO_VEHICLE_PROFILE',
           'ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS', 'ARGO_PROJECTION_RENDER_TEST',
+          'ARGO_PROJECTION_INPUT_DIAGNOSTICS',
           'ARGO_CARPLAY_DIAGNOSTICS', 'ARGO_CAMERA_BACKEND'}
 DAEMON = {'ARGO_ANDROID_AUTO_CERT_FILE', 'ARGO_ANDROID_AUTO_KEY_FILE',
           'ARGO_ANDROID_AUTO_HEVC', 'ARGO_ANDROID_AUTO_PROTOCOL_VERSION'}
@@ -78,7 +79,7 @@ def carplay_arguments(configuration, manifest):
         return []
     if manifest.get('carplay_wired') != 1 or manifest.get('projection_media_contract') != 1:
         raise ValueError('Wired CarPlay requires a matched receiver and media contract')
-    arguments = ['--wired']
+    arguments = ['--receiver' if manifest.get('carplay_wireless') == 1 else '--wired']
     for name, lower, upper in [('width', 320, 1920), ('height', 240, 1080),
                                ('width_mm', 50, 1000), ('height_mm', 30, 1000)]:
         value = configuration.get(name)
@@ -139,10 +140,14 @@ class Deployment:
             raise ValueError('Windowed display requires explicit width and height')
         return value
 
-    def ihs(self):
-        prefix = Path(self.settings()['ihs_prefix'])
-        if not prefix.is_absolute():
+    def ihs(self, manifest=None):
+        configured = (manifest['ihs_prefix'] if manifest is not None and 'ihs_prefix' in manifest
+                      else self.settings()['ihs_prefix'])
+        if not isinstance(configured, str) or not Path(configured).is_absolute():
             raise ValueError('IHS prefix must be absolute')
+        prefix = Path(configured)
+        if not prefix.is_dir():
+            raise ValueError('IHS prefix must be an existing directory')
         for file in IHS_FILES:
             if not (prefix / file).is_file():
                 raise ValueError('Missing IHS file: ' + file)
@@ -164,6 +169,10 @@ class Deployment:
                 manifest.get('carplay_wired') != 1 or manifest.get('carplay_control') != 1
                 or manifest.get('projection_media_contract') != 1):
             raise ValueError('Invalid wired CarPlay release contract')
+        if manifest.get('carplay_wireless') is not None and (
+                manifest.get('carplay_wireless') != 1 or manifest.get('carplay_wired') != 1
+                or manifest.get('projection_media_contract') != 1):
+            raise ValueError('Invalid wireless CarPlay release contract')
         if manifest.get('projection_media_contract') not in (None, 1):
             raise ValueError('Unsupported projection media contract')
         camera = [(bundle / f).is_file() for f in ('bin/argo-camerad', 'lib/libargo_camera_view.so')]
@@ -183,9 +192,11 @@ class Deployment:
             if manifest.get('camera_contract') is not None and (manifest['camera_contract'] != 1 or not all(camera)):
                 raise ValueError('Invalid camera contract or missing camera assets')
         if manifest.get('package_runtime') == 1:
+            if 'ihs_prefix' in manifest:
+                raise ValueError('Packaged runtime uses bundled IHS, not an external ihs_prefix')
             ihs = {name: digest(bundle / name) for name in ('bin/homescreen', 'lib/libihs_shared.so')}
         else:
-            _, ihs = self.ihs()
+            _, ihs = self.ihs(manifest)
         if manifest.get('ihs_sha256') != ihs:
             raise ValueError('Installed IHS differs from the recorded matched build')
         hashes = manifest['sha256']
@@ -243,12 +254,13 @@ class Deployment:
         print(target)
         return target
 
-    def systemctl(self, *args, check=True):
+    def systemctl(self, *args, check=True, timeout=125):
         return subprocess.run(['systemctl', '--user', *args], check=check,
-                              text=True, capture_output=True, timeout=125)
+                              text=True, capture_output=True, timeout=timeout)
 
-    def status(self, unit):
-        result = self.systemctl('show', unit, '--property=LoadState,ActiveState,SubState,Result,MainPID', check=False)
+    def status(self, unit, timeout=125):
+        result = self.systemctl('show', unit, '--property=LoadState,ActiveState,SubState,Result,MainPID,InvocationID,ExecMainStatus',
+                                check=False, timeout=timeout)
         return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
 
     def active(self):
@@ -346,6 +358,28 @@ class Deployment:
     def marker(self, role):
         return self.state / (role + '.json')
 
+    def session_environment(self, role, managed):
+        environment = dict(os.environ)
+        if role != 'app':
+            # Receivers use D-Bus/PipeWire, not the compositor. The user manager
+            # can start them before Plasma imports WAYLAND_DISPLAY.
+            return environment
+        required = ('WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS')
+        deadline = time.monotonic() + (20 if managed else 0)
+        while not all(environment.get(key) for key in required):
+            if not managed or time.monotonic() >= deadline:
+                raise ValueError('Run in KDE Wayland; graphical login must import its environment into systemd --user')
+            # The manager snapshots an ExecStart environment before Plasma's
+            # import. Read only the session keys that may arrive after that.
+            result = self.systemctl('show-environment', check=False)
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition('=')
+                if separator and key in required and value:
+                    environment[key] = value
+            if not all(environment.get(key) for key in required):
+                time.sleep(0.1)
+        return environment
+
     def recover_guard(self, previous_boot=False):
         marker = self.state / 'firewall-owned.json'
         if not marker.exists() and not marker.is_symlink():
@@ -387,10 +421,24 @@ class Deployment:
             raise RuntimeError('Prior projection guard recovery failed; marker retained: ' + str(error)) from error
 
     def launch(self, role, managed=True):
-        if not os.environ.get('WAYLAND_DISPLAY') or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
-            raise ValueError('Run in KDE Wayland; graphical login must import its environment into systemd --user')
-        if managed and self.status('graphical-session.target').get('ActiveState') != 'active':
-            raise ValueError('No active graphical session')
+        if managed:
+            graphical = self.status('graphical-session.target', timeout=1).get('ActiveState')
+            starting_in_session = False
+            if graphical == 'activating':
+                # Wanted services run while their target is still activating.
+                # Admit only this role unit's actual ExecStart process, not a
+                # manual _run inheriting an unrelated desktop invocation ID.
+                unit = {'app': 'argo-app.service', 'daemon': 'argo-projectiond.service', 'carplay': CARPLAY_UNIT}[role]
+                service = self.status(unit, timeout=1)
+                invocation = os.environ.get('INVOCATION_ID')
+                starting_in_session = (bool(invocation)
+                                       and service.get('InvocationID') == invocation
+                                       and service.get('MainPID') == str(os.getpid())
+                                       and service.get('ActiveState') in ('activating', 'active'))
+            if graphical != 'active' and not starting_in_session:
+                raise ValueError('No active graphical session')
+        process_environment = self.session_environment(role, managed)
+        boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         with self.lock('selection'):
             bundle = self.current.resolve(strict=True)
             manifest = self.validate(bundle)
@@ -403,14 +451,15 @@ class Deployment:
             if role != 'carplay':
                 self.recover_guard(previous_boot=managed and role == 'daemon')
             if managed:
-                save(self.marker(role), {'result': 'running', 'invocation': os.environ['INVOCATION_ID'],
-                                         'release': str(bundle)})
+                previous = read(self.marker(role)) if self.marker(role).exists() else {}
+                if previous.get('boot_id') == boot_id and previous.get('result') != 'clean':
+                    raise RuntimeError(role + ' prior cleanup is unconfirmed; inspect journal before restarting')
         configuration = self.settings()
         carplay_path = self.config / 'carplay.json'
         carplay_args = (carplay_arguments(read(carplay_path) if carplay_path.exists() else {}, manifest)
                         if manifest.get('carplay_wired') == 1 else [])
         # No ambient ARGO/loader options or daemon identity can leak into the app.
-        env = {k: v for k, v in os.environ.items() if not k.startswith(('ARGO_', 'VELOCE_', 'LD_'))}
+        env = {k: v for k, v in process_environment.items() if not k.startswith(('ARGO_', 'VELOCE_', 'LD_'))}
         env.update({'ARGO_MODE': 'production', 'ARGO_PROJECTION_BACKEND': 'android-auto',
                     'ARGO_AUDIO_BACKEND': 'pipewire', 'ARGO_HOST_POWER_BACKEND': 'disabled'})
         env.update(configuration.get('environment', {}))
@@ -445,7 +494,7 @@ class Deployment:
                     raise RuntimeError('Projection socket still has a live owner')
             command = [str(bundle / 'bin/argo-projectiond')]
         else:
-            prefix, _ = self.ihs()
+            prefix, _ = self.ihs(manifest)
             env['LD_LIBRARY_PATH'] = str(prefix / 'lib') + ':' + str(bundle / 'lib')
             env['ARGO_PROJECTION_VIEW_LIBRARY'] = str(bundle / 'lib/libargo_projection_view.so')
             env['VELOCE_LUA_LIBRARY'] = str(bundle / 'lib/libveloce_lua_native.so')
@@ -454,7 +503,17 @@ class Deployment:
                 env['ARGO_MANAGED_SOCKET'] = str(runtime / 'application.sock')
             command = [str(prefix / 'bin/homescreen'), '-b', str(bundle), '--backend', 'wayland-egl',
                        *self.display_arguments(configuration)]
-        os.execve(command[0], command, env)
+        if managed:
+            record = {'result': 'running', 'invocation': os.environ['INVOCATION_ID'],
+                      'release': str(bundle), 'boot_id': boot_id}
+            save(self.marker(role), record)
+        try:
+            os.execve(command[0], command, env)
+        except OSError:
+            # exec failed before any receiver/app resources were acquired.
+            if managed:
+                save(self.marker(role), {**record, 'result': 'clean'})
+            raise
 
     @staticmethod
     def display_arguments(configuration):
@@ -485,11 +544,52 @@ class Deployment:
 
     def ready(self, role):
         deadline = time.monotonic() + (30 if role == 'app' else 20)
+        ipc = read(self.current / 'argo-release.json')['ipc'] if role == 'daemon' else None
+        invocation = os.environ.get('INVOCATION_ID')
+        unit = {'app': 'argo-app.service', 'daemon': 'argo-projectiond.service', 'carplay': CARPLAY_UNIT}[role]
+
+        def main_running():
+            if not invocation:
+                return True  # Manual diagnostic probes do not own a service invocation.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                state = self.status(unit, timeout=min(1, remaining))
+            except (OSError, subprocess.SubprocessError):
+                return False  # A failed manager query is not evidence of process exit.
+            current_invocation = state.get('InvocationID')
+            if current_invocation and current_invocation != invocation:
+                raise RuntimeError(role + ' invocation changed before readiness; obsolete probe stopped')
+            if current_invocation != invocation:
+                return False
+            pid = state.get('MainPID', '')
+            if pid == '0':
+                raise RuntimeError(role + ' main process exited before readiness (status ' +
+                                   state.get('ExecMainStatus', 'unknown') + '); inspect its journal')
+            return pid.isdecimal() and int(pid) > 0
+
+        def receive_exact(client, size):
+            result = b''
+            while len(result) < size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('Readiness response deadline')
+                client.settimeout(min(1, remaining))
+                chunk = client.recv(size - len(result))
+                if not chunk:
+                    raise ValueError('Readiness probe EOF')
+                result += chunk
+            return result
+
         while time.monotonic() < deadline:
+            if not main_running():
+                time.sleep(0.1)
+                continue
             try:
                 if role == 'app':
                     reply = self.app_request('status')
-                    if reply and reply.get('ready') and reply.get('invocation') == os.environ.get('INVOCATION_ID'):
+                    if reply and reply.get('ready') and reply.get('invocation') == invocation and main_running():
                         return
                 elif role == 'carplay':
                     with socket.socket(socket.AF_UNIX) as client:
@@ -511,7 +611,7 @@ class Deployment:
                             if (isinstance(health, dict) and type(health.get('contract')) is int
                                     and health['contract'] == 1
                                     and health.get('implementation') == 'diagnostics-only'
-                                    and health.get('session_validated') is False):
+                                    and health.get('session_validated') is False and main_running()):
                                 return
                 else:
                     with socket.socket(socket.AF_UNIX) as client:
@@ -519,22 +619,13 @@ class Deployment:
                         client.connect(str(self.runtime() / 'projection.sock'))
                         # Non-Hello request proves the IPC loop responds without
                         # acquiring the app's exclusive client/session lease.
-                        client.sendall(struct.pack('>IHHI', 0x4152474f, 6, 65535, 0))
-                        header = b''
-                        while len(header) < 12:
-                            chunk = client.recv(12 - len(header))
-                            if not chunk:
-                                raise ValueError('Readiness probe EOF')
-                            header += chunk
+                        client.sendall(struct.pack('>IHHI', 0x4152474f, ipc, 65535, 0))
+                        header = receive_exact(client, 12)
                         magic, version, kind, size = struct.unpack('>IHHI', header)
-                        if magic == 0x4152474f and version in (6, 7) and kind == 6 and 0 < size <= 4096:
-                            payload = b''
-                            while len(payload) < size:
-                                chunk = client.recv(size - len(payload))
-                                if not chunk:
-                                    raise ValueError('Incomplete readiness response')
-                                payload += chunk
-                            return
+                        if magic == 0x4152474f and version == ipc and kind == 6 and 0 < size <= 4096:
+                            receive_exact(client, size)
+                            if main_running():
+                                return
             except (OSError, ValueError):
                 pass
             time.sleep(0.1)  # bounded probe cadence, never used as readiness evidence
@@ -561,6 +652,10 @@ class Deployment:
         marker = self.marker(role)
         result = read(marker) if marker.exists() else {}
         if result.get('invocation') == os.environ.get('INVOCATION_ID') and result.get('result') == 'clean':
+            return
+        if result.get('invocation') != os.environ.get('INVOCATION_ID'):
+            # A rejected pre-exec launch owns no resources and must not overwrite
+            # the preceding invocation's cleanup evidence.
             return
         save(marker, {**result, 'result': 'unconfirmed'})
         raise RuntimeError(role + ' exited without confirmed cleanup; inspect journal (a crash/forced kill is not a clean stop)')

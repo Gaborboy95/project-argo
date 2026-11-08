@@ -12,6 +12,7 @@ import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
 import 'package:argo/app/shell/app_shell.dart';
 import 'package:argo/app/shell/dashboard_panel.dart';
+import 'package:argo/app/shell/dashboard_geometry.dart';
 import 'package:argo/core/services/service_registry.dart';
 import 'package:argo/core/settings/app_setting_keys.dart';
 import 'package:argo/core/settings/settings_service.dart';
@@ -20,6 +21,111 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('portrait allocates a tall projection and a bounded media strip', () {
+    for (final size in [
+      const Size(768, 1024),
+      const Size(600, 800),
+      const Size(320, 426),
+      const Size(1200, 1600),
+    ]) {
+      final geometry = DashboardGeometry(size);
+      expect(geometry.closedMediaHeight, 96);
+      expect(geometry.primaryHeight, greaterThan(size.width * 9 / 16));
+      expect(geometry.dockHeight, lessThanOrEqualTo(160));
+      expect(
+        geometry.primaryHeight +
+            geometry.closedMediaHeight +
+            2 * DashboardGeometry.mediaEdgeGap +
+            geometry.dockHeight,
+        size.height,
+      );
+    }
+    final landscape = DashboardGeometry(const Size(1024, 768));
+    expect(landscape.dockHeight, closeTo(138.24, .001));
+    expect(landscape.closedMediaHeight, 96);
+    final short = DashboardGeometry(const Size(320, 240));
+    expect(short.closedMediaHeight, closeTo(short.dockTop * .35, .001));
+    expect(short.closedMediaHeight, lessThan(96));
+    expect(DashboardGeometry(const Size(1000, 900)).closedMediaHeight, 96);
+  });
+
+  testWidgets(
+    'portrait keeps essential dock actions visible inside safe area',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.padding = const FakeViewPadding(
+        left: 12,
+        right: 12,
+        top: 24,
+        bottom: 20,
+      );
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      for (final size in [
+        const Size(768, 1024),
+        const Size(600, 800),
+        const Size(320, 426),
+      ]) {
+        final harness = await _createHarness(controlSize: 1.3);
+        tester.view.physicalSize = size;
+        await tester.pumpWidget(harness.widget);
+        await tester.pumpAndSettle();
+        final safe = Rect.fromLTRB(12, 24, size.width - 12, size.height - 20);
+        final dock = tester.getRect(
+          find.byKey(const ValueKey('fixed-dashboard-dock')),
+        );
+        expect(safe.contains(dock.topLeft), isTrue);
+        expect(dock.bottom, safe.bottom);
+        for (final label in [
+          'Home',
+          'Apps',
+          'Settings',
+          'Media strip',
+          'Camera',
+        ]) {
+          final control = tester.getRect(find.byTooltip(label));
+          expect(control.left, greaterThanOrEqualTo(safe.left));
+          expect(control.right, lessThanOrEqualTo(safe.right));
+        }
+        expect(
+          tester
+              .getSize(find.byKey(const ValueKey('floating-media-surface')))
+              .height,
+          DashboardGeometry(Size(size.width - 24, size.height - 44))
+              .closedMediaHeight,
+        );
+        expect(find.byTooltip('Left warmer'), findsNothing);
+        final temperature = find.byKey(const ValueKey('temperature-Left'));
+        expect(tester.getSize(temperature).height, greaterThanOrEqualTo(48));
+        await tester.tap(temperature);
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('Close climate').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('Left warmer'), findsOneWidget);
+        expect(find.byTooltip('Left cooler').hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('Close climate'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Apps'));
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('Close apps'), findsOneWidget);
+        expect(find.text('climate').hitTestable(), findsOneWidget);
+        if (size.width < 400) {
+          await tester.drag(find.byType(DashboardPanel), const Offset(0, -240));
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(find.text('climate'));
+        await tester.pumpAndSettle();
+        expect(find.text('climate page'), findsOneWidget);
+        await tester.tap(find.byTooltip('Home'));
+        await tester.pumpAndSettle();
+        expect(find.text('home page'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await harness.settings.close();
+      }
+    },
+  );
+
   testWidgets(
     'short landscape windows retain a scrollable dock and modal dismissal',
     (tester) async {
@@ -45,6 +151,58 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
       }
+      await tester.pumpWidget(const SizedBox());
+      await harness.settings.close();
+    },
+  );
+
+  testWidgets(
+    'open panels survive landscape to portrait resize with large controls',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(800, 600);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final harness = await _createHarness(controlSize: 1.3);
+      await tester.pumpWidget(harness.widget);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('temperature-Left')));
+      await tester.pumpAndSettle();
+      final panel = tester.element(find.byType(DashboardPanel));
+      for (final size in [
+        const Size(600, 800),
+        const Size(320, 426),
+        const Size(800, 600),
+      ]) {
+        tester.view.physicalSize = size;
+        await tester.pumpAndSettle();
+        expect(tester.element(find.byType(DashboardPanel)), same(panel));
+        expect(find.byTooltip('Close climate').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.tap(find.byTooltip('Close climate'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Expand media'));
+      await tester.pumpAndSettle();
+      final surface = tester.element(
+        find.byKey(const ValueKey('floating-media-surface')),
+      );
+      for (final size in [
+        const Size(600, 800),
+        const Size(320, 426),
+        const Size(800, 600),
+      ]) {
+        tester.view.physicalSize = size;
+        await tester.pumpAndSettle();
+        expect(
+          tester.element(find.byKey(const ValueKey('floating-media-surface'))),
+          same(surface),
+        );
+        expect(find.byTooltip('Close media').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.tap(find.byTooltip('Close media'));
+      await tester.pumpAndSettle();
       await tester.pumpWidget(const SizedBox());
       await harness.settings.close();
     },
@@ -214,8 +372,13 @@ void main() {
   });
 }
 
-Future<_Harness> _createHarness({String? storedModuleId}) async {
-  final storedValues = <String, Object?>{};
+Future<_Harness> _createHarness({
+  String? storedModuleId,
+  double controlSize = 1,
+}) async {
+  final storedValues = <String, Object?>{
+    AppSettingKeys.appearanceControlSize.id: controlSize,
+  };
   if (storedModuleId != null) {
     storedValues[AppSettingKeys.lastModule.id] = storedModuleId;
   }

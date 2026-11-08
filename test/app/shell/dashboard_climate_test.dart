@@ -9,6 +9,56 @@ import 'package:veloce_lua_core/veloce_lua_core.dart';
 
 void main() {
   testWidgets(
+    'compact temperatures open climate and fit pending or failed large text',
+    (tester) async {
+      final service = VehicleClimateService(
+        capabilities: ClimateCapabilities.simulation(),
+        diagnostics: DiagnosticsService(),
+        authorize: (_) async => true,
+        publish: (_) async {},
+      );
+      service.invalidate(available: true);
+      var opens = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+            child: Scaffold(
+              body: SizedBox(
+                width: 96,
+                height: 64,
+                child: ClimateTemperatureControl(
+                  service: service,
+                  zone: 'front_left',
+                  side: 'Left',
+                  scale: 1.3,
+                  compact: true,
+                  onTap: () => opens++,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.byTooltip('Left warmer'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('temperature-Left')));
+      expect(opens, 1);
+      service.requestTemperature('front_left', 23, immediate: true);
+      await tester.pump();
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 4));
+      expect(tester.takeException(), isNull);
+      service.invalidate();
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('temperature-Left')));
+      expect(opens, 1);
+      await tester.pumpWidget(const SizedBox());
+      await service.close();
+    },
+  );
+
+  testWidgets(
     'unknown, pending, confirmed and failed temperatures never invent feedback',
     (tester) async {
       final data = VehicleDataBus(), diagnostics = DiagnosticsService();

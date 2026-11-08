@@ -76,11 +76,21 @@ def main():
                     p.error('Wired CarPlay requires a wired-capable daemon and media contract 1')
                 record['carplay_wired'] = 1
                 record['carplay_scope'] = 'wired-development'
+                if 'wireless=true' in output:
+                    record['carplay_wireless'] = 1
+                    record['carplay_scope'] = 'wired-and-wireless-development'
         elif args.carplay_wired:
             p.error('Wired CarPlay requires daemon and control tool')
         if args.projection_media_contract:
             record['projection_media_contract'] = args.projection_media_contract
-        record['ihs_sha256'] = {f: sha(args.ihs_prefix / f) for f in (
+        try:
+            ihs_prefix = args.ihs_prefix.resolve(strict=True)
+        except OSError:
+            p.error('IHS prefix must be an existing directory')
+        if not ihs_prefix.is_dir():
+            p.error('IHS prefix must be an existing directory')
+        record['ihs_prefix'] = str(ihs_prefix)
+        record['ihs_sha256'] = {f: sha(ihs_prefix / f) for f in (
             'bin/homescreen', 'lib/libihs_shared.so', 'include/ihs/platform_view.h')}
         record['ihs_contract'] = 'tool/projection/README.md#ihs-base-and-local-patch'
         output = args.path / 'argo-release.json'

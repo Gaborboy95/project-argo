@@ -15,7 +15,7 @@ the native playback pacing fix. This is not full CarPlay completion.
 | Component | Current scope |
 | --- | --- |
 | `argo-carplayctl` | Read-only mDNS/MFi/Wi-Fi status and IC protocol major |
-| `argo-carplayd` | Unprivileged diagnostics plus opt-in supervised `--wired` receiver |
+| `argo-carplayd` | Unprivileged diagnostics plus opt-in supervised USB/wireless `--receiver` (`--wired` alias) |
 | Link library | Bounded persistent MFi connection, same-connection public certificate cache for authentication, no signing retry |
 | Wired control | Trusted carkit, direct USB mux, real MFi, typed iAP2 identification and StartSession |
 | USB network | Userspace NCM, temporary NetworkManager TAP, narrow administrator USB configuration lease |
@@ -23,33 +23,63 @@ the native playback pacing fix. This is not full CarPlay completion.
 | Native media | ARPM/1 into existing GStreamer/GBM/IHS surface; shared library also supports synthetic H.265 fixtures |
 | Flutter adapter | Private metadata/input IPC, session selection, visibility, presentation revisions, normalized two-contact touch |
 | Audio | PCM Spotify playback through Dzsibilee and pause/resume physically confirmed with Corsair input configured; Siri and clear two-way calls with music restoration confirmed; echo processing and shared microphone mute/unmute physically confirmed; AAC acceptance pending |
-| Wireless | Typed Wi-Fi controls, tested HCI/VHCI and dongle iAP handoff foundations; complete wireless CarPlay is not integrated |
+| Wireless | Current LIVI Link HCI/VHCI, selected-controller BlueZ iAP2, Wi-Fi bootstrap, interface-scoped AirPlay advertisement and the shared native receiver; physical acceptance is recorded separately |
 
-The managed application, AA daemon and CarPlay daemon now start and stop cleanly
-on this host. CarPlay settings and shared microphone selection are implemented.
+The managed application, AA daemon and CarPlay daemon have explicit startup,
+readiness and owned-cleanup contracts. CarPlay settings and shared microphone
+selection are implemented.
 Fresh USB authorization, wireless sessions, metadata, cluster and long-running
 physical coexistence acceptance remain separate limitations. Unsupported features
 must not be described as usable based on the reference implementation.
 
 ## Topology and ownership
 
-The iPhone belongs on a LattePanda USB port. Its usbmux/lockdown carkit stream
+For wired CarPlay, the iPhone belongs on a host USB port. Its usbmux/lockdown carkit stream
 carries iAP2; a separate phone USB-NCM path carries AirPlay. The prepared LIVI Link
 is a network accessory providing the real MFi authentication IC. Its NCM network
 is independent of the phone's USB network. Normal Linux wired operation does not
 use the dongle USB proxy. The upstream reference explicitly describes dongle OTG
 as macOS-only.
 
-No flashing, provisioning, updating, restoring, repartitioning, key extraction
-or MFi emulation is performed. No LIVI/Electron application is launched. The new
+The CarPlay runtime never flashes, provisions, restores or repartitions the Link,
+extracts keys or emulates MFi. Device firmware maintenance is a separate operation
+using the official model-matched updater and a verified backup. No LIVI application
+is launched. The native
 Rust process isolates development from AA transport/audio/connectivity; Flutter
 receives metadata only. The existing native view uses GStreamer, GBM buffer
 mapping/copy and IHS PlatformViewLayer; zero-copy is not claimed.
 
 Radio ownership is independent of MFi use. Diagnostics never enable/disable AP or
 Bluetooth and never open HCI/handoff transport ports, which can acquire ownership.
-An already-running dongle AP is reported without being claimed by Argo. Future
-wireless operation must own the selected radio and release it after session cleanup.
+An already-running dongle AP is reported without being claimed by diagnostics.
+Explicit wireless mode owns the Link radio lifecycle and releases its controller
+after session cleanup; it does not take over the host's internal AA controller.
+
+Wireless discovery uses the native `mdns_advertisement::Advertisement` owner and
+the installed Avahi daemon's system D-Bus API. Host policy must allow the desktop
+user to create an EntryGroup; D-Bus may activate an installed Avahi service.
+Publication is restricted to the caller-selected Link NCM interface and IPv4,
+with Avahi's default host/address records on that interface. The service name is
+at most 63 UTF-8 bytes; the port and interface index must be nonzero. Its AirPlay
+TXT records use the same Bluetooth MAC, persistent pairing identifier and public
+key as the receiver handshake, the receiver's source version, and model `Argo`.
+The pairing identifier is an opaque nonempty string of at most 128 UTF-8 bytes
+without control characters; existing key-derived MAC identifiers are preserved.
+No network password is advertised.
+
+Bus connection has a three-second limit and publication has an eight-second
+limit, including the wait for Avahi's host records and EntryGroup established
+state. Collision and failure
+states fail publication. Callers must await `close()` before releasing the
+network interface. It frees only its own EntryGroup and always attempts to
+disconnect its private bus connection, including after a Free error; cleanup
+takes at most three seconds. Cancellation/drop schedules the same bounded
+cleanup on Tokio, with client-disconnection cleanup when no runtime remains.
+This discovery adapter does not establish wireless phone acceptance.
+`wait_lost()` checks the original Avahi bus owner and host/EntryGroup readiness
+every second, with a two-second check limit. Loss ends the owned wireless
+session so the runtime can rebuild discovery. Group operations, including Free,
+remain pinned to the original unique bus owner across an Avahi restart.
 
 ## Build and read-only checks
 
@@ -120,7 +150,21 @@ The optional Linux UI polls cached health every five seconds after completion,
 with a two-second whole-request timeout. It neither spawns processes nor connects
 to dongle ports. App shutdown cancels polling. Daemon readiness is independent of
 Link health. SIGTERM/Ctrl+C cancels owned tasks and sockets; managed clean markers
-are written only after cleanup. No audio, mic, USB, AP or VHCI resource is started.
+are written only after cleanup. Diagnostics-only mode starts no audio, microphone, USB, AP or VHCI resource.
+The complete receiver has a separate settings/control contract and explicit
+transport selection. Its network health is refreshed every five seconds without
+touching the MFi connection during authentication; certificate/protocol checks
+run before session bootstrap. Health includes a separate MFi check timestamp.
+
+The Devices hub owns phone connection intent through DeviceConnectionService.
+Each physical phone appears once, with a CarPlay, Android Auto or Bluetooth type
+and device Connect, Disconnect and Forget actions. Add iPhone explicitly prepares
+the configured USB or wireless receiver for pairing. Unknown phones require a
+type choice; matching aliases never merge them. Wireless CarPlay identity is
+joined to the matching Bluetooth address using the native address-derived ID.
+A USB identity can be linked to its saved Bluetooth phone through explicit user
+confirmation in Devices. CarPlay settings configure the receiver without separate
+Connect, Reconnect or Disconnect buttons.
 
 ## Managed release integration
 
@@ -146,11 +190,91 @@ existing setup workflow before `argoctl select <unique-release-name>`.
 
 `carplay_control=1` requires both executable CarPlay tools. Its optional user
 service has `PartOf=argo.target`, no surround-camerad dependency, five-second
-failure restart delay, three starts per 90 seconds and eight-second stop limit.
+failure restart delay, three starts per 90 seconds and a 35-second stop limit.
 Older releases still validate and the unit's file condition skips them. Selection
 and rollback include the optional service without coupling its crash to AA.
 Bundles containing diagnostics enable the health card by default; managed common
 environment `ARGO_CARPLAY_DIAGNOSTICS=0` hides it.
+
+
+## Wireless CarPlay with current LIVI Link
+
+The receiver supports **USB cable** and **Wireless · LIVI Link** in CarPlay settings.
+Changing the method stops and cleans up the preceding session. Connect the phone
+again from Devices to use the selected method; changing this preference alone
+does not launch the receiver. The connection choice is persisted separately in
+`connection.json`, so the older wired `settings.json` remains readable on rollback.
+The managed launcher selects the complete `--receiver` entry point for releases
+with `carplay_wireless=1`; `--wired` remains a compatible entry-point alias.
+
+Wireless uses Link TCP 5002 HCI over a dedicated `/dev/vhci` descriptor. BlueZ
+publishes iAP2/CarPlay profiles; callbacks accept only the created Link adapter.
+The transport registers no separate pairing agent. In the managed Argo stack, the shared
+BlueZ agent held by `argo-projectiond` owns incoming pairing/authorization and
+shows the request in Argo's global Flutter overlay, including while using
+CarPlay. Keep the shared connectivity daemon and app running for those prompts;
+a standalone CarPlay process relies on whichever default agent is already present.
+The user pairs **Argo CarPlay** in iPhone Bluetooth settings and accepts CarPlay.
+The removed dongle-owned TCP 5004/5005 handoff is not used with current firmware.
+
+The host needs BlueZ, Avahi's system D-Bus service, a working Link NCM route,
+and kernel `hci_vhci` support. Install the separate, root-owned VHCI helper and
+polkit action once; this does not install firmware or change device permissions:
+
+```bash
+sudo python3 tool/carplay/install-permissions.py --wireless
+```
+
+The helper opens only `/dev/vhci`. If it is absent after boot, it invokes only
+the verified root-owned `/usr/sbin/modprobe hci_vhci`, with a five-second limit,
+then retries open once. It loads before the bounded descriptor handover begins.
+There is no broad udev rule, shell command, module argument or executable path
+supplied by the receiver. The kernel module must be available on the host.
+
+By default, opening this controller requires administrator authorization through
+the desktop polkit agent; a cached authorization is not a permanent reboot grant.
+An administrator can explicitly allow only the intended active local desktop
+account to open its own virtual controller without a repeated prompt:
+
+```bash
+sudo python3 tool/carplay/install-permissions.py --wireless \
+  --wireless-desktop-user YOUR_DESKTOP_USER
+```
+
+Replace the account placeholder with an existing non-root account name. This
+adds root-owned `/etc/polkit-1/rules.d/49-argo-carplay-vhci.rules` (0644), scoped
+to the fixed helper, VHCI action and named active local account. Remote/inactive
+callers and other accounts are denied that action; USB and other polkit actions
+keep their own policy. This grants that account's local processes access to a
+private virtual Bluetooth controller, not arbitrary root execution. The helper
+still validates its direct parent, private socket peer and owner start time.
+Verify the actual managed process's authorization and a real reboot separately;
+session classification must fail closed when the caller is not active and local.
+Reinstalling without this option leaves an existing rule unchanged. Remove that
+fixed optional rule to return to the administrator-authentication default.
+
+The host retains one private, stable `wireless-network.json` (0600) with a unique
+Argo-CarPlay SSID and random passphrase. It applies this explicitly selected
+CarPlay network to the Link without `save`, preserving the current reported
+country and channel. The firmware's disk fallback is unchanged. On exit Argo
+restores the previous AP/Bluetooth **power states**; it cannot restore an unknown
+previous live passphrase. Credentials are passed natively to iAP2 and never enter
+Flutter status or logs. Display fitting and input retain the same shared native
+pipeline as wired CarPlay.
+
+The reliable Bluetooth iAP2 engine is vendored from LIVI with its GPL license,
+additional attribution notice, upstream tests and exact revision provenance.
+**Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI).** Native release
+bundles contain its notices and a corresponding-source archive. This is explicit
+source reuse, not a claim of a clean-room implementation.
+
+On 2026-11-07 the attached i.MX6ULL/IW416 Link was updated with the official
+10.4.0 / `199cbec5` bundle after a complete, remotely checksum-verified 16 MiB
+partition backup and successful dry runs. The resulting status reports target
+`imx6ul_iw416`, kernel 7.3.1 and a ready MFi protocol-2 coprocessor. USB ID
+1314:1520 alone does not distinguish this hardware from other Link targets.
+This device update is not part of application startup or a blanket firmware
+update recipe for other dongles.
 
 ## Remaining implementation and permissions
 
@@ -158,7 +282,7 @@ The shared `wired_runtime` is now used by both the example and `argo-carplayd
 --wired`. The daemon retries failed sessions with a delay of 2–30 seconds, resets
 backoff after a minute-long session, and stores pairing under
 `$XDG_STATE_HOME/argo-carplay` (default `~/.local/state/argo-carplay`). It owns one
-receiver at a time and cleans up session resources before retrying. Explicit user
+receiver at a time and cleans up session resources before retrying.
 The native receiver advertises its implemented two-contact touch HID. Siri uses
 its dedicated press/release commands. Rotary and other generic projection buttons
 are unsupported and return an explicit error; they do not report silent success.
@@ -173,8 +297,14 @@ Stale session IDs and new commands after cancellation are rejected. These queue
 failure paths have automated coverage; phone-side teardown still needs physical
 acceptance under load.
 
-Disconnect suppresses automatic reconnect until wired mode is restarted; a
-remembered-device Connect action is still needed.
+Device Disconnect stops that phone's receiver, pauses its retries and disconnects
+the Bluetooth endpoints belonging to its row. Other devices remain connected.
+The native manager starts passively after every restart, including when enabled
+and its retry preference are saved. One shared Devices startup switch may request
+only the selected known phone; enabling CarPlay alone does not connect it.
+The CarPlay auto-connect preference controls retries after an interrupted selected
+connection, rather than creating a separate login-time request. Switching phones
+waits for confirmed cleanup before starting the replacement.
 
 The daemon has authenticated with the real phone and served negotiated H.264 to
 the Argo consumer. A physical replug automatically restored authentication and
@@ -182,6 +312,13 @@ video transport, but the user initially saw a waiting screen. Home now activates
 an unselected replacement session when it becomes ready, without activation on
 other pages. A second replug exposed an empty screen configuration message; that
 exact message is ignored without consuming a frame nonce or authorizing video.
+The native screen receiver allows 30 seconds after accepting the screen connection
+for its first authenticated usable keyframe. Empty/control packets, repeated codec
+configuration and delta frames cannot extend this deadline; partial header/body
+reads keep the same deadline. Expiry ends the owned session through normal cleanup
+before the daemon retries. Once a usable keyframe arrives, only the existing
+15-second header and three-second body inactivity limits apply. These paths have
+synthetic asynchronous regression coverage; they still require phone acceptance.
 After restarting the patched daemon, the user confirmed visible CarPlay and
 working touch without another cable change. The user subsequently confirmed automatic physical replug restores picture and
 touch with both fixes and the installed USB lease.
@@ -199,10 +336,39 @@ confirmed Siri recognized a Corsair microphone request and answered through
 Dzsibilee. Clear two-way calls and music restoration are also confirmed. Shared microphone selection now reaches the active CarPlay receiver and future sessions. Touch HID delivery is
 implemented and physically confirmed.
 
-CarPlay has a dedicated settings destination with persistent enable, auto-connect,
-resolution, 30/60 fps and driver-side preferences, plus connect/reconnect,
-disconnect and active-session selection. Display changes apply on reconnect.
-A remembered-device catalog and forgetting pairings remain unfinished.
+CarPlay has a dedicated configuration destination with persistent enable,
+interrupted-connection retry, resolution, 30/60 fps and driver-side preferences.
+Connection actions belong to the physical-phone row in Devices. Display changes
+apply when that phone is connected again.
+The managed receiver snapshots the latest viewport and preferences when the
+phone's AirPlay connection arrives after USB preparation, then freezes them for
+that connected session.
+The shell forwards the same safe-area-aware dashboard measurement to both AA and
+CarPlay. CarPlay negotiates a balanced View Area inside the selected encoded tier,
+including taller content on a 3:4 host. Its Safe Area reserves the closed media
+controls without cropping map pixels. Native ARV2 metadata removes only negotiated
+view margins, and touch adds the view origin back to the full-display HID axes.
+Resizing an active connection aspect-fits its frozen content; reconnect applies
+new geometry without an automatic phone disconnect.
+
+The private settings socket advertises `viewport_supported: true` and accepts
+`{"action":"viewport","viewport":{"width":600,"height":680,"overlay_height":64}}`.
+These logical-pixel measurements are runtime hints, debounced by the client for
+150 ms and restored after daemon restart. Width/height must be finite in
+1–65536; overlay height must be finite, nonnegative and less than height.
+They never persist settings, enable CarPlay or restart a session. Older daemons
+continue without automatic fitting and the settings page reports the update needed.
+`next_view_insets` and `next_safe_insets` in status describe the next negotiation,
+in encoded pixels. Native `settings.json` optionally stores manual
+`view_insets` / `safe_insets` arrays in left/top/right/bottom order (default all zero,
+omitted when zero so ordinary settings updates remain readable by older releases);
+safe margins are relative to the view. AirPlay advertises their absolute rectangle
+origins. Invalid margins must leave at least two view pixels per axis and a
+nonempty safe rectangle; the whole patch is rejected before persistence.
+
+The shared Devices catalog remembers physical phones, protocol types and confirmed
+projection identities. Forget removes the phone's catalog entry and available
+Bluetooth bonds; a missing controller must return before its bonds can be removed.
 Phone HEVC negotiation and physical 60 fps acceptance remain unfinished. Synthetic H.265 decoder tests do not establish phone HEVC support.
 
 CarPlay metadata/artwork/navigation and forwarding of typed fresh vehicle/GPS
@@ -293,10 +459,12 @@ socket cleanup and managed clean markers. None establishes iPhone/panel acceptan
 
 ## Attribution
 
-Heavily informed by **f-io / Lasse Heitgres — LIVI**, revision
-`a23dc0c5fcdb6d069c679eddfd73298e58f44783`, version `9.0.0`.
+Heavily informed by **f-io / Lasse Heitgres — LIVI**. Initial protocol research
+used `a23dc0c5fcdb6d069c679eddfd73298e58f44783` (9.0.0); the vendored reliable
+iAP2 engine is from `bfbea31ee624ddce84bfa96ce49d4663e6cdeca7`.
 See [CREDITS.md](../CREDITS.md) and the [architecture/license review](carplay-livi-review.md).
-No upstream endorsement or imported implementation is implied.
+Its GPL license, attribution notice and corresponding source accompany native
+distribution. No upstream endorsement is implied.
 
 
 ## Supervised wired development mode
@@ -311,9 +479,9 @@ native/carplay/target/debug/argo-carplayd --wired 1280 720 200 112 --audio YOUR_
 Use the actual configured pixel and physical dimensions and an enumerated sink.
 Omit `--audio` for video-only development. This mode uses the same live runtime as
 `wired_session`, preserves pairing across process restarts, handles SIGTERM, and
-keeps the existing diagnostics socket available. Diagnostics are sampled before
-the session worker starts, then cached with their original timestamp: repeated
-MFi health probes do not compete with authentication. Live session state remains
+keeps the existing diagnostics socket available. MFi diagnostics are sampled
+before session bootstrap and cached with their check timestamp; network status
+continues refreshing without competing with authentication. Live session state remains
 on the separate private projection control socket.
 
 For a freshly built matched release, `record-build.py bundle` accepts
@@ -334,7 +502,7 @@ wired capability. `argoctl` reads `~/.config/project-argo/carplay.json`:
 All fields are validated; the audio sink is optional. A wired-capable release uses
 these arguments for the daemon and enables the CarPlay adapter in the app. Older
 releases ignore this opt-in configuration, preserving rollback behavior. No
-managed release has been selected as part of this development test. This does not
+managed release selection is performed by this foreground command. This does not
 itself install USB permissions; use the automatic lease integration below.
 
 
@@ -453,8 +621,8 @@ The new `native/audio-ownership` library holds a private, nonblocking desktop-us
 file lock for microphone capture. Updated AA/HFP and CarPlay capture paths use the
 same lock and release it only after stopping capture. Uncertain cleanup retains
 exclusion until process exit. **Both daemons must be rebuilt/deployed** for this
-cross-process exclusion; an older AA binary does not participate. The selected
-`carplay-settings-v7` release contains both updated daemons. No root permission
+cross-process exclusion; an older AA binary does not participate. The earlier
+`carplay-settings-v7` deployment included both updated daemons. No root permission
 or device rule is added for microphone ownership.
 
 
@@ -473,16 +641,15 @@ The echo path follows the installed plugin's documented requirements:
 [GStreamer webrtcdsp](https://gstreamer.freedesktop.org/documentation/webrtcdsp/webrtcdsp.html).
 `webrtcdsp` and `webrtcechoprobe` are required when configuring microphone input.
 
-Validation after the echo-processing change: 76 native CarPlay tests pass with
-all features enabled; nine USB/VHCI helper and installer tests pass. Wireless
-HCI framing and descriptor-handover modules remain unintegrated foundations,
-not a working wireless session. The optional VHCI permission helper has not
-been installed or exercised against the real controller.
+Synthetic duplex tests cover echo-reference association and bounded microphone
+output. Wireless now uses the integrated HCI/VHCI, BlueZ and shared receiver
+path described above; wired echo acceptance does not establish wireless audio
+or complete wireless phone acceptance.
 
 
 ### Managed UI and settings acceptance (2026-09-20)
 
-`carplay-settings-v7` is the selected release. The user units and installed
+During that acceptance run, `carplay-settings-v7` was selected. The user units and installed
 `argoctl` were updated. All three units became active, all wrote `clean` on an
 explicit managed stop, and all restarted successfully. The previous camera
 renderer and external camera integration remain in the matched bundle.
@@ -520,23 +687,36 @@ Validation: 325 Flutter tests passed, seven skipped; 78 native CarPlay tests;
 analysis and native Clippy checks pass. Real managed configuration save/readback,
 invalid-setting rejection, restart persistence and clean lifecycle were exercised.
 
-### Wireless work still outstanding
+### Wireless physical acceptance
 
-The prepared Link accepts a TCP connection to its dongle-side iAP control service
-(5005). The independently implemented `dongle_iap` module bounds the 5004 handoff
-header, validates the phone/controller identities, and preserves the first iAP2
-byte. This provides an alternative to owning the controller through `/dev/vhci`;
-it is not an integrated wireless receiver. Neither this endpoint nor the HCI
-bridge is opened by diagnostics or normal wired operation.
+Wireless mode uses the current Link HCI service and host BlueZ profiles. The
+legacy `dongle_iap` codec is retained for historical research but is not an
+alternative transport offered by the current receiver. Diagnostics and wired
+operation do not acquire the HCI bridge.
 
-The explicit `wireless_controller --controller-only` example can exercise the
-HCI bridge after installing its separate VHCI permission helper. That helper is
-not installed on this host; noninteractive administrator authorization is not
-available. The prepared firmware was not changed.
+On 2026-11-08 a real iPhone completed Bluetooth iAP2/MFi authentication, Wi-Fi
+handover, AirPlay pairing/authentication and H.264 video through LIVI Link. The
+user confirmed the picture, taps and map dragging on the portrait display, and
+confirmed that the Devices inventory remains stable.
 
-Complete wireless operation still needs AP credential ownership/restoration,
-wireless identification and Wi-Fi configuration exchange, handoff lifecycle,
-AirPlay listener admission, pairing/reconnect UI, and a real wireless phone test.
-The dongle-owned handoff path can avoid host VHCI privilege, but does not remove
-these implementation and physical-pairing requirements. Wireless is therefore
-reported as unavailable in the product UI rather than offered as a working mode.
+Two actual blockers were isolated: the phone's valid 127-packet link window had
+been rejected, and the updated Link's physical MFi register reads returned a
+corrupt certificate length after the first long read. The compatibility service
+in [native/link-mfid](../native/link-mfid) primes an immutable register before
+reselecting and reading the target. The stock firmware failed the second read
+after a power cycle; the patched service passed eight consecutive PKCS#7 checks
+and the phone accepted a real hardware signature. The underlying I2C/kernel cause
+is not established by this workaround.
+
+The initial acceptance used the RAM prototype. The `argo-mfi-prime-20261108-4`
+image was subsequently installed with the official rescue updater and verified
+after reboot: `/usr/bin/argo-mfid-prime` 0.1.1 started automatically, wrote the
+real Gen2 status marker, and passed another eight consecutive PKCS#7 checks.
+The phone then completed Wi-Fi/AirPlay setup again and negotiated 1280×720 video.
+The official kernel and original LIVI multicall binary are unchanged; full
+corresponding source and attribution are included in the firmware.
+
+The user deferred wireless audio output testing to another audio source. Calls
+and long-running coexistence remain separate acceptance items. The final host
+release also separates Wi-Fi monitoring from the MFi operation lock, retains
+the controller across phone reconnects, and displays actual connection progress.

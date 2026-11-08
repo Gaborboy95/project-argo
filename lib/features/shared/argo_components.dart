@@ -20,6 +20,7 @@ class ArgoPage extends StatelessWidget {
   final List<Widget> children, actions;
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
+    key: PageStorageKey(('argo-page-scroll', title)),
     padding: const EdgeInsets.all(ArgoSpacing.page),
     child: Center(
       child: ConstrainedBox(
@@ -106,11 +107,54 @@ class ArgoDeviceChoice extends StatelessWidget {
                 ),
         ),
         ?actions,
-        ExpansionTile(
+        ArgoExpansionTile(
           title: const Text('Details'),
           children: [SelectableText(identifier)],
         ),
       ],
+    ),
+  );
+}
+
+/// Disclosure state is local to the widget, separate from route scroll offsets.
+/// An unkeyed Material expansion tile otherwise inherits an ancestor's storage
+/// identifier and can write a bool where a scrollable expects a double. Its
+/// selectable text and input children also need this boundary.
+class ArgoExpansionTile extends StatefulWidget {
+  const ArgoExpansionTile({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.children,
+    this.tilePadding,
+    this.childrenPadding,
+    this.expandedCrossAxisAlignment,
+    this.onExpansionChanged,
+  });
+  final Widget title;
+  final Widget? subtitle;
+  final List<Widget> children;
+  final EdgeInsetsGeometry? tilePadding, childrenPadding;
+  final CrossAxisAlignment? expandedCrossAxisAlignment;
+  final ValueChanged<bool>? onExpansionChanged;
+
+  @override
+  State<ArgoExpansionTile> createState() => _ArgoExpansionTileState();
+}
+
+class _ArgoExpansionTileState extends State<ArgoExpansionTile> {
+  final _storage = PageStorageBucket();
+  @override
+  Widget build(BuildContext context) => PageStorage(
+    bucket: _storage,
+    child: ExpansionTile(
+      title: widget.title,
+      subtitle: widget.subtitle,
+      tilePadding: widget.tilePadding,
+      childrenPadding: widget.childrenPadding,
+      expandedCrossAxisAlignment: widget.expandedCrossAxisAlignment,
+      onExpansionChanged: widget.onExpansionChanged,
+      children: widget.children,
     ),
   );
 }

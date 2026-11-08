@@ -25,10 +25,13 @@ void main() {
       parameters.setUint16(18, 30);
       parameters.setUint16(20, 1);
       parameters.setUint64(24, 7);
+      parameters.setUint16(32, 320);
+      parameters.setUint16(36, 320);
       var selected = false;
       var microphoneMuted = true;
       var microphoneSource = 'fixture_source';
       var malformed = false;
+      String? transport;
       final requests = <Map<String, dynamic>>[];
       final connections = <Socket>[];
       final subscription = server.listen((socket) async {
@@ -50,6 +53,7 @@ void main() {
                     'available': true,
                     'session': 7,
                     'device': 'fixture',
+                    'transport': ?transport,
                     'name': 'Fixture phone',
                     'recorded': true,
                     'selected': selected,
@@ -117,6 +121,10 @@ void main() {
       );
       expect(backend.current.activeSessionId, isNull);
       expect(
+        backend.current.sessions.single.device.transport,
+        ProjectionTransport.usb,
+      );
+      expect(
         backend
             .current
             .sessions
@@ -127,13 +135,22 @@ void main() {
         parameters.buffer.asUint8List(),
       );
       expect(
+        backend.current.sessions.single.videoStreams.single.contentInsets,
+        const ProjectionInsets(left: 320, right: 320),
+      );
+      expect(
         requests
             .where((r) => r['action'] == 'microphone_mute')
             .map((r) => r['muted']),
         [true],
       );
       microphoneMuted = false;
+      transport = 'wireless';
       await backend.connect('fixture');
+      expect(
+        backend.current.sessions.single.device.transport,
+        ProjectionTransport.wifi,
+      );
       expect(
         requests
             .where((r) => r['action'] == 'microphone_mute')

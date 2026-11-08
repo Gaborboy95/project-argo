@@ -6,6 +6,10 @@ pub mod music;
 pub mod network;
 pub mod phonebook;
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::{mpsc, watch};
 
 #[derive(Clone, Default, Serialize)]
@@ -14,6 +18,7 @@ pub struct Device {
     pub name: String,
     pub paired: bool,
     pub connected: bool,
+    pub protocols: Vec<&'static str>,
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Radio {
@@ -105,11 +110,15 @@ impl Snapshot {
         Ok(())
     }
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     #[serde(skip)]
     pub generation: u64,
+    #[serde(skip)]
+    pub device: String,
+    #[serde(skip)]
+    pub device_generation: u64,
     pub action: String,
     #[serde(default)]
     pub target: String,
@@ -126,6 +135,8 @@ pub struct Control {
     pub client_closed: watch::Sender<u64>,
     pub state: watch::Sender<Snapshot>,
     pub requests: mpsc::Sender<Request>,
+    device_generations: Arc<Mutex<BTreeMap<String, u64>>>,
+    pub device_changes: watch::Sender<u64>,
 }
 impl Control {
     pub fn new() -> (Self, mpsc::Receiver<Request>) {
@@ -143,6 +154,8 @@ impl Control {
                 state,
                 requests,
                 client_closed: watch::channel(0).0,
+                device_generations: Default::default(),
+                device_changes: watch::channel(0).0,
             },
             rx,
         )
@@ -172,6 +185,56 @@ impl Control {
         if r.target.len() > 256 {
             return Err("Connectivity reference too long".into());
         }
+        if matches!(
+            r.action.as_str(),
+            "deviceConnect"
+                | "deviceDisconnect"
+                | "musicConnect"
+                | "callsConnect"
+                | "select"
+                | "pair"
+                | "forget"
+        ) || (!r.target.is_empty()
+            && matches!(
+                r.action.as_str(),
+                "connect" | "musicDisconnect" | "callsDisconnect"
+            ))
+        {
+            r.target = bluetooth::device_reference(&r.target)?;
+        }
+        r.device = match r.action.as_str() {
+            "connect" => {
+                if r.target.is_empty() {
+                    self.state.borrow().selected.clone()
+                } else {
+                    r.target.clone()
+                }
+            }
+            "musicConnect" | "callsConnect" | "deviceConnect" => r.target.clone(),
+            action if action.starts_with("music") => self
+                .state
+                .borrow()
+                .music
+                .as_ref()
+                .map(|m| m.device.clone())
+                .unwrap_or_default(),
+            action if action.starts_with("calls") => self
+                .state
+                .borrow()
+                .calls
+                .as_ref()
+                .map(|c| c.device.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        r.device_generation = self.device_generation(&r.device);
+        if r.action == "deviceDisconnect" {
+            let mut generations = self.device_generations.lock().unwrap();
+            let generation = generations.entry(r.target.clone()).or_default();
+            *generation = generation.wrapping_add(1);
+            drop(generations);
+            self.device_changes.send_modify(|g| *g = g.wrapping_add(1));
+        }
         if r.action == "musicDisconnect"
             || (r.action == "forget"
                 && self
@@ -183,7 +246,16 @@ impl Control {
         {
             self.music_cancel.send_modify(|generation| *generation += 1);
         }
-        if r.action == "callsDisconnect" || r.action == "stopAll" || r.action == "forget" {
+        if r.action == "callsDisconnect"
+            || r.action == "stopAll"
+            || (r.action == "forget"
+                && self
+                    .state
+                    .borrow()
+                    .calls
+                    .as_ref()
+                    .is_some_and(|calls| calls.device == r.target))
+        {
             self.calls_cancel.send_modify(|g| *g += 1);
         }
         if r.action == "stopAll" {
@@ -197,6 +269,29 @@ impl Control {
         self.requests
             .try_send(r)
             .map_err(|_| "Connectivity is busy or unavailable".into())
+    }
+    pub fn device_generation(&self, device: &str) -> u64 {
+        *self
+            .device_generations
+            .lock()
+            .unwrap()
+            .get(device)
+            .unwrap_or(&0)
+    }
+    pub fn request_current(&self, request: &Request) -> bool {
+        request.device.is_empty()
+            || self.device_generation(&request.device) == request.device_generation
+    }
+    pub async fn device_revoked(&self, device: &str, generation: u64) {
+        let mut changes = self.device_changes.subscribe();
+        loop {
+            if !device.is_empty() && self.device_generation(device) != generation {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
     }
     pub fn progress(&self, phase: &str, detail: impl Into<String>) {
         self.state.send_modify(|s| {
@@ -217,6 +312,117 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn device_disconnect_revokes_only_that_phones_queued_and_active_work() {
+        let (control, mut requests) = Control::new();
+        for phone in ["01", "02"] {
+            control
+                .request(
+                    format!(
+                        r#"{{"action":"musicConnect","target":"hci0/02:00:00:00:00:{phone}"}}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+        }
+        let first = requests.try_recv().unwrap();
+        let second = requests.try_recv().unwrap();
+        let global_music = *control.music_cancel.borrow();
+        let global_calls = *control.calls_cancel.borrow();
+        control
+            .request(br#"{"action":"deviceDisconnect","target":"hci0/02:00:00:00:00:01"}"#)
+            .unwrap();
+        assert!(!control.request_current(&first));
+        assert!(control.request_current(&second));
+        assert_eq!(*control.music_cancel.borrow(), global_music);
+        assert_eq!(*control.calls_cancel.borrow(), global_calls);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            control.device_revoked(&first.device, first.device_generation),
+        )
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(1),
+                control.device_revoked(&second.device, second.device_generation)
+            )
+            .await
+            .is_err()
+        );
+        requests.try_recv().unwrap();
+        control
+            .request(br#"{"action":"musicConnect","target":"hci0/02:00:00:00:00:01"}"#)
+            .unwrap();
+        assert!(control.request_current(&requests.try_recv().unwrap()));
+    }
+
+    #[test]
+    fn malformed_device_disconnect_cannot_revoke_another_owner() {
+        let (control, mut requests) = Control::new();
+        control
+            .request(br#"{"action":"callsConnect","target":"hci0/02:00:00:00:00:01"}"#)
+            .unwrap();
+        let queued = requests.try_recv().unwrap();
+        for target in ["", "hci0/*", "hci0/phone", "hci0/02:00:00:00:00:01/other"] {
+            assert!(
+                control
+                    .request(
+                        serde_json::to_vec(
+                            &serde_json::json!({"action":"deviceDisconnect","target":target})
+                        )
+                        .unwrap()
+                        .as_slice()
+                    )
+                    .is_err()
+            );
+            assert!(control.request_current(&queued));
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn device_revocation_uses_the_same_identity_as_legacy_phone_actions() {
+        for action in ["connect", "musicConnect", "callsConnect", "deviceConnect"] {
+            let (control, mut requests) = Control::new();
+            control
+                .request(
+                    serde_json::to_vec(
+                        &serde_json::json!({"action":action,"target":"hci0/aa:bb:cc:dd:ee:ff"}),
+                    )
+                    .unwrap()
+                    .as_slice(),
+                )
+                .unwrap();
+            let queued = requests.try_recv().unwrap();
+            assert_eq!(queued.target, "hci0/AA:BB:CC:DD:EE:FF");
+            control
+                .request(br#"{"action":"deviceDisconnect","target":"hci0/AA:BB:CC:DD:EE:FF"}"#)
+                .unwrap();
+            assert!(!control.request_current(&queued), "{action}");
+        }
+    }
+    #[test]
+    fn forgetting_another_phone_preserves_the_active_call() {
+        let (control, mut requests) = Control::new();
+        control.state.send_modify(|s| {
+            s.calls = Some(calls::Snapshot {
+                device: "hci0/02:00:00:00:00:01".into(),
+                ..Default::default()
+            })
+        });
+        let generation = *control.calls_cancel.borrow();
+        control
+            .request(br#"{"action":"forget","target":"hci1/02:00:00:00:00:02"}"#)
+            .unwrap();
+        requests.try_recv().unwrap();
+        assert_eq!(*control.calls_cancel.borrow(), generation);
+        control
+            .request(br#"{"action":"forget","target":"hci0/02:00:00:00:00:01"}"#)
+            .unwrap();
+        assert_ne!(*control.calls_cancel.borrow(), generation);
+    }
     #[test]
     fn music_stop_revokes_queued_work_before_radio_worker_runs() {
         let (control, mut requests) = Control::new();

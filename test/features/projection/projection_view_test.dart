@@ -17,6 +17,7 @@ import 'package:argo/core/projection/projection_types.dart';
 import 'package:argo/features/projection/projection_view.dart';
 import 'package:argo/features/projection/projection_page.dart';
 import 'package:argo/features/projection/projection_input_scope.dart';
+import 'package:argo/features/projection/projection_presentation_scope.dart';
 import 'package:argo/app/argo_environment.dart';
 import 'package:argo/app/navigation/app_module.dart';
 import 'package:argo/app/navigation/app_module_registry.dart';
@@ -34,6 +35,56 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'waiting status stays above a taller player and long failures scroll',
+    (tester) async {
+      final backend = InMemoryProjectionBackend(
+        initial: ProjectionSnapshot(backendAvailable: true),
+      );
+      final service = _DirectProjectionService(backend);
+      const reserve = 100.0;
+      Widget page({String? error}) => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              key: const ValueKey('waiting-viewport'),
+              width: 320,
+              height: 290,
+              child: ProjectionPresentationScope(
+                waiting: false,
+                error: error,
+                bottomOverlayHeight: reserve,
+                child: ProjectionPage(projection: service),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(page());
+      await tester.pumpAndSettle();
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('waiting-viewport')),
+      );
+      expect(
+        tester.getRect(find.text('No device')).bottom,
+        lessThan(viewport.bottom - reserve),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(
+        page(error: List.filled(12, 'Reconnect the selected phone.').join(' ')),
+      );
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byType(SingleChildScrollView),
+        const Offset(0, -160),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await backend.close();
+    },
+  );
+
   testWidgets('Home activates an unselected replacement; Media does not', (
     tester,
   ) async {
@@ -198,6 +249,120 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
       expect(calls.where((call) => call.method == 'dispose'), hasLength(1));
+      await backend.close();
+    },
+  );
+
+  testWidgets('portrait projection sends held drag moves without repainting', (
+    tester,
+  ) async {
+    final stream = _portraitStream();
+    final backend = InMemoryProjectionBackend(
+      initial: _liveSnapshot(stream: stream),
+    );
+    final service = _DirectProjectionService(backend);
+    await tester.pumpWidget(_gesturePage(service, stream: stream));
+    final gesture = await tester.startGesture(
+      const Offset(350, 300),
+      pointer: 42,
+    );
+    await tester.idle();
+    await gesture.moveTo(const Offset(375, 315));
+    await tester.idle();
+    // No pump: native projection video must not gate phone input on a Flutter
+    // repaint, and the phone needs MOVE before the contact is lifted.
+    expect(backend.touches.map((t) => t.phase), [
+      ProjectionTouchPhase.down,
+      ProjectionTouchPhase.move,
+    ]);
+    await gesture.moveTo(const Offset(425, 330));
+    await tester.idle();
+    await gesture.up();
+    await tester.idle();
+    expect(backend.touches.map((t) => t.phase), [
+      ProjectionTouchPhase.down,
+      ProjectionTouchPhase.move,
+      ProjectionTouchPhase.move,
+      ProjectionTouchPhase.up,
+    ]);
+    expect(backend.touches.map((t) => t.pointerId), everyElement(42));
+    for (final (index, point) in const [
+      Offset(.3, .5),
+      Offset(.4, .55),
+      Offset(.6, .6),
+      Offset(.6, .6),
+    ].indexed) {
+      expect(backend.touches[index].x, closeTo(point.dx, .0001));
+      expect(backend.touches[index].y, closeTo(point.dy, .0001));
+    }
+    await tester.pumpWidget(const SizedBox());
+    await backend.close();
+  });
+
+  testWidgets(
+    'pinch motion survives contact transitions and transport backpressure',
+    (tester) async {
+      final stream = _portraitStream();
+      final backend = InMemoryProjectionBackend(
+        initial: _liveSnapshot(stream: stream),
+      );
+      final service = _DirectProjectionService(backend)
+        ..hold = Completer<void>();
+      await tester.pumpWidget(
+        _gesturePage(service, stream: stream, inputDiagnostics: true),
+      );
+      final first = await tester.startGesture(
+        const Offset(350, 300),
+        pointer: 1001,
+      );
+      await first.moveTo(const Offset(325, 300));
+      final second = await tester.startGesture(
+        const Offset(450, 300),
+        pointer: 969,
+      );
+      await first.moveTo(const Offset(300, 300));
+      await second.moveTo(const Offset(475, 300));
+      await second.moveTo(const Offset(487.5, 300));
+      await first.up();
+      await second.moveTo(const Offset(500, 300));
+      await second.up();
+      expect(backend.touches, hasLength(1));
+      service.hold!.complete();
+      await tester.idle();
+      expect(backend.touches.map((t) => t.phase), [
+        ProjectionTouchPhase.down,
+        ProjectionTouchPhase.move,
+        ProjectionTouchPhase.down,
+        ProjectionTouchPhase.move,
+        ProjectionTouchPhase.move,
+        ProjectionTouchPhase.up,
+        ProjectionTouchPhase.move,
+        ProjectionTouchPhase.up,
+      ]);
+      expect(backend.touches.map((t) => t.pointerId), [
+        1001,
+        1001,
+        969,
+        1001,
+        969,
+        1001,
+        969,
+        969,
+      ]);
+      for (final (index, x) in const [
+        .3,
+        .2,
+        .7,
+        .1,
+        .85,
+        .1,
+        .9,
+        .9,
+      ].indexed) {
+        expect(backend.touches[index].x, closeTo(x, .0001));
+        expect(backend.touches[index].y, closeTo(.5, .0001));
+      }
+      await tester.pumpWidget(const SizedBox());
       await backend.close();
     },
   );
@@ -431,19 +596,25 @@ void main() {
         nativeId,
       );
       expect(tester.layers.whereType<TextureLayer>(), isEmpty);
+      final initialClient = tester.getRect(
+        find.byKey(const ValueKey('dashboard-client-area')),
+      );
+      final initialLayout = DashboardGeometry(initialClient.size);
       final fitted = ProjectionViewGeometry(
-        width: 800,
-        height: DashboardGeometry(const Size(800, 600)).dockTop,
+        width: initialClient.width,
+        height: initialLayout.dockTop,
         devicePixelRatio: 2,
       ).fit(1280, 720, contentInsets: stream.contentInsets)!;
       expect(
         tester.getRect(find.byType(PlatformViewSurface)),
-        Rect.fromLTWH(fitted.left, fitted.top, fitted.width, fitted.height),
+        Rect.fromLTWH(
+          initialClient.left + fitted.left,
+          initialClient.top + fitted.top,
+          fitted.width,
+          fitted.height,
+        ),
       );
-      expect(
-        fitted.physicalHeight,
-        2 * DashboardGeometry(const Size(800, 600)).dockTop,
-      );
+      expect(fitted.physicalHeight, 2 * initialLayout.dockTop);
       final beforeRect = tester.getRect(find.byType(PlatformViewSurface));
       final beforeVisibility = List.of(service.visibility);
       // Actual PlatformViewLayer, not just a calculated rectangle. Exercise
@@ -460,18 +631,25 @@ void main() {
         await tester.pumpAndSettle();
         final rectangle = tester.getRect(find.byType(PlatformViewSurface));
         final viewport = metrics.$1 / metrics.$2;
-        final layout = DashboardGeometry(viewport);
+        final client = tester.getRect(
+          find.byKey(const ValueKey('dashboard-client-area')),
+        );
+        final bar = tester.getRect(
+          find.byKey(const ValueKey('dashboard-status-bar')),
+        );
+        expect(client.top, bar.bottom);
+        final layout = DashboardGeometry(client.size);
         expect(rectangle.width, lessThanOrEqualTo(viewport.width));
         final expected = ProjectionViewGeometry(
-          width: viewport.width,
+          width: client.width,
           height: layout.dockTop,
           devicePixelRatio: metrics.$2,
         ).fit(1280, 720, contentInsets: stream.contentInsets)!;
         expect(
           rectangle,
           Rect.fromLTWH(
-            expected.left,
-            expected.top,
+            client.left + expected.left,
+            client.top + expected.top,
             expected.width,
             expected.height,
           ),
@@ -485,8 +663,11 @@ void main() {
         final floating = tester.getRect(
           find.byKey(const ValueKey('floating-media-surface')),
         );
-        expect(floating.left, closeTo(viewport.width * .025, .001));
-        expect(floating.top, closeTo(layout.primaryHeight + 4, .001));
+        expect(floating.left, closeTo(client.left + client.width * .025, .001));
+        expect(
+          floating.top,
+          closeTo(client.top + layout.primaryHeight + 4, .001),
+        );
         expect(floating.bottom, closeTo(dock.top - 4, .001));
 
         for (final size in [1.0, 1.15, 1.3]) {
@@ -552,7 +733,7 @@ void main() {
       expect(backend.touches.last.phase, ProjectionTouchPhase.cancel);
       final touchCount = backend.touches.length;
       await tester.tapAt(
-        const Offset(400, 10),
+        Offset(initialClient.center.dx, initialClient.top + 10),
       ); // Barrier dismisses; no phone input.
       await heldModal.up();
       await tester.pumpAndSettle();
@@ -588,15 +769,17 @@ void main() {
       );
       final pointer = await tester.startGesture(
         Offset(
-          fitted.left + fitted.width * 0.25,
-          fitted.top + fitted.height / 2,
+          initialClient.left + fitted.left + fitted.width * 0.25,
+          initialClient.top + fitted.top + fitted.height / 2,
         ),
       );
       await pointer.up();
       await tester.pump();
       expect(backend.touches.first.x, closeTo(0.25, 0.0001));
       expect(backend.touches.first.y, closeTo(0.5, 0.0001));
-      final bars = await tester.startGesture(const Offset(790, 590));
+      final bars = await tester.startGesture(
+        Offset(initialClient.right - 5, initialClient.top + 10),
+      );
       await bars.up();
       await tester.pump();
       expect(backend.touches, hasLength(2));
@@ -667,11 +850,12 @@ void main() {
       tester.view.physicalSize = const Size(1000, 700);
       await tester.pumpAndSettle();
       final smallSize = tester.getSize(find.byType(PlatformViewSurface));
-      final smallViewport =
-          const Size(1000, 700) / tester.view.devicePixelRatio;
+      final smallClient = tester.getRect(
+        find.byKey(const ValueKey('dashboard-client-area')),
+      );
       final smallFit = ProjectionViewGeometry(
-        width: smallViewport.width,
-        height: DashboardGeometry(smallViewport).dockTop,
+        width: smallClient.width,
+        height: DashboardGeometry(smallClient.size).dockTop,
       ).fit(1280, 720, contentInsets: stream.contentInsets)!;
       expect(smallSize, Size(smallFit.width, smallFit.height));
       backend.emit(
@@ -972,6 +1156,16 @@ ProjectionVideoStream _mainStream() => ProjectionVideoStream(
   height: 720,
   framesPerSecond: 30,
 );
+ProjectionVideoStream _portraitStream() => ProjectionVideoStream(
+  id: 'main',
+  sessionId: 'session',
+  role: ProjectionVideoRole.main,
+  codec: ProjectionVideoCodec.h264,
+  width: 1280,
+  height: 720,
+  framesPerSecond: 30,
+  contentInsets: const ProjectionInsets(left: 340, right: 340),
+);
 ProjectionSnapshot _liveSnapshot({
   ProjectionVideoStream? stream,
   ProjectionSessionMetadata? metadata,
@@ -998,25 +1192,29 @@ ProjectionSnapshot _liveSnapshot({
     ),
   ],
 );
-Widget _gesturePage(ProjectionService service, {bool active = true}) =>
-    MaterialApp(
-      home: Center(
-        child: SizedBox(
-          width: 400,
-          height: 300,
-          child: ProjectionInputScope(
-            active: active,
-            child: ProjectionView(
-              service: service,
-              sessionId: 'session',
-              stream: _mainStream(),
-              nativeViewBuilder: (_, _) =>
-                  const ColoredBox(color: Colors.black),
-            ),
-          ),
+Widget _gesturePage(
+  ProjectionService service, {
+  bool active = true,
+  bool inputDiagnostics = false,
+  ProjectionVideoStream? stream,
+}) => MaterialApp(
+  home: Center(
+    child: SizedBox(
+      width: 400,
+      height: 300,
+      child: ProjectionInputScope(
+        active: active,
+        child: ProjectionView(
+          service: service,
+          inputDiagnostics: inputDiagnostics,
+          sessionId: 'session',
+          stream: stream ?? _mainStream(),
+          nativeViewBuilder: (_, _) => const ColoredBox(color: Colors.black),
         ),
       ),
-    );
+    ),
+  ),
+);
 
 class _GeometryStore implements SettingsStore {
   SettingsDocument document = SettingsDocument();

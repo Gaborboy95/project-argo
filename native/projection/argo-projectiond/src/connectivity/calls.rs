@@ -313,6 +313,7 @@ struct Controller {
     attempts: u8,
     next: Instant,
     audio_attempts: u8,
+    device_generation: u64,
 }
 impl Controller {
     fn publish(&self) {
@@ -550,6 +551,7 @@ impl Controller {
                 let _ = self.book.clear().await;
                 self.silence().await?;
                 self.state.device = r.target.clone();
+                self.device_generation = r.device_generation;
                 self.authorized()?;
                 self.wanted = true;
                 self.attempts = 0;
@@ -560,6 +562,9 @@ impl Controller {
                 self.refresh().await
             }
             "callsDisconnect" => {
+                if !r.target.is_empty() && r.target != self.state.device {
+                    return Ok(());
+                }
                 self.wanted = false;
                 let _ = self.book.clear().await;
                 self.silence().await?;
@@ -711,6 +716,7 @@ pub async fn run(
         attempts: 0,
         next: Instant::now(),
         audio_attempts: 0,
+        device_generation: 0,
     };
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -725,6 +731,8 @@ pub async fn run(
         .await
         .ok();
     let mut cancel = c.host.connectivity.calls_cancel.subscribe();
+    let device_control = c.host.connectivity.clone();
+    let mut device_changes = device_control.device_changes.subscribe();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {biased;
@@ -736,9 +744,20 @@ pub async fn run(
                 if let Err(e)=c.silence().await {c.state.detail=format!("Call audio cleanup: {e}");}
                 c.publish();
             },
-            r=requests.recv()=>{let Some(r)=r else {break};if r.action!="callsDisconnect" && (r.generation!=*cancel.borrow() || c.host.connectivity.stopping.load(std::sync::atomic::Ordering::SeqCst)){continue;}
-                let result=tokio::time::timeout(Duration::from_secs(8),c.request(&r)).await.unwrap_or_else(|_|Err("Call operation timed out; check the phone before repeating it".into()));
-                let result=if r.action!="callsDisconnect" && r.generation!=*cancel.borrow(){c.wanted=false;let _=c.book.clear().await;c.silence().await.and(Err("Call request cancelled".into()))}else{result};
+            _=device_changes.changed()=>{
+                if !c.state.device.is_empty() && device_control.device_generation(&c.state.device)!=c.device_generation {
+                    c.wanted=false;let _=c.book.clear().await;
+                    if let Err(error)=c.silence().await {c.state.detail=format!("Call audio cleanup: {error}");}
+                    c.device_generation=device_control.device_generation(&c.state.device);
+                    c.state.calls.clear();c.state.phase="disconnected".into();c.publish();
+                }
+            },
+            r=requests.recv()=>{let Some(r)=r else {break};if r.action!="callsDisconnect" && (r.generation!=*cancel.borrow() || !device_control.request_current(&r) || c.host.connectivity.stopping.load(std::sync::atomic::Ordering::SeqCst)){continue;}
+                let result=tokio::select! {biased;
+                    _=device_control.device_revoked(&r.device,r.device_generation)=>Err("Phone disconnected".into()),
+                    result=tokio::time::timeout(Duration::from_secs(8),c.request(&r))=>result.unwrap_or_else(|_|Err("Call operation timed out; check the phone before repeating it".into())),
+                };
+                let result=if r.action!="callsDisconnect" && (r.generation!=*cancel.borrow() || !device_control.request_current(&r)){c.wanted=false;let _=c.book.clear().await;c.silence().await.and(Err("Call request cancelled".into()))}else{result};
                 crate::daemon_log!(Info,"calls","operation={} action={} result={}",r.prompt,r.action,if result.is_ok(){"accepted"}else{"not confirmed"});
                 c.state.operation=r.prompt;c.state.error=result.err();if let Some(e)=&c.state.error {c.state.detail=e.clone();}c.publish();
             },
@@ -746,7 +765,11 @@ pub async fn run(
                 if c.authorized().is_err() {let _=c.book.clear().await;}else{c.book.poll().await;}
                 let _=c.host.voice.refresh().await;
                 c.host.connectivity.state.send_modify(|s|s.voice=Some(c.host.voice.state.borrow().clone()));
-                if let Err(e)=tokio::time::timeout(Duration::from_secs(4),c.refresh()).await.unwrap_or_else(|_|Err("PipeWire telephony did not respond".into())) {
+                let device=c.state.device.clone();let generation=c.device_generation;
+                if let Err(e)=tokio::select! {biased;
+                    _=device_control.device_revoked(&device,generation)=>{c.wanted=false;Err("Phone disconnected".into())},
+                    result=tokio::time::timeout(Duration::from_secs(4),c.refresh())=>result.unwrap_or_else(|_|Err("PipeWire telephony did not respond".into())),
+                } {
                     if let Err(cleanup)=c.silence().await {c.wanted=false;c.state.detail=format!("{e}; cleanup: {cleanup}");}else{c.state.detail=e;}
                     c.state.phase=if c.wanted && !c.gateway.is_empty() {"connected"} else if c.wanted {"connecting"}else{"unavailable"}.into();
                     if c.state.phase!="connected" {c.state.calls.clear();}

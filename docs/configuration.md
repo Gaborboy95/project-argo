@@ -38,8 +38,9 @@ unset/`0` leaves it absent. Managed bundles containing `carplay_control=1` enabl
 it by default unless explicitly disabled. The separate daemon uses the desktop
 user's `$XDG_RUNTIME_DIR/project-argo/carplay.sock`. Wired-capable releases also
 accept validated `carplay.json` enable/display/audio-output configuration; see the
-[supervised wired mode](carplay.md#supervised-wired-development-mode). Radio, codec
-and remembered-device controls are not yet exposed.
+[supervised wired mode](carplay.md#supervised-wired-development-mode). Receiver
+configuration remains separate from the shared Devices phone catalog. Devices
+owns adding, selecting, connecting, disconnecting and forgetting phones.
 `ARGO_LIVI_LINK_ADDRESS` is a trusted foreground CLI/daemon IPv4 diagnostic
 override only; the default re-discovers `livi-link.local` for every transaction.
 It is not a Flutter setting or managed environment option. See
@@ -61,7 +62,8 @@ It is not a Flutter setting or managed environment option. See
 | `ARGO_ANDROID_AUTO_CERT_FILE` | No default | **Daemon only**, startup validation and session TLS loading; external readable PEM certificate, e.g. `$HOME/.config/project-argo/android-auto/argo.crt`. Missing/invalid identity is reported through control readiness without disabling the rest of Argo. Restart daemon after correcting files. |
 | `ARGO_ANDROID_AUTO_KEY_FILE` | No default | **Daemon only**; unencrypted PKCS#8 PEM with `BEGIN PRIVATE KEY` / `END PRIVATE KEY` markers (not a PKCS#1 `RSA PRIVATE KEY` file), e.g. `$HOME/.config/project-argo/android-auto/argo.key`. Keep permissions restricted and files outside repository/plugin/settings directories. Dart ignores inherited identity variables and never opens/parses/transmits keys or identity paths. |
 | `ARGO_HOST_STATE_DIAGNOSTICS` | Off; exactly `1` enables | Argo/Veloce startup; forwards DEBUG logs from explicitly loaded host-read-capable resources, newest line at most every 3 seconds, truncated/quoted. May contain track/device text; development-only opt-in. Example `1` during the synthetic observer check. No CAN dependency. |
-| `ARGO_PROJECTION_LOG_LEVEL` | `info`; `error`, `warn`, `info`, `debug`, `trace` | Daemon startup, release supported; invalid value fails startup. Example `debug`. INFO transitions/socket locations; WARN/ERROR failures; DEBUG setup/focus/consumer detail and bounded wireless liveness/cleanup timing; TRACE RX/TX/ping metadata without media/credential dumps. Independent of renderer logging. |
+| `ARGO_PROJECTION_LOG_LEVEL` | `info`; `error`, `warn`, `info`, `debug`, `trace` | Daemon startup, release supported; invalid value fails startup. Example `debug`. INFO transitions/socket locations; WARN/ERROR failures; DEBUG setup/focus/consumer detail and bounded wireless liveness/cleanup timing; TRACE RX/TX/ping metadata and AA input pointer/phase/action/index/count/epoch timestamp, without touch coordinates or media/credential dumps. Independent of renderer logging. |
+| `ARGO_PROJECTION_INPUT_DIAGNOSTICS` | Unset/`0`: off; `1`: on | Runtime-only touch diagnostics in the app journal: raw and delivered contact transitions, first motion and motion counts. No coordinates or phone identifiers. Pair with daemon `trace` logging to follow input through the AA writer. |
 
 Identity must already be available externally. The loader parses certificates and
 PKCS#8 key material; its structural readiness check is not certification or a
@@ -124,13 +126,15 @@ The service's `set`/`reset` is the supported in-app change path.
 | Key | Type, default and accepted values | Effect |
 |---|---|---|
 | `app.navigation.lastModule` | String `home`, nonempty | Last selection; shell resolves registered modules and falls back for unavailable IDs. |
-| `connectivity.autoConnectPhone` | Boolean `true` | Settings → Devices: one bounded startup request for the remembered paired phone; disabling cancels pending startup actions for this run. |
+| `connectivity.autoConnectPhone` | Boolean `true` | Settings → Devices: one startup reconnect request for the selected, identified Android Auto or CarPlay phone; disabling cancels the pending request for this run. |
+| `connectivity.selectedDevice` | String `""`, bounded device identity | Selected physical phone in Devices; shared by Android Auto and CarPlay. Empty means no selected device. |
+| `connectivity.deviceInventory` | String `"[]"`, bounded JSON catalog | Remembered phone names, Bluetooth addresses, connection types and confirmed projection identity bindings. It contains no pairing credentials, media or Wi-Fi secrets. |
 | `audio.master.volume` | Number `0.5`, 0..1 | Requested master volume; real backend applies supported operation. |
 | `audio.master.muted` | Boolean `false` | Requested mute. |
 | `audio.output.balance` | Number `0`, -1..1 | Saved preference; current wpctl backend cannot apply. |
 | `audio.output.fader` | Number `0`, -1..1 | Saved preference; current wpctl backend cannot apply. |
 | `audio.equalizer.bassDb`, `audio.equalizer.midDb`, `audio.equalizer.trebleDb` | Each number `0`, -12..12 | Saved EQ preferences; current wpctl backend cannot apply. |
-| `audio.output.preferred` | String `""` | Requested output; current wpctl backend has no output selection mutation. |
+| `audio.output.preferred` | String `""` | Requested stable output `node.name`; empty follows the desktop default. Missing or ambiguous saved outputs leave host controls unavailable while the UI remains usable. Retry the same saved output after reconnecting it or explicitly select another in Sound settings. |
 | `projection.display.width` | Integer `1280`, 640..3840 | Validated next-session request; daemon supports only paired sizes below. |
 | `projection.display.height` | Integer `720`, 360..2160 | Same; changing preference does not resize a negotiated live stream. |
 | `projection.display.dpi` | Integer `160`, 80..640 | Validated next-session request, not desktop DPR. |
@@ -146,9 +150,10 @@ and daemon request validation require a catalog pair. Unsupported older stored
 pairs recover to 1280×720/30/160/left with a diagnostic and persisted defaults;
 invalid scalar values follow SettingsService's existing default recovery.
 
-Settings → **Android Auto / Apple CarPlay** edits these preferences using the
-connected daemon's catalog, not a widget-owned mode list. CarPlay remains
-unimplemented. DPI saves on Enter; menus save on selection. The page separately
+Settings → **Android Auto** edits these preferences using the
+connected daemon's catalog, not a widget-owned mode list. CarPlay has a separate
+receiver settings card and native settings store; see [CarPlay](carplay.md).
+DPI saves on Enter; menus save on selection. The page separately
 shows saved request, daemon-validated next connection, and current session-selected
 parameters. Rejections retain the daemon's previous valid configuration. While
 the daemon is unavailable, saved values remain visible but editing is disabled;
@@ -158,9 +163,11 @@ phone connection**, without automatic disconnection.
 
 ### View Area and Safe Area
 
-The encoded video tier stays unchanged. Argo measures the actual region above the
+The encoded video tier stays unchanged, including on a 3:4 portrait display.
+Argo measures the actual region inside the host safe area and above the
 dock and adds balanced View Area margins so the remaining content fits that aspect
-ratio, rounded to even content dimensions. Settings expose additional margins in
+ratio, rounded to even content dimensions where the saved safe minimums permit.
+Settings expose additional margins in
 encoded pixels. The native view removes only these negotiated margin pixels during
 its existing row copy; there is no extra resampling stage. Touch uses the same
 remaining content rectangle. Do not use margins to crop arbitrary controls from an
@@ -170,11 +177,27 @@ Safe Area is separate: `UiConfig.content_insets` and `stable_content_insets` req
 that AA keep important UI clear of the host overlay. Its minimum bottom inset covers
 the closed media panel plus its gap above the dock, even when the strip is hidden.
 Settings → Projection → Calculate automatically clears manual margin overrides
-and uses this measured fit, preserving resolution, FPS and DPI. The page displays
+and uses this measured fit, preserving resolution, FPS and the saved DPI request. The page displays
 the available viewport and media clearance in logical pixels; negotiated insets
 are converted to source pixels. Maps may render beneath
 it; individual phone applications must honor the layout hint for this to work.
 Expanded panels remain modal overlays, not new safe-area negotiations.
+
+For Android Auto only, a final View Area taller than it is wide also limits the
+effective announced DPI to
+`min(saved DPI, clamp(floor(content width × 160 / 730), 80, 640))`. The calculation
+uses the final content rectangle after margins and safe-area minimums, not the
+encoded tier or host-window width. A 600×720 content area requested at 160 DPI is
+therefore announced at 131 DPI. Landscape, square and already-lower DPI requests
+stay unchanged; CarPlay is unaffected. This is a runtime next-connection request:
+the saved DPI remains available for other layouts and an active session is not
+renegotiated.
+
+The 730-dp width is a measured compatibility heuristic from
+[Open Headunit's portrait density research](https://github.com/andreknieriem/open-headunit/commit/ec6cb51655fe9b210dfaa707d7ff3c8b1fb9ed39),
+independently implemented in Argo, rather than a Google guarantee. The protocol's
+80-DPI minimum cannot maintain 730 dp on very narrow content below 365 encoded
+pixels; touch behavior there still requires phone/application verification.
 
 Manual values are persisted; measured margins are runtime requests. The first
 measured layout and subsequent viewport changes are debounced. The daemon freezes
@@ -182,14 +205,17 @@ both areas when a session begins. A phone connected before the first application
 layout keeps its prior geometry; reconnect to apply the measured fit. Resizing an
 active session aspect-fits its frozen content until the next connection. Media
 visibility, panel expansion and Control size do not change the reserved geometry.
-Invalid combinations that leave no content are rejected. Renderer-test source stays
+Invalid combinations that leave no content are rejected. If resizing would make
+saved minimum safe margins impossible within the fitted aspect ratio, Argo retains
+those margins and letterboxes the content. Transient non-finite or empty window
+measurements are ignored. Renderer-test source stays
 1280×720 with no phone-negotiated crop. See [wireless setup](wireless.md).
 
 Native playback reports fixed PCM formats: media 48 kHz/16-bit/stereo;
 speech/navigation and system 16 kHz/16-bit/mono. They share the daemon's discovery,
 playback and session-metadata descriptor; there are no arbitrary audio-format
 controls. Per-stream gain is separate from system master volume. Microphone
-startup signaling remains partial scaffolding with no capture/upload pipeline.
+selection, mute and native capture ownership are described in [media and audio](media.md).
 Selected caps and source descriptors are not observations of decoded video,
 physical refresh rate, Flutter DPR, or the host audio device's output format.
 
@@ -248,9 +274,13 @@ shaders and vehicle-driven day/night selection remain future work.
 
 ## Connectivity requests
 
-Settings → Devices saves `connectivity.bluetoothAdapter`,
-`connectivity.projectionInterface`, and `connectivity.projectionPhone` as bounded
-string references (default empty). BlueZ owns bonds and NM owns AP profiles; no
+Settings → Devices saves the selected physical phone in
+`connectivity.selectedDevice` and its catalog in `connectivity.deviceInventory`.
+Bluetooth controller selection remains in `connectivity.bluetoothAdapter`;
+`connectivity.projectionPhone` retains the AA controller-scoped reference and is
+migrated to the shared selection when its phone type is known. Settings → Android
+Auto saves `connectivity.projectionInterface`. References default to empty.
+BlueZ owns bonds and NM owns AP profiles; no
 secrets are saved in these preferences. `connectivity.projectionBand` stores
 `2.4ghz` or `5ghz` (default `5ghz`); the daemon validates it and uses only permitted
 channels in that band, without automatic cross-band fallback. Selection changes during a session apply
@@ -259,7 +289,13 @@ managed Wi-Fi interface supports AP mode and a permitted channel in that band.
 A card used by another connection is unavailable. If exactly one candidate is viable
 and no interface was chosen, it is selected; ambiguity requires selection. Disable
 persists for the application connection until explicitly enabled again. Capability detection itself does not connect or start discovery. The separate
-saved startup preference can request a connection to the remembered paired phone.
+saved startup preference can request a connection only to the selected identified
+phone. Devices Connect and Disconnect act on the phone, including its projection
+and Bluetooth endpoints, rather than offering independent AA/CarPlay actions.
+Unknown phones require an Android Auto, CarPlay or Bluetooth type choice. Matching
+Bluetooth addresses join controller-scoped entries; aliases never join phones.
+Wireless projection uses proven native identities, while a USB projection can be
+linked to its saved Bluetooth phone explicitly in Devices.
 The former `ARGO_WIRELESS_DEVELOPMENT` flag is no longer read.
 See [security, permissions, launch and rollback](wireless.md).
 
@@ -273,9 +309,10 @@ There is no new media payload channel or Lua write permission.
 `ARGO_PROJECTION_BACKEND=disabled` selects a connectivity-only client on Linux and
 disables native projection admission; shared pairing/music remain available. The
 normal launcher respects this setting. With `android-auto`, absent/invalid daemon
-identity prevents AA startup but does not disable Bluetooth. Music connection requires a manual or saved startup request. Selected
-entertainment source and bounded connection intent remain session-local; the
-startup preference does not select music or begin playback.
+identity prevents AA startup but does not disable Bluetooth. Music connection
+requires an explicit device or Media request. Selected entertainment source and
+bounded connection intent remain session-local; startup projection reconnect does
+not select music or begin playback.
 
 Administrator-approved firewall interfaces/accounts are stored only in root-owned
 `/etc/argo/projection-firewall.json`; the runtime cannot edit the helper or polkit
@@ -284,9 +321,10 @@ Bluetooth roles or codecs. See [Media setup](media.md#setup-and-use) and the
 [permission installer](wireless.md#permissions-and-helper-installation).
 
 The shared Bluetooth adapter choice is saved by its hardware address (older `hciN`
-choices migrate when that adapter is available). Pairing, wireless bootstrap and
-music admission use that same adapter. Settings and Media list its devices only;
-other adapters and bonds remain available to the desktop. A missing preferred
+choices migrate when that adapter is available). Android pairing, wireless bootstrap
+and music admission use that same adapter. Devices groups a phone's endpoints
+across controllers; Media retains its profile-specific adapter scope. Other devices
+and bonds remain available to the desktop. A missing preferred
 adapter does not authorize a fallback. Change adapters while discovery, pairing,
 wireless projection and music are idle.
 
@@ -297,7 +335,8 @@ wireless projection and music are idle.
 default, maximum 256 characters). The shared input is selected in Settings → Sound
 or Calls. Its absence prevents capture rather than selecting a different input.
 Selection changes take effect only without a capture owner. Microphone mute and
-Connect calls are runtime actions. The separate deployment startup preference may request the call profile at graphical application startup; it does not initiate a call or capture.
+Connect calls are runtime actions; opening Devices or the phone's projection
+settings does not initiate a call or capture.
 The daemon requires `pw-dump`, `pw-cat`, `pw-loopback` and `setpriv` on PATH
 (`setpriv` is invoked at `/usr/bin/setpriv`). No microphone environment variable,
 AA identity in Flutter, root execution or additional Bluetooth profile is needed.
@@ -309,7 +348,8 @@ Managed deployment uses `$HOME/.config/project-argo/`:
 
 - `current-release`: the atomic shared release symlink; change it with `argoctl select`.
 - `previous-release.json`: the previous managed selection used by `argoctl rollback`.
-- `deployment.json`: absolute `ihs_prefix`, common `environment` map and default-off
+- `deployment.json`: default absolute `ihs_prefix` (older managed releases;
+  new manifests may pin their own validated absolute prefix), common `environment` map and default-off
   `connect` booleans (`wireless`, `music`, `calls`) and optional `display` options.
 - `daemon.json`: daemon-only identity paths and optional AA wire/codec opt-ins.
 - `settings.json`: existing application preferences; release switches never replace it.
@@ -333,46 +373,32 @@ common environment settings, the user manager environment, bundles or applicatio
 preferences. `daemon.json` is loaded exclusively when executing the daemon.
 
 All deployment option changes take effect on the next corresponding process start;
-they do not mutate a live session. The installed CLI saves opt-in connection choices:
+they do not mutate a live session. The CLI retains the legacy `autoconnect
+wireless|music|calls on|off` options for older clients. The current composed
+application gives connection ownership to DeviceConnectionService, so these
+options do not independently launch another phone or protocol.
 
-```bash
-"$HOME/.local/bin/argoctl" autoconnect wireless on
-"$HOME/.local/bin/argoctl" autoconnect music on
-"$HOME/.local/bin/argoctl" autoconnect calls on
-# Each can be independently disabled:
-"$HOME/.local/bin/argoctl" autoconnect wireless off
-```
+Settings → Devices → **Reconnect selected phone at startup** defaults to **on**.
+One bounded 90-second startup window waits for the selected, identified phone and
+its required receiver/controller readiness. An AA phone requires its paired
+Bluetooth endpoint and enabled, available wireless controller. An iPhone requires
+the enabled CarPlay receiver. Unknown, unselected or unavailable phones do not
+authorize a fallback to another phone, protocol or Bluetooth music. The request is
+consumed before sending, and already established sessions are retained.
 
-Settings → Devices → **Auto-connect phone** is saved in application preferences
-and defaults to **on**. No discovery budget is spent while the app waits for the
-daemon connection, connectivity availability, adapter inventory and completion of
-saved adapter/interface restoration. Once these prerequisites hold, a bounded
-90-second window waits for the exact remembered phone to appear paired and selected,
-then for controller readiness. Argo never substitutes another paired phone.
+Manual device actions cancel pending startup intent. Disconnect stops that phone's
+projection and every Bluetooth endpoint belonging to its row; it does not
+disconnect unrelated devices. Forget also removes its bonds and remembered
+identity. Switching phones waits for confirmed cleanup before connecting the
+replacement, and a cleanup failure prevents that replacement. Turning startup
+reconnect on again does not rearm the current run. Manual Connect remains available
+when it is off. AA Exit changes presentation only; Media source selection and Calls
+retain their existing audio/microphone ownership.
 
-With projection configured (`ARGO_PROJECTION_BACKEND=android-auto`), the generic
-phone request waits for wireless availability and enablement; transient missing
-Wi-Fi/NetworkManager inventory does not fall back to music. Only an explicitly
-projection-disabled application configuration permits the generic request to use
-Bluetooth music. Disabling projection during the wait cancels the pending request.
-No valid remembered paired phone leaves the ordinary disconnected UI after expiry.
-INFO lifecycle messages report arming, adapter/phone waiting, restoration, wireless
-waiting, request issuance, cancellation and expiry once per run without device
-identifiers or credentials.
-The deployment options above can additionally request specific profiles (each
-remains off by default), but the application setting is the master switch for all
-startup phone requests. Calls are not automatically requested by the default alone.
-
-Each ready profile request is consumed before sending, and an already connecting
-or connected controller is not started again. Existing controllers retain their
-bounded retry policy. Explicit Connect consumes its pending startup request;
-Disconnect or Disable cancels all remaining startup requests for the run. Forget
-clears the matching remembered phone, while selection changes or Quit also cancel
-pending requests. Turning the setting on again does not rearm the current run;
-a later application start creates a fresh window. Manual Connect still works when
-auto-connect is off. AA Exit changes presentation only. Music connection does not
-select its source or start playback; use Media for source selection. Calls retain
-the existing shared microphone/audio ownership.
+CarPlay service startup and Enable CarPlay are passive. Its separate retry option
+applies after an interrupted connection requested for the selected phone; it does
+not initiate a second startup connection. Changing its connection method stops
+the receiver; connect the phone again from Devices when ready.
 
 ### Managed display configuration
 

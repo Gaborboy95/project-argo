@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/diagnostics/service_failure.dart';
+import 'argo_components.dart';
 
 enum ArgoStatus {
   ready,
@@ -39,7 +40,7 @@ class ArgoStatusPanel extends StatelessWidget {
           if (onRetry != null)
             TextButton(onPressed: onRetry, child: const Text('Retry')),
           if (failure case final error?)
-            ExpansionTile(
+            ArgoExpansionTile(
               title: const Text('Details'),
               children: [
                 SelectableText(error.detail),

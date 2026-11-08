@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../shared/argo_components.dart';
+
 import '../../core/projection/carplay_link_diagnostics.dart';
 
 /// Read-only health and accurate capability limits for the prepared accessory.
@@ -63,14 +65,13 @@ class CarPlayLinkSettingsCard extends StatelessWidget {
                   'Bluetooth radio reported by Link',
                   health.bluetoothEnabled! ? 'On' : 'Off',
                 ),
-              row('Bluetooth bridge / iAP handoff', 'Not probed'),
               if (health.error != null)
                 Text(
                   health.error!,
                   style: TextStyle(color: theme.colorScheme.error),
                 ),
               if (health.address != null)
-                ExpansionTile(
+                ArgoExpansionTile(
                   tilePadding: EdgeInsets.zero,
                   title: const Text('Advanced diagnostics'),
                   children: [row('Resolved address', health.address!)],
@@ -82,7 +83,7 @@ class CarPlayLinkSettingsCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'f-io / Lasse Heitgres — LIVI\n'
+                'Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI)\n'
                 'Argo’s CarPlay and LIVI Link interoperability work was informed '
                 'by LIVI – Linux In-Vehicle Infotainment. Thank you to f-io and '
                 'the LIVI contributors for their native CarPlay, iAP2 and MFi '

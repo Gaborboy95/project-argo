@@ -64,6 +64,16 @@ abstract final class AppSettingKeys {
     },
   );
   static final connectivityPhone = _connectivityReference('projectionPhone');
+  static final selectedDevice = _connectivityReference('selectedDevice');
+  static final deviceInventory = SettingKey<String>(
+    id: 'connectivity.deviceInventory',
+    defaultValue: '[]',
+    serialize: (value) => value,
+    deserialize: (value) {
+      if (value is String && value.length <= 65536) return value;
+      throw const FormatException('Invalid remembered device inventory');
+    },
+  );
   static final connectivityBand = SettingKey<String>(
     id: 'connectivity.projectionBand',
     defaultValue: '5ghz',
@@ -222,6 +232,8 @@ abstract final class AppSettingKeys {
     ..register(connectivityAdapter)
     ..register(connectivityInterface)
     ..register(connectivityPhone)
+    ..register(selectedDevice)
+    ..register(deviceInventory)
     ..register(autoConnectPhone)
     ..register(microphoneInput)
     ..register(connectivityBand)

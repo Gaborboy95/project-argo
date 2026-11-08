@@ -5,6 +5,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../shared/argo_components.dart';
+
 import '../../core/camera/camera_service.dart';
 
 /// Results remain provider-owned estimates; unknown coverage is never 'clear'.
@@ -88,7 +90,7 @@ class _ParkingPerceptionPanelState extends State<ParkingPerceptionPanel> {
     return Material(
       color: Theme.of(context).colorScheme.surface.withValues(alpha: .94),
       borderRadius: BorderRadius.circular(12),
-      child: ExpansionTile(
+      child: ArgoExpansionTile(
         title: Text('Parking perception • ${_status['state'] ?? 'checking'}'),
         subtitle: Text(
           stale

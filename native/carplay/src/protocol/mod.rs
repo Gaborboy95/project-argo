@@ -22,6 +22,7 @@ pub mod usb_mux;
 #[cfg(all(feature = "linux-usbmuxd", target_os = "linux"))]
 pub mod usbmux;
 pub mod wired;
+pub mod wireless;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

@@ -7,6 +7,7 @@ import '../../features/camera/camera_page.dart';
 import '../../core/lifecycle/application_exit_service.dart';
 import '../../features/calls/calls_page.dart';
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/connectivity/device_connection_service.dart';
 import '../../core/settings/settings_service.dart';
 import '../../core/media/media_session_service.dart';
 
@@ -39,6 +40,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
           geometryDiagnostics:
               services.contains<ProjectionPresentationOptions>() &&
               services.get<ProjectionPresentationOptions>().geometryDiagnostics,
+          inputDiagnostics:
+              services.contains<ProjectionPresentationOptions>() &&
+              services.get<ProjectionPresentationOptions>().inputDiagnostics,
           rendererTest:
               services.contains<ProjectionRenderTest>() &&
               services.get<ProjectionRenderTest>().enabled,
@@ -86,6 +90,9 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         label: 'Settings',
         icon: Icons.settings_outlined,
         builder: (_, services) => SettingsPage(
+          deviceConnections: services.contains<DeviceConnectionService>()
+              ? services.get<DeviceConnectionService>()
+              : null,
           cameraPresentation: services.contains<CameraPresentationService>()
               ? services.get<CameraPresentationService>()
               : null,

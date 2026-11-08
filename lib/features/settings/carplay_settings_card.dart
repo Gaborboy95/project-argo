@@ -14,10 +14,12 @@ class CarPlaySettingsCard extends StatelessWidget {
   const CarPlaySettingsCard({
     required this.service,
     this.projection,
+    this.onDevices,
     super.key,
   });
   final CarPlaySettingsService service;
   final ProjectionService? projection;
+  final VoidCallback? onDevices;
   @override
   Widget build(BuildContext context) => StreamBuilder<void>(
     stream: service.changes,
@@ -29,9 +31,23 @@ class CarPlaySettingsCard extends StatelessWidget {
         final enabled = service.available && !service.saving;
         final sessions =
             snapshot.data?.sessions
-                .where((s) => s.device.protocol == ProjectionProtocol.carPlay)
+                .where(
+                  (s) =>
+                      s.device.protocol == ProjectionProtocol.carPlay &&
+                      s.state != ProjectionSessionState.failed &&
+                      s.state != ProjectionSessionState.disconnected,
+                )
                 .toList() ??
             [];
+        final session = sessions.firstOrNull;
+        final running = service.current['running'] == true;
+        final connecting = session?.state == ProjectionSessionState.connecting;
+        final established = session != null && !connecting;
+        final waiting =
+            running &&
+            !established &&
+            service.available &&
+            service.failure == null;
         return Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -45,11 +61,26 @@ class CarPlaySettingsCard extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                sessions.isEmpty
+                session == null
                     ? (service.current['phase'] as String? ??
                           'Waiting for CarPlay service')
-                    : '${sessions.first.device.displayName} · Connected by USB',
+                    : '${session.device.displayName} · ${switch (session.state) {
+                        ProjectionSessionState.connecting => 'Connecting to iPhone',
+                        ProjectionSessionState.ready => '${session.device.transport == ProjectionTransport.wifi ? 'Connected wirelessly' : 'Connected by USB'} — waiting for video',
+                        ProjectionSessionState.streaming => session.device.transport == ProjectionTransport.wifi ? 'Connected wirelessly' : 'Connected by USB',
+                        ProjectionSessionState.suspended => 'CarPlay suspended',
+                        _ => 'Disconnected',
+                      }}',
               ),
+              if (waiting) ...[
+                const SizedBox(height: 8),
+                const LinearProgressIndicator(),
+                const Text(
+                  'Waiting for iPhone — complete any Use CarPlay approval on your phone.',
+                ),
+                if (session != null && service.current['phase'] is String)
+                  Text(service.current['phase'] as String),
+              ],
               if (service.failure case final failure?)
                 ArgoStatusPanel(
                   status: ArgoStatus.failed,
@@ -67,53 +98,75 @@ class CarPlaySettingsCard extends StatelessWidget {
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Auto-connect'),
+                title: const Text('Retry interrupted connection'),
                 subtitle: const Text(
-                  'Connect on startup and after an unexpected disconnect.',
+                  'Retry the selected iPhone after an unexpected disconnect. Startup is controlled in Devices.',
                 ),
                 value: settings['auto_connect'] == true,
                 onChanged: enabled
                     ? (v) => service.configure({'auto_connect': v})
                     : null,
               ),
+              if (service.current['wireless'] == true) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  key: ValueKey('carplay-transport-${settings['transport']}'),
+                  decoration: const InputDecoration(
+                    labelText: 'Connection method',
+                    helperText: 'Changing the method stops the connection. Connect the device from Devices.',
+                  ),
+                  initialValue: settings['transport'] as String? ?? 'usb',
+                  items: const [
+                    DropdownMenuItem(value: 'usb', child: Text('USB cable')),
+                    DropdownMenuItem(
+                      value: 'wireless',
+                      child: Text('Wireless · LIVI Link'),
+                    ),
+                  ],
+                  onChanged: enabled
+                      ? (value) {
+                          if (value != null) {
+                            service.configure({'transport': value});
+                          }
+                        }
+                      : null,
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'For wireless CarPlay, pair the iPhone with Argo CarPlay in Bluetooth settings. '
+                  'LIVI Link provides its Wi-Fi and Bluetooth radios.',
+                ),
+              ],
               if (snapshot.data?.switchRecovery case final recovery?)
                 ProjectionRecoveryPanel(
                   service: projection!,
                   decision: recovery,
                 ),
-              Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                children: [
-                  FilledButton(
-                    onPressed: enabled && settings['enabled'] == true
-                        ? service.connect
-                        : null,
-                    child: Text(sessions.isEmpty ? 'Connect' : 'Reconnect'),
-                  ),
-                  OutlinedButton(
-                    onPressed: enabled && service.current['running'] == true
-                        ? service.disconnect
-                        : null,
-                    child: const Text('Disconnect'),
-                  ),
-                  if (sessions.isNotEmpty && projection != null)
-                    OutlinedButton(
-                      onPressed: () async {
-                        try {
-                          await projection!.activate(sessions.first.id);
-                        } on Object {
-                          /* Recovery is published by the service. */
-                        }
-                      },
-                      child: const Text('Make active'),
-                    ),
-                ],
+              const SizedBox(height: 12),
+              const Text(
+                'Select, connect and disconnect your phone in Devices.',
               ),
+              if (onDevices != null)
+                TextButton.icon(
+                  onPressed: onDevices,
+                  icon: const Icon(Icons.devices_outlined),
+                  label: const Text('Open Devices'),
+                ),
               const SizedBox(height: 24),
               const Text(
-                'Display changes apply on the next connection. Reconnect to apply them now.',
+                'Display changes apply on the next connection. Reconnect the device from Devices to apply them now.',
               ),
+              if (service.measuredViewport case final viewport?) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Dashboard above dock: ${viewport.$1.toStringAsFixed(0)} × ${viewport.$2.toStringAsFixed(0)}. '
+                  'View Area follows this shape; Safe Area reserves the media controls. Applies on next connection.',
+                ),
+                if (service.current['viewport_supported'] != true)
+                  const Text(
+                    'Update the CarPlay daemon to enable dashboard fitting.',
+                  ),
+              ],
               const SizedBox(height: 16),
               if (settings.isNotEmpty) ...[
                 DropdownButtonFormField<(int, int)>(
@@ -177,7 +230,8 @@ class CarPlaySettingsCard extends StatelessWidget {
                 'Microphone selection and mute are shared with Sound settings. Wired CarPlay uses LIVI Link for authentication.',
               ),
               const SizedBox(height: 12),
-              const Text('Wireless CarPlay is not available in this build.'),
+              if (service.current['wireless'] != true)
+                const Text('Update the CarPlay service to enable wireless.'),
             ],
           ),
         );

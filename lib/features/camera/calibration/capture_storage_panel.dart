@@ -45,7 +45,7 @@ class _StorageState extends State<CaptureStoragePanel> {
   }
 
   @override
-  Widget build(BuildContext context) => ExpansionTile(
+  Widget build(BuildContext context) => ArgoExpansionTile(
     title: const Text('Capture storage'),
     onExpansionChanged: (open) {
       if (open && !_busy) _run('capture_storage');

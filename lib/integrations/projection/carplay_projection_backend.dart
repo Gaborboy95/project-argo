@@ -3,6 +3,7 @@ import '../../core/diagnostics/service_failure.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../../core/projection/projection_backend.dart';
 import 'projection_endpoints.dart';
@@ -168,11 +169,16 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
       }
       _nativeSession = id;
       final sessionId = '$id';
+      final transport = switch (data['transport']) {
+        null || 'usb' => ProjectionTransport.usb,
+        'wireless' => ProjectionTransport.wifi,
+        _ => throw const FormatException('Unknown CarPlay transport'),
+      };
       final device = ProjectionDevice(
         id: deviceId,
         displayName: name,
         protocol: protocol,
-        transport: ProjectionTransport.usb,
+        transport: transport,
       );
       final videos = <ProjectionVideoStream>[];
       var receivedFrame = false;
@@ -205,6 +211,24 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
           'hevc' => ProjectionVideoCodec.hevc,
           _ => throw const FormatException('Unsupported CarPlay codec'),
         };
+        final metadata = ByteData.sublistView(
+          Uint8List.fromList(parameters.cast<int>()),
+        );
+        final contentInsets = ProjectionInsets(
+          left: metadata.getUint16(32).toDouble(),
+          top: metadata.getUint16(34).toDouble(),
+          right: metadata.getUint16(36).toDouble(),
+          bottom: metadata.getUint16(38).toDouble(),
+        );
+        if (metadata.getUint32(0) != 0x41525632 ||
+            metadata.getUint32(4) != 1 ||
+            metadata.getUint16(14) != width ||
+            metadata.getUint16(16) != height ||
+            metadata.getUint64(24) != id ||
+            contentInsets.left + contentInsets.right >= width ||
+            contentInsets.top + contentInsets.bottom >= height) {
+          throw const FormatException('Invalid CarPlay View Area');
+        }
         receivedFrame = video['first_frame'] == true;
         videos.add(
           ProjectionVideoStream(
@@ -215,6 +239,7 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
             width: width,
             height: height,
             framesPerSecond: fps,
+            contentInsets: contentInsets,
             nativeViewParameters: parameters.cast<int>(),
             presentationRevision: video['presentation_revision'] as int? ?? 0,
             visible: data['visible'] == true,

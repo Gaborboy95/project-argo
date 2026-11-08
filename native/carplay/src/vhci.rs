@@ -58,7 +58,7 @@ pub async fn acquire() -> io::Result<File> {
     let pid = child
         .id()
         .ok_or_else(|| io::Error::other("VHCI helper did not start"))?;
-    eprintln!("Wireless CarPlay controller requires administrator authorization.");
+    eprintln!("Wireless CarPlay: requesting authorization for the owned Bluetooth controller.");
     let accepted = async {
         tokio::select! {
             result = listener.accept() => result,

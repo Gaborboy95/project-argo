@@ -13,6 +13,13 @@ map: duplicate registrations and missing dependencies fail. It does not dispose
 services. Feature constructors receive application-facing contracts rather than
 opening native libraries or reading environment variables.
 
+Framework build failures are captured in diagnostics and display an opaque,
+theme-independent recovery surface instead of Flutter's blank release placeholder.
+Its **Return to Home** action replaces the presentation navigator and shell while
+retaining the composed services and saved preferences. Recovery starts on Home
+and suppresses automatic Setup reopening for that process, so a failed optional
+route cannot immediately trap the user again.
+
 [AppLifecycleCoordinator](../lib/core/lifecycle/app_lifecycle_coordinator.dart)
 owns startup rollback and idempotent shutdown: stop activity, persist state,
 release resources, with reverse registration order within a phase. Cleanup
@@ -58,14 +65,41 @@ session IDs; a Dart timeout cannot retract a command already sent to a phone.
 
 ## Dashboard geometry and controls
 
+[DashboardStatusFrame](../lib/app/shell/dashboard_status_bar.dart) reserves a
+48-logical-pixel status bar above the application Navigator, including Setup and
+pushed settings pages. It consumes the top and horizontal system safe areas;
+the shell receives the remaining height and bottom inset. Android Auto and
+CarPlay therefore measure the area below the bar without a second height
+deduction. The local 24-hour clock refreshes at minute boundaries and on resume
+inside its own state, without rebuilding the retained dashboard or renegotiating
+video. The date and protocol labels collapse on narrow or large-text layouts.
+Bluetooth, selected phone transport and mute indicators reflect existing service
+snapshots; wireless projection does not imply internet connectivity. Global
+pairing requests still cover the entire frame.
+
 [DashboardGeometry](../lib/app/shell/dashboard_geometry.dart) allocates logical
-rectangles from LayoutBuilder constraints inside the real safe area. On the 4:3
-dashboard, the media slot begins at `width × 9/16`; projection extends behind that
-slot to the dock. The dock
-has a viewport-derived height, capped at 160 logical pixels; the thin media slot
-is reserved even when hidden. Short landscape development windows reduce the
-media allocation and aspect-fit video within the available area above the dock. Narrow docks scroll horizontally.
-There is no portrait dashboard, reference canvas or application scale transform.
+rectangles from LayoutBuilder constraints inside the real safe area. Projection
+extends behind the compact player to the dock. The player has a 96-logical-pixel
+closed height plus small outer gaps, capped at 35% of the area above the dock in
+short development windows. Its reserve stays in place even when hidden; opening
+the expanded player does not change negotiated stream geometry. The dock retains
+its viewport-derived allocation, capped at 160 logical pixels; portrait viewports
+use a bounded 136–160-pixel dock. The remaining area goes to projection rather
+than an oversized media overlay. View/Safe Area hints use the same
+safe-area viewport for Android Auto and CarPlay; they apply on a new connection.
+Narrow viewports with sufficient dock height arrange climate/volume and navigation
+in two rows so Home, Apps and Settings remain visible. Compact temperature
+buttons open the full Climate panel with its larger adjustment targets. Short landscape docks
+retain horizontal scrolling. There is no reference canvas or application scale transform.
+Short content areas let panels use all space above the dock. The compact Climate
+panel prioritizes temperature controls before the simulation explanation, and
+narrow Apps grids use smaller tiles while preserving visible labels.
+Narrow expanded Media panels place playback controls before artwork and detailed metadata.
+The compact player shows artwork and two metadata lines beside playback controls
+on wider screens. Narrow portrait players put metadata above 48-pixel transport
+targets; very short narrow windows omit artwork to preserve those controls. Drag
+up to expand or down to minimize, with the same selected source and supported
+commands throughout.
 
 Appearance control size affects host fonts, icons and touch targets inside those
 rectangles. It cannot change stream negotiation, AA DPI or Flutter's DPR. Rendering
@@ -210,6 +244,11 @@ IHS registers an `ICompositorSurface` and replies with the native platform-view
 ID. It does not register a Flutter external texture for this path. That ID, a GL
 texture name, DMA-BUF fd and Flutter external-texture ID are not interchangeable.
 Projection composition requires PlatformViewLayer rather than TextureLayer.
+The shell's display metadata and each view's window metrics share display ID `0`
+under its current one-display-per-engine model. Startup and Wayland scale updates
+must preserve this association: Flutter's `FlutterView.display` resolves the
+metrics ID through the advertised display map. See the matched
+[IHS patches and build procedure](../tool/projection/README.md#ihs-base-and-local-patch).
 Input is sent only by ProjectionView's mapped Listener; platform controller touch
 dispatch is deliberately a no-op. Rendering and input share fitted geometry;
 negotiated View Area margins are removed once in the native row copy, and the
@@ -217,6 +256,16 @@ cropped dimensions define both aspect fit and the phone touchscreen descriptor.
 Safe Area insets are sent to AA as UI layout hints, not a second crop or an input
 clip. Logical
 pointer coordinates are not blindly multiplied by DPR.
+Projection input drains independently of Flutter repaint scheduling, with one
+transport write in flight. Pending motion keeps the latest point per contact
+within a trailing move batch; contact Down/Up events delimit those batches. Up
+flushes preceding motion for every contact before lifting its finger, while
+gesture-wide Cancel discards obsolete motion for the originating session.
+AA input reports carry Unix-epoch microseconds, independently of the
+session-relative monotonic clocks used for setup deadlines and heartbeat
+supervision. TRACE input diagnostics expose pointer/phase, Android action/index,
+contact count and timestamp alongside the existing transmit completion records;
+they omit touch coordinates.
 The AA engine maps host contact IDs to reusable Android pointer IDs 0–9, preserving
 identity until Up or gesture-wide Cancel. Flutter pointer IDs change on every Down
 and must not be copied directly into Android MotionEvents, whose IDs are limited
@@ -286,9 +335,42 @@ create Argo tabs/settings/widgets. Argo depends on core/native, not
 UI would be separate work, not merely a Lua manifest permission.
 
 Settings uses a category sidebar when space permits and horizontal category navigation
-in smaller windows. Each category scrolls within one themed content surface; pairing
-requests remain visible outside Devices. This presentation uses the existing services
-and does not change configuration or session ownership.
+in smaller windows. Devices is the initial hub when connectivity is available.
+[DeviceHubCard](../lib/features/settings/device_hub_card.dart) presents one row per
+physical phone, its Android Auto, CarPlay or Bluetooth connection type, and device
+Connect, Disconnect and Forget actions. Add Android phone and Add iPhone are
+explicit pairing flows. Android Auto and CarPlay categories contain display and
+wireless configuration, without separate protocol connection buttons. Each
+category scrolls within one themed content surface.
+
+Connectivity snapshots normalize duplicate radio-scoped endpoints and order them
+by hardware identity. [DeviceConnectionService](../lib/core/connectivity/device_connection_service.dart)
+owns the selected phone, serialized connection intent and bounded startup reconnect.
+Its [inventory model](../lib/core/connectivity/device_hub_models.dart) groups matching
+Bluetooth addresses across controllers, joins wireless CarPlay through the native
+Bluetooth-address-derived identity and associates wireless AA with its admitted
+selected phone. USB identities join a Bluetooth phone only through an explicit
+Devices link confirmed by the user. Equal names never establish identity; unknown
+phones require a connection-type choice. Names and connection-state changes cannot
+reorder existing device identities.
+
+One Devices startup switch permits a request for the selected, identified phone;
+it does not launch AA and CarPlay independently. ConnectivityPreferences restores
+radio preferences with `externalConnectionOwner` and supplies no competing startup
+request. The native CarPlay manager starts and enables passively; its auto-connect
+option controls retry after an interrupted selected connection. Changing CarPlay
+transport stops the preceding receiver and waits for an explicit device connection.
+Switching phones awaits actual owned-session cleanup before replacement. Device
+Disconnect stops that phone's projection and all of its controller-scoped Bluetooth
+endpoints, leaving other devices alone. Cleanup failure remains visible and blocks
+a replacement instead of being treated as successful teardown.
+
+The MaterialApp builder owns one pairing overlay above the Navigator, including
+setup and pushed routes. It preserves render recovery and blocks background pointer,
+projection, keyboard-focus and accessibility input while a prompt is visible.
+Allow/Reject target the exact prompt ID; withdrawal, daemon loss and replacement
+clear pending decisions. A five-second unconfirmed response becomes retryable,
+and an old completion cannot affect a replacement request.
 
 ## Projection configuration ownership (IPC v7)
 
@@ -398,6 +480,15 @@ shell, Settings and Now Playing already use these semantics. No extra token
 catalog or ThemeExtension is required. Use error roles for errors rather than
 turning every status indicator into the accent colour.
 
+Shared pages and Settings sections keep independent scroll storage namespaces.
+Use `ArgoExpansionTile` for disclosures: its private `PageStorage` boundary keeps
+the expansion boolean and nested selectable/input scroll state away from the
+parent page's numeric offset. Disclosure state is local to the mounted widget.
+Setup opens as a route above the retained shell, saves progress per step, and
+returns through normal Back/Finish navigation. Display & touch reports the
+current logical viewport from `MediaQuery`; it does not require host display
+identity metadata to render.
+
 [ArgoBackground](../lib/app/shell/argo_background.dart) is the shared solid
 background around normal shell content. Feature pages should avoid adding an
 opaque full-page background unless their content requires it. This is the future
@@ -411,8 +502,12 @@ vehicle day/night source would require a separate explicit policy.
 ## Shared connectivity and wireless admission (IPC v7)
 
 The existing daemon contains the protocol-neutral BlueZ device/pairing adapter
-and NetworkManager AP adapter in `connectivity/`. The single non-default agent
-delivers device-scoped, expiring prompts through the existing control connection.
+and NetworkManager AP adapter in `connectivity/`. Its shared default BlueZ agent
+delivers device-scoped, expiring prompts through the existing control connection
+for every radio, including the separately owned LIVI Link controller. A global
+Flutter pairing overlay allows approval/rejection from any page and blocks
+projection input while visible. Only supported services of existing bonded
+phones reconnect without prompting; other service requests require approval.
 A separate `wireless` owner consumes these adapters and the existing `aa_session`,
 using `wireless_bootstrap` for RFCOMM and `TcpAaTransport` for admitted Wi-Fi.
 A shared session semaphore is acquired before USB publishes session state/AOAP
@@ -510,8 +605,13 @@ stops the app first. Quit acknowledges native `stopAll`, runs the application
 lifecycle and requests a nonblocking target stop. A systemd-initiated Quit does
 not enqueue a second target stop that could cancel an update/restart job.
 Invocation-specific clean markers are written after cleanup, not after merely
-requesting it. Failed owned worker cleanup prevents an automatic replacement;
+requesting it. Running markers also record the Linux boot ID; unconfirmed
+same-boot cleanup blocks a managed replacement, and a failed pre-exec launch
+preserves the preceding invocation's evidence. Failed owned worker cleanup prevents an automatic replacement;
 service timeouts and cgroup killing remain visible as unconfirmed cleanup.
+Receivers do not require a Wayland display. The managed app waits for late Plasma
+environment import before exec, and reports readiness after rendering even if
+projection connectivity is unavailable; backend readiness remains separate state.
 
 `argoctl` stages immutable-by-convention copies, validates content and recorded
 IHS/IPC contracts, and atomically selects one release for both services. An

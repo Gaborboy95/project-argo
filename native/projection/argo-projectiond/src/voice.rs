@@ -94,6 +94,10 @@ fn pulse_fallback_excludes_speaker_monitors_and_bluetooth_inputs() {
     assert!(pulse_inputs(b"invalid").is_err());
 }
 impl Voice {
+    #[cfg(test)]
+    pub(crate) fn reserve_capture_for_test(&self) -> OwnedSemaphorePermit {
+        self.lease.clone().try_acquire_owned().unwrap()
+    }
     pub async fn refresh(&self) -> Result<(), String> {
         self.state
             .send_modify(|s| s.ownership = argo_audio_ownership::state().into());
@@ -453,7 +457,10 @@ mod tests {
             .handle(9, 7, &Proto::default().number(1, 0).number(2, 9).finish())
             .unwrap();
         let request = Proto::default().number(1, 1).number(4, 200).finish();
-        assert!(channels.handle(9, 0x8005, &request).is_err());
+        assert!(matches!(
+            channels.handle(9, 0x8005, &request).unwrap().as_slice(),
+            [Effect::Microphone(true, 200)]
+        ));
         channels
             .handle(9, 0x8000, &Proto::default().number(1, 1).finish())
             .unwrap();

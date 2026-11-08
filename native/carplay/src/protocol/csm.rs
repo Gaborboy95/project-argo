@@ -16,6 +16,8 @@ pub const AUTH_FAILED: u16 = 0xaa04;
 pub const AUTH_SUCCEEDED: u16 = 0xaa05;
 pub const AVAILABILITY: u16 = 0x4300;
 pub const START_SESSION: u16 = 0x4301;
+pub const REQUEST_WIFI_CONFIGURATION: u16 = 0x5702;
+pub const WIFI_CONFIGURATION: u16 = 0x5703;
 const MAX_MESSAGE: usize = 65525; // Fits one maximum-size iAP2 data frame.
 const MAX_PARAMS: usize = 64;
 
@@ -198,6 +200,62 @@ impl AccessoryIdentity {
             parameters: fields,
         })
     }
+
+    /// Bluetooth and Wi-Fi are distinct transport components. The controller
+    /// address must be the leased Link controller, never another host adapter.
+    pub fn wireless_message(&self, controller: [u8; 6], ssid: &str) -> Result<Message, Error> {
+        if controller == [0; 6] || controller == [255; 6] || ssid.len() > 32 {
+            return Err(Error::Bounds);
+        }
+        let mut identity = self.wired_message()?;
+        identity.parameters.retain(|p| ![6, 7, 16].contains(&p.id));
+        identity.parameters.extend([
+            Parameter::new(
+                6,
+                [WIFI_CONFIGURATION, START_SESSION]
+                    .into_iter()
+                    .flat_map(u16::to_be_bytes)
+                    .collect::<Vec<_>>(),
+            ),
+            Parameter::new(
+                7,
+                [AVAILABILITY, 0x4e0d, 0x4e0e, REQUEST_WIFI_CONFIGURATION]
+                    .into_iter()
+                    .flat_map(u16::to_be_bytes)
+                    .collect::<Vec<_>>(),
+            ),
+            Parameter::group(
+                17,
+                &[
+                    Parameter::new(0, 0u16.to_be_bytes()),
+                    Parameter::string(1, "Argo Bluetooth")?,
+                    Parameter::new(2, []),
+                    Parameter::new(3, controller),
+                    Parameter::string(4, "Argo Bluetooth")?,
+                    Parameter::new(5, []),
+                ],
+            )?,
+            Parameter::group(
+                24,
+                &[
+                    Parameter::new(0, 1u16.to_be_bytes()),
+                    Parameter::string(1, ssid)?,
+                    Parameter::new(2, []),
+                    Parameter::new(3, 1u16.to_be_bytes()),
+                    Parameter::new(4, []),
+                    Parameter::new(5, []),
+                ],
+            )?,
+        ]);
+        Ok(identity)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WirelessSecurity {
+    Wpa2,
+    Wpa2Wpa3,
+    Wpa3,
 }
 
 /// Addresses are supplied by host interface inventory, never by the phone.
@@ -210,6 +268,7 @@ pub enum SessionTransport {
         ssid: String,
         passphrase: String,
         channel: u8,
+        security: WirelessSecurity,
     },
 }
 
@@ -243,6 +302,7 @@ impl StartSession {
                 ssid,
                 passphrase,
                 channel,
+                security,
                 ..
             } => {
                 if ssid.len() > 32
@@ -252,13 +312,20 @@ impl StartSession {
                 {
                     return Err(Error::Bounds);
                 }
-                vec![
+                let mut fields = vec![
                     Parameter::string(0, ssid)?,
                     Parameter::string(1, passphrase)?,
                     Parameter::new(2, vec![*channel]),
                     Parameter::string(3, &address.to_string())?,
-                    Parameter::new(4, vec![2]),
-                ] // WPA2 Personal; AP owner must verify actual policy.
+                ];
+                // In StartSession, WPA2 has no security parameter. Its numeric
+                // field is a different enum from WiFiConfiguration's 2.
+                match security {
+                    WirelessSecurity::Wpa2 => {}
+                    WirelessSecurity::Wpa2Wpa3 => fields.push(Parameter::new(4, [3])),
+                    WirelessSecurity::Wpa3 => fields.push(Parameter::new(4, [4])),
+                }
+                fields
             }
         };
         let key: String = self.public_key.iter().map(|b| format!("{b:02x}")).collect();
@@ -270,6 +337,30 @@ impl StartSession {
                 Parameter::string(3, &self.device_identifier)?,
                 Parameter::string(4, &key)?,
                 Parameter::string(5, &self.source_version)?,
+            ],
+        })
+    }
+
+    pub fn wifi_configuration(&self) -> Result<Message, Error> {
+        // Reuse the same validation as the eventual StartSession; credentials
+        // are never Debug/Serialize and are supplied only by the AP owner.
+        self.message()?;
+        let SessionTransport::Wireless {
+            ssid,
+            passphrase,
+            channel,
+            ..
+        } = &self.transport
+        else {
+            return Err(Error::Unsupported);
+        };
+        Ok(Message {
+            id: WIFI_CONFIGURATION,
+            parameters: vec![
+                Parameter::string(1, ssid)?,
+                Parameter::string(2, passphrase)?,
+                Parameter::new(3, [2]),
+                Parameter::new(4, [*channel]),
             ],
         })
     }
@@ -501,6 +592,76 @@ mod tests {
         assert!(parsed.one(1).is_err());
         let group = decode_parameters(parsed.one(0).unwrap()).unwrap();
         assert_eq!(group, vec![Parameter::string(0, "fe80::1234").unwrap()]);
+    }
+
+    #[test]
+    fn wireless_configuration_and_start_use_their_distinct_security_enums() {
+        // Independent fields from LIVI iap2-csm/messages/{wifi,car_play}.rs:
+        // WiFiConfiguration security=2; StartSession omits WPA2, uses3/4forSAE.
+        for (security, expected) in [
+            (WirelessSecurity::Wpa2, None),
+            (WirelessSecurity::Wpa2Wpa3, Some(3)),
+            (WirelessSecurity::Wpa3, Some(4)),
+        ] {
+            let start = StartSession {
+                transport: SessionTransport::Wireless {
+                    address: "fe80::1".parse().unwrap(),
+                    ssid: "Argo".into(),
+                    passphrase: "synthetic-secret".into(),
+                    channel: 36,
+                    security,
+                },
+                port: 7000,
+                device_identifier: "02:00:00:00:00:01".into(),
+                public_key: [1; 32],
+                source_version: "1.0".into(),
+            };
+            let wire = start.message().unwrap();
+            assert!(wire.one(0).is_err());
+            let fields = decode_parameters(wire.one(1).unwrap()).unwrap();
+            assert_eq!(
+                fields.iter().find(|p| p.id == 4).map(|p| p.value.clone()),
+                expected.map(|v| vec![v])
+            );
+            assert_eq!(
+                fields.iter().find(|p| p.id == 3).unwrap().value,
+                b"fe80::1\0"
+            );
+            let wifi = start.wifi_configuration().unwrap();
+            assert_eq!(wifi.id, 0x5703);
+            assert_eq!(wifi.one(1).unwrap(), b"Argo\0");
+            assert_eq!(wifi.one(2).unwrap(), b"synthetic-secret\0");
+            assert_eq!(wifi.one(3).unwrap(), [2]);
+            assert_eq!(wifi.one(4).unwrap(), [36]);
+        }
+    }
+
+    #[test]
+    fn wireless_identity_advertises_only_bt_and_wifi_transports() {
+        let identity = AccessoryIdentity {
+            name: "Argo".into(),
+            model: "Test".into(),
+            manufacturer: "Argo".into(),
+            serial: "synthetic".into(),
+            firmware: "1".into(),
+            hardware: "1".into(),
+            language: "en".into(),
+            usb_interface: 3,
+        };
+        let wire = identity
+            .wireless_message([2, 0, 0, 0, 0, 7], "Argo")
+            .unwrap();
+        assert!(wire.one(16).is_err());
+        let bt = decode_parameters(wire.one(17).unwrap()).unwrap();
+        assert_eq!(
+            bt.iter().find(|p| p.id == 3).unwrap().value,
+            [2, 0, 0, 0, 0, 7]
+        );
+        let wifi = decode_parameters(wire.one(24).unwrap()).unwrap();
+        assert_eq!(wifi.iter().find(|p| p.id == 0).unwrap().value, [0, 1]);
+        assert!(wifi.iter().any(|p| p.id == 4 && p.value.is_empty()));
+        assert_eq!(wire.one(6).unwrap(), [0x57, 3, 0x43, 1]);
+        assert!(identity.wireless_message([0; 6], "Argo").is_err());
     }
 
     #[test]

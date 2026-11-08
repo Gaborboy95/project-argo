@@ -27,6 +27,7 @@ class ProjectionView extends StatefulWidget {
     this.nativeViewBuilder,
     this.inputEnabled = true,
     this.geometryDiagnostics = false,
+    this.inputDiagnostics = false,
     this.preferPhysicalPixels = false,
   });
 
@@ -36,6 +37,7 @@ class ProjectionView extends StatefulWidget {
     this.geometryDiagnostics = false,
     this.preferPhysicalPixels = false,
   }) : inputEnabled = false,
+       inputDiagnostics = false,
        service = null,
        sessionId = null,
        stream = null;
@@ -45,6 +47,7 @@ class ProjectionView extends StatefulWidget {
   static const viewType = 'argo.projection.view';
 
   final bool geometryDiagnostics;
+  final bool inputDiagnostics;
   final bool preferPhysicalPixels;
   final bool inputEnabled;
   final ProjectionService? service;
@@ -65,11 +68,12 @@ class _ProjectionViewState extends State<ProjectionView>
   bool _disposed = false;
   _InputTarget? _target;
   final List<_InputTarget> _targets = [];
-  bool _moveScheduled = false;
   bool _ownsInput = true;
   bool _focused = true;
   int? _viewId;
   String? _lastGeometry;
+  final Map<int, int> _observedMoves = {};
+  final Map<int, int> _deliveredMoves = {};
 
   @override
   void didChangeDependencies() {
@@ -110,6 +114,11 @@ class _ProjectionViewState extends State<ProjectionView>
 
   void _cancelAll() {
     if (_pointers.isEmpty) return;
+    if (widget.inputDiagnostics) {
+      debugPrint(
+        'Argo projection input: host cancel contacts=${_pointers.length}',
+      );
+    }
     // Android ACTION_CANCEL is gesture-wide. One terminal event clears both
     // ends, including every finger still tracked in this originating session.
     final pointer = _pointers.values.first;
@@ -129,25 +138,32 @@ class _ProjectionViewState extends State<ProjectionView>
       y: position.y,
     );
     if (phase == ProjectionTouchPhase.move) {
+      // Replace motion only inside the latest scan. DOWN/UP delimit contact
+      // transitions: moving a queued point across one changes the gesture the
+      // phone sees, especially when a second finger joins or leaves a pinch.
+      for (var i = _pending.length - 1; i >= 0; i--) {
+        final pending = _pending[i];
+        if (pending.target != pointer.target ||
+            pending.touch.phase != ProjectionTouchPhase.move) {
+          break;
+        }
+        if (pending.touch.pointerId == pointer.id) {
+          _pending[i] = _PendingTouch(pointer.target, touch);
+          return;
+        }
+      }
+    } else if (phase == ProjectionTouchPhase.cancel) {
       _pending.removeWhere(
         (p) =>
-            p.touch.phase == ProjectionTouchPhase.move &&
-            p.touch.pointerId == pointer.id,
+            p.target == pointer.target &&
+            p.touch.phase == ProjectionTouchPhase.move,
       );
-    } else if (phase == ProjectionTouchPhase.up ||
-        phase == ProjectionTouchPhase.cancel) {
-      _pending.removeWhere((p) => p.touch.phase == ProjectionTouchPhase.move);
     }
     _pending.add(_PendingTouch(pointer.target, touch));
-    if (phase != ProjectionTouchPhase.move) {
-      unawaited(_drain());
-    } else if (!_moveScheduled) {
-      _moveScheduled = true;
-      WidgetsBinding.instance.scheduleFrameCallback((_) {
-        _moveScheduled = false;
-        unawaited(_drain());
-      });
-    }
+    // Input does not wait for a Flutter repaint. One in-flight write provides
+    // backpressure while the trailing batch retains the latest point per finger.
+    // UP flushes those moves before ending its contact; CANCEL discards them.
+    unawaited(_drain());
   }
 
   Future<void> _drain() async {
@@ -157,9 +173,25 @@ class _ProjectionViewState extends State<ProjectionView>
       while (_pending.isNotEmpty) {
         final next = _pending.removeAt(0);
         // Never retarget queued input after unplug/session replacement.
-        if (!next.target.valid || !next.target.isLive) continue;
+        if (!next.target.valid || !next.target.isLive) {
+          if (widget.inputDiagnostics) {
+            debugPrint(
+              'Argo projection input: dropped stale target '
+              'phase=${next.touch.phase.name}',
+            );
+          }
+          continue;
+        }
         try {
           await next.target.service.sendTouch(next.target.session, next.touch);
+          if (widget.inputDiagnostics) {
+            _traceInput(
+              'delivered',
+              _deliveredMoves,
+              next.touch.pointerId,
+              next.touch.phase,
+            );
+          }
         } on Object catch (error) {
           debugPrint('Argo projection: input delivery failed: $error');
         }
@@ -353,6 +385,15 @@ class _ProjectionViewState extends State<ProjectionView>
       localX: event.localPosition.dx,
       localY: event.localPosition.dy,
     );
+    if (widget.inputDiagnostics) {
+      _traceInput(
+        'raw kind=${event.kind.name} buttons=${event.buttons} '
+        'mapped=${mapped != null} tracked=${_pointers.containsKey(event.pointer)}',
+        _observedMoves,
+        event.pointer,
+        phase,
+      );
+    }
     if (phase == ProjectionTouchPhase.down) {
       if (!widget.inputEnabled ||
           !_ownsInput ||
@@ -394,6 +435,28 @@ class _ProjectionViewState extends State<ProjectionView>
     } else if (mapped != null) {
       _queue(pointer, phase, mapped);
     }
+  }
+
+  // At most one motion line per contact, plus its transitions and final count.
+  // No screen coordinates, phone identifiers or media contents are logged.
+  void _traceInput(
+    String stage,
+    Map<int, int> moves,
+    int pointer,
+    ProjectionTouchPhase phase,
+  ) {
+    if (phase == ProjectionTouchPhase.down) moves[pointer] = 0;
+    if (phase == ProjectionTouchPhase.move) {
+      moves[pointer] = (moves[pointer] ?? 0) + 1;
+      if (moves[pointer] != 1) return;
+    }
+    final count = moves[pointer] ?? 0;
+    debugPrint(
+      'Argo projection input: $stage phase=${phase.name} '
+      'pointer=$pointer moves=$count',
+    );
+    if (phase == ProjectionTouchPhase.up) moves.remove(pointer);
+    if (phase == ProjectionTouchPhase.cancel) moves.clear();
   }
 }
 

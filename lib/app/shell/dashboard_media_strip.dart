@@ -111,135 +111,177 @@ class _DashboardMediaStripState extends State<DashboardMediaStrip> {
       final source = snapshot?.activeSource;
       final details = source?.details;
       if (widget.expanded) {
-        return Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            children: [
-              Row(
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 400;
+            return Padding(
+              padding: EdgeInsets.all(narrow ? 16 : 24),
+              child: Column(
                 children: [
-                  Expanded(
-                    child: Text(
-                      'Media',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Close media',
-                    onPressed: widget.onDismiss,
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              LayoutBuilder(
-                builder: (context, c) {
-                  final art = math.min(c.maxWidth * .34, 280.0);
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
+                  Row(
                     children: [
-                      MediaArtwork(path: details?.artworkPath, size: art),
-                      const SizedBox(width: 24),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _titles(details, 28 * widget.scale),
-                            if (details?.album != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 12),
-                                child: Text(details!.album!),
-                              ),
-                            if (details?.application != null)
-                              Text(details!.application!),
-                            if (details?.positionMs != null)
-                              Text(
-                                '${_time(details!.positionMs!)}${details.durationMs == null ? '' : ' / ${_time(details.durationMs!)}'}',
-                              ),
-                          ],
+                        child: Text(
+                          'Media',
+                          style: Theme.of(context).textTheme.headlineSmall,
                         ),
                       ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              _controls(source, (76 * widget.scale).clamp(64, 100)),
-              if (snapshot != null && snapshot.sources.isNotEmpty)
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 12,
-                  children: [
-                    for (final item in snapshot.sources)
-                      ChoiceChip(
-                        label: Text(item.displayName ?? item.kind.name),
-                        selected: item.id == source?.id,
-                        onSelected: _busy
-                            ? null
-                            : (_) async {
-                                setState(() => _busy = true);
-                                try {
-                                  await widget.media!.selectSource(item.id);
-                                } on Object {
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text(
-                                          'Could not select media source.',
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                } finally {
-                                  if (mounted) setState(() => _busy = false);
-                                }
-                              },
+                      IconButton(
+                        tooltip: 'Close media',
+                        onPressed: widget.onDismiss,
+                        icon: const Icon(Icons.close),
                       ),
-                  ],
-                ),
-            ],
-          ),
+                    ],
+                  ),
+                  if (narrow) _expandedControls(source),
+                  LayoutBuilder(
+                    builder: (context, c) {
+                      final art = math.min(c.maxWidth * .34, 280.0);
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          MediaArtwork(path: details?.artworkPath, size: art),
+                          const SizedBox(width: 24),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _titles(details, 28 * widget.scale),
+                                if (details?.album != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: Text(details!.album!),
+                                  ),
+                                if (details?.application != null)
+                                  Text(details!.application!),
+                                if (details?.positionMs != null)
+                                  Text(
+                                    '${_time(details!.positionMs!)}${details.durationMs == null ? '' : ' / ${_time(details.durationMs!)}'}',
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  if (!narrow) _expandedControls(source),
+                  if (snapshot != null && snapshot.sources.isNotEmpty)
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 12,
+                      children: [
+                        for (final item in snapshot.sources)
+                          ChoiceChip(
+                            label: Text(item.displayName ?? item.kind.name),
+                            selected: item.id == source?.id,
+                            onSelected: _busy
+                                ? null
+                                : (_) async {
+                                    setState(() => _busy = true);
+                                    try {
+                                      await widget.media!.selectSource(item.id);
+                                    } on Object {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Could not select media source.',
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                    } finally {
+                                      if (mounted) {
+                                        setState(() => _busy = false);
+                                      }
+                                    }
+                                  },
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+            );
+          },
         );
       }
       final compact = LayoutBuilder(
         builder: (context, c) {
-          final extent = math.min(c.maxHeight, 88 * widget.scale);
-          final side = math.max(0.0, (c.maxWidth - extent * 3) / 2);
           final textScale = MediaQuery.textScalerOf(context).scale(1);
-          return Row(
-            children: [
-              SizedBox(
-                width: side,
-                child: Row(
-                  children: [
-                    MediaArtwork(
-                      path: details?.artworkPath,
-                      size: math.min(c.maxHeight, side * .4),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _titles(
-                        details,
-                        math.min(
-                          19 * widget.scale,
-                          c.maxHeight / (2.2 * textScale),
+          if (c.maxWidth < 480 && c.maxHeight >= 76) {
+            final metadataHeight = c.maxHeight - 56;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        MediaArtwork(
+                          path: details?.artworkPath,
+                          size: math.min(48, metadataHeight),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _titles(
+                            details,
+                            math.min(
+                              22 * widget.scale,
+                              metadataHeight / (2.2 * textScale),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                  SizedBox(
+                    height: 48,
+                    child: Row(
+                      children: [
+                        Expanded(child: Center(child: _controls(source, 48))),
+                        _expandControl(),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              _controls(source, extent),
-              Expanded(
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: IconButton(
-                    tooltip: 'Expand media',
-                    onPressed: widget.onOpen,
-                    icon: const Icon(Icons.keyboard_arrow_up),
-                    iconSize: 32,
+            );
+          }
+          final verticalPadding = c.maxHeight >= 80 ? 8.0 : 4.0;
+          final height = math.max(0.0, c.maxHeight - 2 * verticalPadding);
+          final art = c.maxWidth < 400 && c.maxHeight < 76
+              ? 0.0
+              : math.min(height, 72 * widget.scale);
+          final gap = art > 0 ? 12.0 : 0.0;
+          final extent = math.min(
+            math.min(height, 64 * widget.scale),
+            math.max(0.0, (c.maxWidth - 24 - art - gap - 48 - 48) / 3),
+          );
+          return Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: verticalPadding,
+            ),
+            child: Row(
+              children: [
+                if (art > 0) ...[
+                  MediaArtwork(path: details?.artworkPath, size: art),
+                  SizedBox(width: gap),
+                ],
+                Expanded(
+                  child: _titles(
+                    details,
+                    math.min(22 * widget.scale, height / (2.2 * textScale)),
                   ),
                 ),
-              ),
-            ],
+                _controls(source, extent),
+                _expandControl(),
+              ],
+            ),
           );
         },
       );
@@ -253,6 +295,23 @@ class _DashboardMediaStripState extends State<DashboardMediaStrip> {
         child: compact,
       );
     },
+  );
+  Widget _expandControl() => SizedBox(
+    width: 48,
+    height: double.infinity,
+    child: IconButton(
+      tooltip: 'Expand media',
+      onPressed: widget.onOpen,
+      icon: const Icon(Icons.keyboard_arrow_up),
+      iconSize: 32,
+      padding: EdgeInsets.zero,
+    ),
+  );
+  Widget _expandedControls(MediaSourceState? source) => LayoutBuilder(
+    builder: (context, c) => _controls(
+      source,
+      math.min((76 * widget.scale).clamp(64, 100), c.maxWidth / 3),
+    ),
   );
   String _time(int ms) =>
       '${ms ~/ 60000}:${((ms ~/ 1000) % 60).toString().padLeft(2, '0')}';

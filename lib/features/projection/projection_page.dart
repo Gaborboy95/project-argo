@@ -18,9 +18,10 @@ class ProjectionPage extends StatelessWidget {
     required this.projection,
     this.rendererTest = false,
     this.geometryDiagnostics = false,
+    this.inputDiagnostics = false,
   });
   final ProjectionService projection;
-  final bool rendererTest, geometryDiagnostics;
+  final bool rendererTest, geometryDiagnostics, inputDiagnostics;
 
   @override
   Widget build(BuildContext context) => StreamBuilder<ProjectionSnapshot>(
@@ -57,6 +58,7 @@ class ProjectionPage extends StatelessWidget {
                       stream: stream,
                       inputEnabled: usable,
                       geometryDiagnostics: geometryDiagnostics,
+                      inputDiagnostics: inputDiagnostics,
                     ),
             ),
             if (snapshot.audioFailure case final failure?)
@@ -76,35 +78,47 @@ class ProjectionPage extends StatelessWidget {
                 ),
               ),
             if (!usable)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.screen_share_outlined, size: 64),
-                      const SizedBox(height: 16),
-                      if (snapshot.switchRecovery case final recovery?)
-                        ProjectionRecoveryPanel(
-                          service: projection,
-                          decision: recovery,
+              Positioned.fill(
+                bottom: presentation?.bottomOverlayHeight ?? 0,
+                child: LayoutBuilder(
+                  builder: (context, constraints) => SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: (constraints.maxHeight - 48).clamp(
+                          0,
+                          double.infinity,
                         ),
-                      if (snapshot.failure case final failure?)
-                        ArgoStatusPanel(
-                          status: ArgoStatus.failed,
-                          summary: failure.summary,
-                          failure: failure,
-                        ),
-                      Text(
-                        presentation?.error ??
-                            snapshot.failureMessage ??
-                            projectionConnectionStatus(
-                              snapshot,
-                              session ?? snapshot.sessions.firstOrNull,
-                            ),
-                        textAlign: TextAlign.center,
                       ),
-                    ],
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.screen_share_outlined, size: 64),
+                          const SizedBox(height: 16),
+                          if (snapshot.switchRecovery case final recovery?)
+                            ProjectionRecoveryPanel(
+                              service: projection,
+                              decision: recovery,
+                            ),
+                          if (snapshot.failure case final failure?)
+                            ArgoStatusPanel(
+                              status: ArgoStatus.failed,
+                              summary: failure.summary,
+                              failure: failure,
+                            ),
+                          Text(
+                            presentation?.error ??
+                                snapshot.failureMessage ??
+                                projectionConnectionStatus(
+                                  snapshot,
+                                  session ?? snapshot.sessions.firstOrNull,
+                                ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),

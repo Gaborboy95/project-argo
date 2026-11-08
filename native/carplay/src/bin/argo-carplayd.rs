@@ -1,4 +1,4 @@
-//! Unprivileged LIVI Link diagnostics and opt-in supervised wired CarPlay.
+//! Unprivileged LIVI Link diagnostics and supervised wired/wireless CarPlay.
 use argo_carplay::{
     diagnostic::{self, Health},
     discovery::Discovery,
@@ -159,8 +159,13 @@ async fn wait_stop(stop: &mut tokio::sync::watch::Receiver<bool>) {
 async fn main() -> io::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!(
-            "argo-carplayd 0.1.0 control=1 wired={}",
-            cfg!(all(feature = "airplay", feature = "linux-usb"))
+            "argo-carplayd 0.1.0 control=1 wired={} wireless={}",
+            cfg!(all(feature = "airplay", feature = "linux-usb")),
+            cfg!(all(
+                target_os = "linux",
+                feature = "airplay",
+                feature = "linux-usb"
+            ))
         );
         return Ok(());
     }
@@ -169,11 +174,15 @@ async fn main() -> io::Result<()> {
     if automatic_usb {
         args.pop();
     }
-    if automatic_usb && args.first().map(String::as_str) != Some("--wired") {
-        return Err(io::Error::other("USB lease requires wired mode"));
+    let receiver_mode = matches!(
+        args.first().map(String::as_str),
+        Some("--wired" | "--receiver")
+    );
+    if automatic_usb && !receiver_mode {
+        return Err(io::Error::other("USB lease requires receiver mode"));
     }
     #[cfg(all(feature = "airplay", feature = "linux-usb"))]
-    let wired = if args.first().map(String::as_str) == Some("--wired") {
+    let wired = if receiver_mode {
         Some(argo_carplay::wired_runtime::parse_options(&args[1..]).map_err(io::Error::other)?)
     } else if args.is_empty() {
         None
@@ -198,7 +207,8 @@ async fn main() -> io::Result<()> {
                 .map_err(|_| io::Error::other("invalid trusted LIVI Link IPv4 override"))?,
         );
     }
-    let client = LinkClient::new(config).map_err(io::Error::other)?;
+    let client = LinkClient::new(config.clone()).map_err(io::Error::other)?;
+    let network_client = LinkClient::new(config).map_err(io::Error::other)?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let path = socket_path()?;
     let _lock = lock(&path)?;
@@ -207,6 +217,21 @@ async fn main() -> io::Result<()> {
     let health = Arc::new(RwLock::new(Health::default()));
     let latest = health.clone();
     let (stop, mut stopping) = tokio::sync::watch::channel(false);
+    let monitored = health.clone();
+    let mut network_stop = stopping.clone();
+    let mut network_monitor = tokio::spawn(async move {
+        loop {
+            let update = tokio::select! {
+                update = diagnostic::probe_network(&network_client) => update,
+                _ = wait_stop(&mut network_stop) => return,
+            };
+            update.apply(&mut *monitored.write().await);
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+                _ = wait_stop(&mut network_stop) => return,
+            }
+        }
+    });
     let mut poll = tokio::spawn(async move {
         #[cfg(all(feature = "airplay", feature = "linux-usb"))]
         if let Some(options) = wired {
@@ -227,8 +252,8 @@ async fn main() -> io::Result<()> {
                     if *stopping.borrow() { return Ok(()); }
                     let current = changes.borrow_and_update().clone();
                     if !current.running || !current.settings.enabled {
-                        *manager.phase.lock().await = "Disconnected".into();
                         if let Some(mut active) = lease.take() { active.release().await?; }
+                        *manager.phase.lock().await = "Disconnected".into();
                         tokio::select! {
                             value=changes.changed()=>{value.map_err(io::Error::other)?;},
                             _=wait_stop(&mut stopping)=>return Ok(()),
@@ -236,7 +261,9 @@ async fn main() -> io::Result<()> {
                         }
                         continue;
                     }
-                    if automatic_usb && lease.is_none() {
+                    let wireless = current.transport == argo_carplay::runtime_control::SessionTransport::Wireless;
+                    if wireless && let Some(mut active) = lease.take() { active.release().await?; }
+                    if !wireless && automatic_usb && lease.is_none() {
                         if !current.authorize && !argo_carplay::usb_lease::UsbLease::authorized().await? {
                             *manager.phase.lock().await = "USB permission required — select Connect to authorize".into();
                             tokio::select! {
@@ -248,24 +275,66 @@ async fn main() -> io::Result<()> {
                         }
                         lease = Some(argo_carplay::usb_lease::UsbLease::start()?);
                     }
-                    *manager.phase.lock().await = "Waiting for iPhone".into();
+                    tokio::select! {
+                        value = diagnostic::probe(&client) => *latest.write().await = value,
+                        _ = wait_stop(&mut stopping) => return Ok(()),
+                    }
+                    *manager.phase.lock().await = if wireless {
+                        "Preparing LIVI Link wireless CarPlay"
+                    } else { "Waiting for iPhone over USB" }.into();
                     let started=tokio::time::Instant::now();
                     let (session_stop, session_stopping)=tokio::sync::watch::channel(false);
-                    let session=argo_carplay::wired_runtime::run(current.settings.options()?,pairing.clone(),client.clone(),session_stopping);
+                    let (progress,mut phases)=tokio::sync::watch::channel(argo_carplay::session_runtime::Progress::PreparingNetwork);
+                    let mut progress_open=wireless;
+                    let selection=manager.state.subscribe();
+                    let session_pairing=pairing.clone();
+                    let session_link=client.clone();
+                    let device_manager=manager.clone();
+                    let session=async move {
+                        if wireless {
+                            let network=argo_carplay::wireless_network::WirelessNetwork::load_or_create(&session_pairing)?;
+                            let reconnect_selection=selection.clone();
+                            let phone_selection=selection.clone();
+                            let device_selection=argo_carplay::wireless_runtime::PhoneSelection::new(move ||phone_selection.borrow().target,move |peer|device_manager.bind_phone(current.generation,peer));
+                            argo_carplay::wireless_runtime::run_with_selection(move || selection.borrow().options(),session_pairing,session_link,network,device_selection,session_stopping,move || reconnect_selection.borrow().settings.auto_connect,progress).await
+                        } else {
+                            argo_carplay::wired_runtime::run_with_options(move || selection.borrow().options(),session_pairing,session_link,session_stopping).await
+                        }
+                    };
                     tokio::pin!(session);
                     let outcome=loop {
                         tokio::select! {
                             result=&mut session=>break result,
+                            changed=phases.changed(), if progress_open=>{
+                                if changed.is_ok() {
+                                    let label=phases.borrow_and_update().label();
+                                    *manager.phase.lock().await=label.into();
+                                } else {progress_open=false;}
+                            },
                             _=wait_stop(&mut stopping)=>{session_stop.send_replace(true);break session.await;},
                             change=changes.changed()=>{
                                 change.map_err(io::Error::other)?;
                                 let next=changes.borrow_and_update().clone();
                                 if !next.running || next.generation!=current.generation {session_stop.send_replace(true);break session.await;}
                             },
-                            ended=async {match &mut lease {Some(l)=>l.ended().await,None=>std::future::pending().await}}=>return Err(io::Error::other(format!("USB lease ended: {ended:?}"))),
-                            result=&mut server=>return Err(io::Error::other(format!("Settings service stopped: {result:?}"))),
+                            ended=async {match &mut lease {Some(l)=>l.ended().await,None=>std::future::pending().await}}=>{
+                                session_stop.send_replace(true);
+                                let cleanup = session.await;
+                                if let Err(error) = cleanup { return Err(io::Error::other(format!("USB lease ended: {ended:?}; receiver: {error}"))); }
+                                return Err(io::Error::other(format!("USB lease ended: {ended:?}")));
+                            },
+                            result=&mut server=>{
+                                session_stop.send_replace(true);
+                                let cleanup = session.await;
+                                if let Err(error) = cleanup { return Err(io::Error::other(format!("Settings service stopped: {result:?}; receiver: {error}"))); }
+                                return Err(io::Error::other(format!("Settings service stopped: {result:?}")));
+                            },
                         }
                     };
+                    if let Err(error) = &outcome
+                        && (error.downcast_ref::<argo_carplay::wireless_runtime::CleanupUnconfirmed>().is_some()
+                            || error.downcast_ref::<argo_carplay::wireless_bluetooth::ControllerCleanupUnconfirmed>().is_some())
+                    {return Err(io::Error::other(error.to_string()));}
                     if *stopping.borrow() {return Ok(());}
                     if changes.borrow().generation!=current.generation {continue;}
                     match outcome {
@@ -273,7 +342,8 @@ async fn main() -> io::Result<()> {
                         Ok(false)=>*manager.phase.lock().await="Reconnecting".into(),
                         Err(error)=>{eprintln!("CarPlay session ended: {error}"); *manager.phase.lock().await="Waiting for iPhone or LIVI Link".into();},
                     }
-                    if !current.settings.auto_connect {manager.state.send_modify(|s|s.running=false);continue;}
+                    let auto_connect=changes.borrow().settings.auto_connect;
+                    if !auto_connect {manager.state.send_modify(|s|s.running=false);continue;}
                     if started.elapsed()>=Duration::from_secs(60){delay=2;}
                     tokio::select! {
                         _=tokio::time::sleep(Duration::from_secs(delay))=>{},
@@ -308,6 +378,7 @@ async fn main() -> io::Result<()> {
             result = tokio::signal::ctrl_c() => break result,
             _ = terminate.recv() => break Ok(()),
             outcome = &mut poll => break Err(io::Error::other(format!("health worker stopped: {outcome:?}"))),
+            outcome = &mut network_monitor => break Err(io::Error::other(format!("Link network monitor stopped: {outcome:?}"))),
             Some(_) = workers.join_next(), if !workers.is_empty() => {},
             incoming = listener.accept() => {
                 let (stream, _) = match incoming { Ok(stream) => stream, Err(error) => break Err(error) };
@@ -322,11 +393,18 @@ async fn main() -> io::Result<()> {
     };
     stop.send_replace(true);
     if !poll.is_finished() {
-        // Reserve two seconds for privileged USB restoration within the unit stop budget.
-        timeout(Duration::from_secs(7), &mut poll)
+        // Controller/profile, owned AP state and media cleanup must finish before
+        // another receiver can acquire the shared session lock.
+        timeout(Duration::from_secs(28), &mut poll)
             .await
             .map_err(|_| io::Error::other("CarPlay cleanup timed out"))?
             .map_err(io::Error::other)??;
+    }
+    if !network_monitor.is_finished() {
+        timeout(Duration::from_secs(2), &mut network_monitor)
+            .await
+            .map_err(|_| io::Error::other("Link monitor cleanup timed out"))?
+            .map_err(io::Error::other)?;
     }
     workers.abort_all();
     while workers.join_next().await.is_some() {}

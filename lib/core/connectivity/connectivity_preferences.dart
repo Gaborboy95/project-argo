@@ -16,7 +16,10 @@ final class ConnectivityPreferences implements ConnectivityService {
     this.projectionConfigured = true,
     this.diagnostics,
     this.deadlineTimer = Timer.new,
-  }) : _startupPending = settings.get(AppSettingKeys.autoConnectPhone)
+    this.externalConnectionOwner = false,
+  }) : _startupPending =
+           !externalConnectionOwner &&
+               settings.get(AppSettingKeys.autoConnectPhone)
            ? {'phone', ...startupConnections}
            : {} {
     _settingsSubscription = settings.changes.listen((change) {
@@ -32,6 +35,9 @@ final class ConnectivityPreferences implements ConnectivityService {
   static const startupDiscoveryWindow = Duration(seconds: 90);
   final Timer Function(Duration, void Function()) deadlineTimer;
   final bool projectionConfigured;
+
+  /// The device hub owns phone selection and startup across both protocols.
+  final bool externalConnectionOwner;
   final DiagnosticsService? diagnostics;
   final Set<String> _reported = {};
   void _info(String message) {
@@ -154,7 +160,7 @@ final class ConnectivityPreferences implements ConnectivityService {
   bool _microphoneRestored = false;
   void _restore(ConnectivitySnapshot state) {
     _startup(state);
-    if (_choicesRestored) _restorePhone(state);
+    if (_choicesRestored && !externalConnectionOwner) _restorePhone(state);
     final input = settings.get(AppSettingKeys.microphoneInput);
     if (!_microphoneRestored && input.isNotEmpty && state.voice != null) {
       _microphoneRestored = true;
@@ -233,7 +239,9 @@ final class ConnectivityPreferences implements ConnectivityService {
     final radio = state.adapters
         .where((r) => r.address == adapter || r.id == adapter)
         .firstOrNull;
-    final phoneAddress = phone.contains('/') ? phone.split('/').last : '';
+    final phoneAddress = phone.contains('/')
+        ? (bluetoothAddress(phone.split('/').last) ?? phone.split('/').last)
+        : '';
     final restoredPhone = radio != null && phoneAddress.isNotEmpty
         ? '${radio.id}/$phoneAddress'
         : phone;

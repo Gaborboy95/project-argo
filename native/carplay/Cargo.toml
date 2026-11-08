@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Argo native CarPlay interoperability and LIVI Link diagnostics"
+license = "GPL-3.0-or-later"
 publish = false
 
 [features]
@@ -14,6 +15,8 @@ linux-audio = ["airplay", "dep:gstreamer", "dep:gstreamer-app"]
 linux-usbmuxd = ["dep:plist", "dep:openssl", "dep:tokio-openssl"]
 
 [dependencies]
+iap2-link = { path = "vendor/livi-iap2-link" }
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 argo-audio-ownership = { path = "../audio-ownership" }
 gstreamer = { version = "=0.24.5", optional = true }
 gstreamer-app = { version = "=0.24.5", optional = true }

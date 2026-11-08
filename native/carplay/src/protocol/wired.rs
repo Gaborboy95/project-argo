@@ -62,6 +62,18 @@ pub struct Configuration {
     pub start_session: csm::StartSession,
 }
 
+/// Bluetooth uses a reliable iAP2 link rather than the wired zero-ACK mode.
+pub async fn run_wireless<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    link: &LinkClient,
+    configuration: Configuration,
+    controller: [u8; 6],
+    cancelled: watch::Receiver<bool>,
+    state: watch::Sender<State>,
+) -> Result<(), Error> {
+    super::wireless::run(stream, link, configuration, controller, cancelled, state).await
+}
+
 struct Control<S> {
     stream: S,
     sent: u8,

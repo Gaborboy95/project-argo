@@ -57,6 +57,56 @@ class Deadline implements Timer {
 }
 
 void main() {
+  test('external device owner restores radio preferences without selecting or starting a phone', () async {
+    final settings = await SettingsService.load(
+      schema: AppSettingKeys.createSchema(),
+      store: Store(),
+    );
+    await settings.set(
+      AppSettingKeys.connectivityPhone,
+      'hci0/AA:BB:00:00:00:01',
+    );
+    final backend = Backend(
+      const ConnectivitySnapshot(
+        daemonConnected: true,
+        available: true,
+        enabled: true,
+        wirelessAvailable: true,
+        phase: 'idle',
+        adapter: 'hci0',
+        adapters: [ConnectivityRadio('hci0', 'radio')],
+        devices: [
+          ConnectivityDevice('hci0/AA:BB:00:00:00:01', 'Phone', true, false),
+        ],
+        music: {},
+        calls: {'available': true},
+      ),
+    );
+    final preferences = ConnectivityPreferences(
+      backend,
+      settings,
+      externalConnectionOwner: true,
+      startupConnections: {'wireless', 'music', 'calls'},
+    );
+    await Future<void>.delayed(Duration.zero);
+    backend.events.add(backend.connectivity);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      backend.requests.where(
+        (r) => {
+          'select',
+          'connect',
+          'musicConnect',
+          'callsConnect',
+        }.contains(r.$1),
+      ),
+      isEmpty,
+    );
+    await preferences.close();
+    await backend.events.close();
+    await settings.close();
+  });
+
   test('default phone request waits for paired inventory, consumes once and persists master opt-out', () async {
     final store = Store();
     final settings = await SettingsService.load(
@@ -462,7 +512,7 @@ void main() {
     await settings.set(AppSettingKeys.connectivityAdapter, 'hci0');
     await settings.set(
       AppSettingKeys.connectivityPhone,
-      'hci0/00:11:22:33:44:55',
+      'hci0/aa:bb:22:33:44:55',
     );
     const address = '10:20:30:40:50:60';
     Future<List<(String, String)>> restore(
@@ -482,7 +532,7 @@ void main() {
             ),
           ],
           devices: [
-            ConnectivityDevice('$id/00:11:22:33:44:55', 'Phone', true, false),
+            ConnectivityDevice('$id/AA:BB:22:33:44:55', 'Phone', true, false),
           ],
         ),
       );
@@ -497,7 +547,7 @@ void main() {
     expect(settings.get(AppSettingKeys.connectivityAdapter), address);
     expect(
       await restore('hci1'),
-      contains(('select', 'hci1/00:11:22:33:44:55')),
+      contains(('select', 'hci1/AA:BB:22:33:44:55')),
     );
     final missing = await restore('hci0', present: false);
     expect(missing, isEmpty);

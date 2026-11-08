@@ -1,0 +1,42 @@
+{
+  "upstream_revision": "bfbea31ee624ddce84bfa96ce49d4663e6cdeca7",
+  "variant": "immutable-protocol-major-read-priming",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "target": "armv7-unknown-linux-musleabihf",
+  "linker": "/home/phaeton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld",
+  "binary": "/tmp/argo-mfi-priming-20261108/target/armv7-unknown-linux-musleabihf/release/argo-mfi-physical",
+  "sha256": "6275dbeca1257dfb3aa90e51096c04a8429a10501ab775e9c053b01157f85c8b",
+  "size_bytes": 664584,
+  "checks": {
+    "host_workspace_tests": 20,
+    "all_target_clippy": "passed",
+    "cross_release_build": "passed",
+    "hardware_operations_by_builder": false
+  },
+  "source_sha256": {
+    "SOURCE-CHANGES.patch": "caa8c0e1a100984ed4a0270ffd7ca91ec11f3cc3d5393d46f918cd24c2bd73ff",
+    "Cargo.lock": "5f921af6447072128edc88049818e89ddd64d1fa27d7fcbd2df0ef25cc31ecde",
+    "Cargo.toml": "6688c2150549d31eb19a3b2c6e73cc40c4724d3636d8303c88442fe7ed84ff85",
+    "NOTICE": "fd90f4b7e5727df7df8cfd5062d51a5b635db672f0ebf046fcd27065631daa34",
+    "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "mfid/README.md": "c56b7f66d8582f6b606b81724cf038c2a062ce825edad74a9b1ceb73bd41156f",
+    "mfid/Cargo.toml": "a8994a4f8c3c739c8b92767ca9296a1f7fd5c5179234767600520bc12ac2d3a8",
+    "livi-net/Cargo.toml": "84ff806c6ebc3a290432b3381aa783f33132719d97651a5195045ff99760f9c6",
+    "iap2-mfi/Cargo.toml": "5d35260e6cbb7bdbd08396ad223403d275eaf81444d2e8f61c84959ada8af1ea",
+    "iap2-mfi/src/lib.rs": "8b618a2856c15cb2d95597c835ecbdf6bb797529b967d09efbf5233d6a8bb0ba",
+    "iap2-mfi/src/linux.rs": "3e658eadd4cf2f8d02691bc692bd9949318175f6a416fee798f25ac7fd44ca16",
+    "iap2-mfi/src/ncm.rs": "d0fed621f6036f348a85316ff09db2ec8a7cbced679c8519610696a03c0043bb",
+    "iap2-mfi/src/server.rs": "2a75d2ae23430af40da2593e73c336dc321103ba426a187fe33cdfd72388fd7c",
+    "iap2-mfi/src/testdata/certificate.p7b": "7799e39d3db4a0ad3b97fac5c39d35171209b396596041c65d8ab4e849c71ec1",
+    "iap2-mfi/src/testdata/certificate.p7b.pem": "331fa4b62d40e6d44edc5eb629632ebfdea08d0bde15ecb5ca48bdafdbae88c3",
+    "iap2-mfi/src/testdata/ec-p256.pk8": "42f55101d1b6e898b5b3ed15868ad595dabadbaa4c3bcffe84926ea1bc089f32",
+    "iap2-mfi/src/testdata/ec-p256.pk8.pem": "2b3c4d51de081a6cca3cec4efa5af4b248c71938f4fc5084fb0472e0c3ced206",
+    "iap2-mfi/src/testdata/rsa-1024.pk8.pem": "69cfdff21305200935abee7f96edd9be74363fe8bd80ae608de2b66f37d085d7",
+    "livi-net/src/bridge.rs": "2af569170f015386b8b3830efa4adad8fa8fe31f595ec927441da28fdd0068ce",
+    "livi-net/src/ca.rs": "7f09e2dba66cd56cfc3b0858b823b6a5df9ee12f55b400555a39195c276f9cf7",
+    "livi-net/src/lib.rs": "edc326b365b4301bd5335088ba8fc7c1d91caee89bb670876f56525890c125f4",
+    "livi-net/src/port.rs": "e98ce4fcdd40a0544c3ddf519d64d3284424248900e49d3ddc1eb0052aa52cde",
+    "livi-net/src/tunnel.rs": "f3e69612dae96fafeadf93de5de4acdfd1faa101f6ff26f2855998b15405a311",
+    "mfid/src/main.rs": "45f91d35824b4d210958020959c2464d4b866513da71c4485bda3517a412ee85"
+  }
+}

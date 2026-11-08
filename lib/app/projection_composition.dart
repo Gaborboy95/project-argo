@@ -12,6 +12,7 @@ import '../integrations/projection/projection_endpoints.dart';
 import '../integrations/bluetooth/bluetooth_media_source.dart';
 import '../core/connectivity/connectivity_preferences.dart';
 import '../core/connectivity/connectivity_service.dart';
+import '../core/connectivity/device_connection_service.dart';
 import '../core/media/media_session_service.dart';
 import '../integrations/projection/projection_media_source.dart';
 import '../core/audio/audio_service.dart';
@@ -113,6 +114,7 @@ Future<ProjectionService> registerProjectionServices({
     final configured = ConnectivityPreferences(
       connectivity,
       services.get<SettingsService>(),
+      externalConnectionOwner: true,
       diagnostics: diagnostics,
       projectionConfigured:
           ProjectionBackendType.fromEnvironment(environment) ==
@@ -249,6 +251,8 @@ Future<ProjectionService> registerProjectionServices({
       ProjectionPresentationOptions(
         geometryDiagnostics:
             environment['ARGO_PROJECTION_GEOMETRY_DIAGNOSTICS'] == '1',
+        inputDiagnostics:
+            environment['ARGO_PROJECTION_INPUT_DIAGNOSTICS'] == '1',
       ),
     )
     ..register<ProjectionRenderTest>(renderTest)
@@ -256,6 +260,22 @@ Future<ProjectionService> registerProjectionServices({
     ..register<ProjectionService>(projection);
   if (viewRegistry != null) {
     services.register<ProjectionViewRegistry>(viewRegistry);
+  }
+  if (services.contains<ConnectivityService>()) {
+    final devices = DeviceConnectionService(
+      backend: services.get<ConnectivityService>(),
+      projection: projection,
+      settings: services.get<SettingsService>(),
+      carPlay: services.contains<CarPlaySettingsService>()
+          ? services.get<CarPlaySettingsService>()
+          : null,
+    );
+    services.register<DeviceConnectionService>(devices);
+    lifecycle.registerShutdown(
+      name: 'devices.connections',
+      phase: AppShutdownPhase.stopActivity,
+      shutdown: devices.close,
+    );
   }
   diagnostics.info(
     'projection.backend',

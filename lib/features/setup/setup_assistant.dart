@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/audio/audio_service.dart';
 import '../../core/camera/camera_service.dart';
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/connectivity/device_connection_service.dart';
 import '../../core/settings/app_setting_keys.dart';
 import '../../core/settings/settings_service.dart';
 import '../../core/camera/camera_presentation_policy.dart';
@@ -22,12 +23,14 @@ class SetupAssistant extends StatefulWidget {
     this.camera,
     this.presentation,
     this.connectivity,
+    this.deviceConnections,
   });
   final SettingsService settings;
   final AudioService audio;
   final CameraService? camera;
   final CameraPresentationService? presentation;
   final ConnectivityService? connectivity;
+  final DeviceConnectionService? deviceConnections;
   @override
   State<SetupAssistant> createState() => _SetupAssistantState();
 }
@@ -103,7 +106,7 @@ class _SetupAssistantState extends State<SetupAssistant> {
             1 => Column(
               children: [
                 Text(
-                  'Current display ${View.of(context).display.id + 1} · ${MediaQuery.sizeOf(context).width.round()} × ${MediaQuery.sizeOf(context).height.round()} logical pixels',
+                  'Current viewport ${MediaQuery.sizeOf(context).width.round()} × ${MediaQuery.sizeOf(context).height.round()} logical pixels',
                 ),
                 const Text(
                   'Use the desktop display settings to move Argo to another output. Confirm that controls are comfortable at the chosen scale.',
@@ -139,9 +142,10 @@ class _SetupAssistantState extends State<SetupAssistant> {
                   : ConnectivitySettingsCard(
                       service: widget.connectivity!,
                       settings: widget.settings,
+                      deviceConnections: widget.deviceConnections,
                     ),
             5 => const Text(
-              'Connect a phone, then use Settings → Android Auto or CarPlay to configure projection. Receiver availability and pairing are shown there. Projection is optional.',
+              'Connect a phone, then use Settings → Android Auto or CarPlay to configure projection. Pair and connect phones in Settings → Devices. Projection is optional.',
             ),
             6 =>
               widget.camera == null

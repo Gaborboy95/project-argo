@@ -134,6 +134,104 @@ async fn concurrent_requests_fail_busy_and_cancellation_releases_lease() {
     assert_eq!(next.await.unwrap().unwrap(), 3);
 }
 
+async fn independent_services() -> (LinkClient, TcpListener, TcpListener) {
+    let mfi = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let wifi = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let client = LinkClient::new(LinkConfig {
+        discovery: Discovery::Address(Ipv4Addr::LOCALHOST),
+        mfi_port: mfi.local_addr().unwrap().port(),
+        wifi_port: wifi.local_addr().unwrap().port(),
+        deadline: Duration::from_secs(2),
+    })
+    .unwrap();
+    (client, mfi, wifi)
+}
+
+#[tokio::test]
+async fn stalled_wifi_status_does_not_block_real_mfi_certificate_or_signature_transactions() {
+    let (client, mfi, wifi) = independent_services().await;
+    let polling = client.clone();
+    let poll = tokio::spawn(async move { polling.wifi_status().await });
+    let (mut wifi_socket, _) = wifi.accept().await.unwrap();
+    let mut command = [0; 7];
+    wifi_socket.read_exact(&mut command).await.unwrap();
+    assert_eq!(&command, b"status\n");
+    // All Wi-Fi methods still share one lease, including pending apply values.
+    assert!(matches!(client.wifi_access_point().await, Err(Error::Busy)));
+    assert!(matches!(
+        client.set_bluetooth_enabled(true).await,
+        Err(Error::Busy)
+    ));
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = mfi.accept().await.unwrap();
+        assert_eq!(socket.read_u8().await.unwrap(), 1);
+        socket.write_all(&[0, 0, 4, 0x30, 2, 1, 0]).await.unwrap();
+        assert_eq!(socket.read_u8().await.unwrap(), 2);
+        assert_eq!(socket.read_u16().await.unwrap(), 3);
+        let mut challenge = [0; 3];
+        socket.read_exact(&mut challenge).await.unwrap();
+        assert_eq!(challenge, [21, 22, 23]);
+        socket.write_all(&[0, 0, 2, 71, 72]).await.unwrap();
+    });
+    assert_eq!(
+        client.authentication_certificate().await.unwrap(),
+        [0x30, 2, 1, 0]
+    );
+    assert_eq!(client.sign(&[21, 22, 23]).await.unwrap(), [71, 72]);
+    assert!(
+        !poll.is_finished(),
+        "MFi must complete while the Wi-Fi reply is withheld"
+    );
+    server.await.unwrap();
+    // Cancelling a Wi-Fi request releases only its own connection and lease.
+    poll.abort();
+    let _ = poll.await;
+    assert_eq!(wifi_socket.read(&mut [0; 1]).await.unwrap(), 0);
+    let polling = client.clone();
+    let next = tokio::spawn(async move { polling.wifi_status().await });
+    let (mut wifi_socket, _) = wifi.accept().await.unwrap();
+    wifi_socket.read_exact(&mut command).await.unwrap();
+    assert_eq!(&command, b"status\n");
+    wifi_socket
+        .write_all(b"state on\nbt on\nok\n")
+        .await
+        .unwrap();
+    assert!(next.await.unwrap().unwrap().access_point_enabled);
+}
+
+#[tokio::test]
+async fn stalled_mfi_signing_does_not_block_wifi_status_or_lose_same_mfi_exclusion() {
+    let (client, mfi, wifi) = independent_services().await;
+    let signing = client.clone();
+    let request = tokio::spawn(async move { signing.sign(&[21, 22, 23]).await });
+    let (mut mfi_socket, _) = mfi.accept().await.unwrap();
+    let mut challenge = [0; 6];
+    mfi_socket.read_exact(&mut challenge).await.unwrap();
+    assert_eq!(challenge, [2, 0, 3, 21, 22, 23]);
+    assert!(matches!(
+        client.authentication_certificate().await,
+        Err(Error::Busy)
+    ));
+    assert!(matches!(client.protocol_major().await, Err(Error::Busy)));
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = wifi.accept().await.unwrap();
+        let mut command = [0; 7];
+        socket.read_exact(&mut command).await.unwrap();
+        assert_eq!(&command, b"status\n");
+        socket.write_all(b"state on\nbt off\nok\n").await.unwrap();
+    });
+    let status = client.wifi_status().await.unwrap();
+    assert!(status.access_point_enabled);
+    assert!(!status.bluetooth_enabled);
+    assert!(
+        !request.is_finished(),
+        "Wi-Fi must complete while the signature is withheld"
+    );
+    server.await.unwrap();
+    mfi_socket.write_all(&[0, 0, 2, 71, 72]).await.unwrap();
+    assert_eq!(request.await.unwrap().unwrap(), [71, 72]);
+}
+
 #[tokio::test]
 async fn slow_peer_hits_total_deadline_without_implicit_retry() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();

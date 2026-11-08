@@ -4,9 +4,15 @@ import '../../core/climate/climate_service.dart';
 import 'dashboard_temperature.dart';
 
 class DashboardClimate extends StatelessWidget {
-  const DashboardClimate({super.key, required this.onDismiss, this.service});
+  const DashboardClimate({
+    super.key,
+    required this.onDismiss,
+    this.service,
+    this.compact = false,
+  });
   final VoidCallback onDismiss;
   final ClimateService? service;
+  final bool compact;
   @override
   Widget build(BuildContext context) => StreamBuilder<ClimateSnapshot>(
     stream: service?.changes,
@@ -16,14 +22,16 @@ class DashboardClimate extends StatelessWidget {
           caps = snapshot.requireData.capabilities;
       final fan = state.fan.displayed;
       return Padding(
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.all(compact ? 16 : 24),
         child: Column(
           children: [
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    state.simulated ? 'Climate • simulation' : 'Climate',
+                    state.simulated && !compact
+                        ? 'Climate • simulation'
+                        : 'Climate',
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                 ),
@@ -35,11 +43,11 @@ class DashboardClimate extends StatelessWidget {
               ],
             ),
             if (!state.available) const Text('Vehicle climate unavailable'),
-            if (state.simulated)
+            if (state.simulated && !compact)
               const Text('Simulated feedback — no vehicle actuation'),
-            const SizedBox(height: 16),
+            SizedBox(height: compact ? 8 : 16),
             SizedBox(
-              height: 180,
+              height: compact ? 144 : 180,
               child: Row(
                 children: [
                   for (final side in [
@@ -57,6 +65,11 @@ class DashboardClimate extends StatelessWidget {
                 ],
               ),
             ),
+            if (state.simulated && compact)
+              const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: Text('Simulated feedback — no vehicle actuation'),
+              ),
             if (caps?.fan case final range?) ...[
               const Divider(height: 32),
               const Text('Fan'),

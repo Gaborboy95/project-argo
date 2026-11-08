@@ -1,0 +1,10 @@
+[workspace]
+members = ["iap2-mfi", "livi-net", "mfid"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+libc = "=0.2.189"
+livi-net = { path = "livi-net" }

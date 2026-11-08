@@ -213,6 +213,13 @@ impl HostControl {
         if !reader.done() {
             return Err("trailing projection command bytes".into());
         }
+        if let Command::Touch(_, pointer, phase, _, _) = &command {
+            crate::daemon_log!(
+                Trace,
+                "aa-input",
+                "IPC touch received: pointer={pointer} phase={phase}"
+            );
+        }
         // A view's disposal may race unplug. With no live session, discard
         // commands immediately; never retain them for the next phone.
         let _ = self.commands.send(command);

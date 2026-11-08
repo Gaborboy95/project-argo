@@ -142,4 +142,87 @@ void main() {
     );
     await backend.close();
   });
+
+  for (final replacement in [false, true]) {
+    test(
+      'missing saved output preserves preferences and recovers by ${replacement ? "explicit replacement" : "same-ID retry"}',
+      () async {
+        final calls = <String>[];
+        var present = false;
+        final backend = PipeWireAudioBackend(
+          processRunner: (exe, args) async {
+            calls.add('$exe ${args.join(' ')}');
+            return ProcessResult(
+              1,
+              0,
+              exe == 'pw-dump'
+                  ? (present
+                        ? '[{"id":42,"info":{"props":{"media.class":"Audio/Sink","node.name":"${replacement ? 'new.output' : 'saved.output'}"}}}]'
+                        : '[]')
+                  : args.first == 'get-volume'
+                  ? 'Volume: 0.25'
+                  : '',
+              '',
+            );
+          },
+        );
+        final settings = await SettingsService.load(
+          schema: AppSettingKeys.createSchema(),
+          store: MemoryCameraSettings(),
+        );
+        await settings.set(AppSettingKeys.audioPreferredOutput, 'saved.output');
+        await settings.set(AppSettingKeys.audioMasterVolume, .9);
+        await settings.set(AppSettingKeys.audioMuted, true);
+        final audio = await DefaultAudioService.start(
+          backend: backend,
+          settings: settings,
+          diagnostics: DiagnosticsService(),
+        );
+        expect(audio.current.backendAvailable, isFalse);
+        expect(
+          audio.current.failure?.summary,
+          'Selected audio output is unavailable',
+        );
+        expect(audio.current.selectedOutput, 'saved.output');
+        expect(
+          settings.get(AppSettingKeys.audioPreferredOutput),
+          'saved.output',
+        );
+        await audio.setMasterVolume(.8);
+        await audio.setMuted(false);
+        expect(
+          calls.any(
+            (c) =>
+                c.contains('set-volume') ||
+                c.contains('set-mute') ||
+                c.contains('set-default'),
+          ),
+          isFalse,
+        );
+        await expectLater(audio.selectOutput('saved.output'), throwsStateError);
+        expect(
+          settings.get(AppSettingKeys.audioPreferredOutput),
+          'saved.output',
+        );
+        present = true;
+        final recovered = replacement ? 'new.output' : 'saved.output';
+        await audio.selectOutput(recovered);
+        expect(audio.current.backendAvailable, isTrue);
+        expect(audio.current.failure, isNull);
+        expect(audio.current.selectedOutput, recovered);
+        expect(settings.get(AppSettingKeys.audioPreferredOutput), recovered);
+        expect(audio.current.masterVolume, .25);
+        expect(audio.current.muted, isFalse);
+        expect(calls.where((c) => c.contains('set-default')).toList(), [
+          'wpctl set-default 42',
+        ]);
+        expect(
+          calls.any((c) => c.contains('set-volume') || c.contains('set-mute')),
+          isFalse,
+        );
+        await audio.close();
+        await settings.close();
+      },
+    );
+  }
 }

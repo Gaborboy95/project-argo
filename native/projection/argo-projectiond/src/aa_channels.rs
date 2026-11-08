@@ -592,11 +592,12 @@ impl Channels {
 
                 // AV_INPUT_OPEN_REQUEST / MicrophoneRequest
                 0x8005 => {
-                    if !self.setup.contains(&9) {
-                        return Err("Microphone opened before setup".into());
-                    }
+                    // The phone may request the sole advertised PCM source
+                    // immediately after ChannelOpen, without an AV setup exchange.
+                    // Discovery/channel admission above still applies; capture
+                    // availability is answered by the session's OPEN response.
                     vec![Effect::Microphone(
-                        number(1).unwrap_or(0) != 0,
+                        number(1).ok_or("Microphone request missing required open flag")? != 0,
                         number(4).unwrap_or(1),
                     )]
                 }
@@ -764,6 +765,11 @@ impl Channels {
         timestamp: u64,
     ) -> Result<Option<Reply>, String> {
         if !self.open.contains(&8) {
+            crate::daemon_log!(
+                Trace,
+                "aa-input",
+                "Touch ignored: input channel closed; pointer={pointer} phase={phase}"
+            );
             return Ok(None);
         }
         if !x.is_finite()
@@ -778,11 +784,25 @@ impl Channels {
             (x * (self.display.content_width() - 1) as f32).round() as u32,
             (y * (self.display.content_height() - 1) as f32).round() as u32,
         );
+        let position_changed = self
+            .pointers
+            .get(&pointer)
+            .is_some_and(|p| (p.1, p.2) != point);
         if phase == 0 {
             if self.pointers.len() >= 10 || self.pointers.contains_key(&pointer) {
+                crate::daemon_log!(
+                    Trace,
+                    "aa-input",
+                    "Touch ignored: duplicate or excess contact; pointer={pointer} phase={phase}"
+                );
                 return Ok(None);
             }
         } else if !self.pointers.contains_key(&pointer) {
+            crate::daemon_log!(
+                Trace,
+                "aa-input",
+                "Touch ignored: unknown contact; pointer={pointer} phase={phase}"
+            );
             return Ok(None);
         }
         // Android permits IDs 0..31. Keep the existing ten-contact bound and
@@ -825,6 +845,18 @@ impl Channels {
             _ => 3,
         };
         touch = touch.number(2, index as u64).number(3, action);
+        crate::daemon_log!(
+            Trace,
+            "aa-input",
+            "INPUT_REPORT built: timestamp_us={} pointer={} android_id={} action={} action_index={} contacts={} position_changed={}",
+            timestamp,
+            pointer,
+            wire_id,
+            action,
+            index,
+            self.pointers.len(),
+            position_changed
+        );
         if phase == 3 {
             self.pointers.clear(); // ACTION_CANCEL ends the entire gesture.
         } else if phase == 2 {
@@ -843,6 +875,34 @@ impl Channels {
 
 #[cfg(test)]
 mod media_key_tests {
+    #[test]
+    fn microphone_requests_use_the_advertised_source_without_requiring_av_setup() {
+        let mut channels = Channels::new(DisplayConfig::default());
+        assert!(channels.handle(9, 0x8005, &[8, 1]).is_err());
+        channels.handle(0, 5, &[]).unwrap();
+        channels.handle(9, 7, &[8, 0, 16, 9]).unwrap();
+        for (request, expected_open, expected_limit) in [
+            (vec![8, 0], false, 1),
+            (vec![8, 1, 32, 4], true, 4),
+            (vec![8, 0], false, 1),
+        ] {
+            assert!(matches!(
+                channels.handle(9, 0x8005, &request).unwrap().as_slice(),
+                [Effect::Microphone(open, limit)] if *open == expected_open && *limit == expected_limit
+            ));
+        }
+        assert!(channels.handle(9, 0x8005, &[]).is_err());
+        assert!(channels.handle(9, 0x8000, &[8, 3]).is_err());
+        let setup = channels.handle(9, 0x8000, &[8, 1]).unwrap();
+        assert!(
+            matches!(setup.as_slice(), [Effect::Reply(reply)] if reply.channel == 9 && reply.id == 0x8003)
+        );
+        assert!(matches!(
+            channels.handle(9, 0x8005, &[8, 1]).unwrap().as_slice(),
+            [Effect::Microphone(true, 1)]
+        ));
+    }
+
     #[test]
     fn view_and_safe_area_use_protocol_inset_order_and_bounded_content() {
         let display = DisplayConfig {

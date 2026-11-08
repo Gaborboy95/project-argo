@@ -10,15 +10,18 @@ final class ApplicationExitService {
     required this.exitProcess,
     this.connectivity,
     this.onCleanExit,
+    this.beforeQuit,
   });
   final AppLifecycleCoordinator lifecycle;
   final ConnectivityService? connectivity;
   final void Function() exitProcess;
   final Future<void> Function()? onCleanExit;
+  final Future<void> Function()? beforeQuit;
   Future<void>? _pending;
   Future<void> quit() =>
       _pending ??= _quit().whenComplete(() => _pending = null);
   Future<void> _quit() async {
+    await beforeQuit?.call();
     final service = connectivity;
     if (service != null &&
         (service.connectivity.available ||

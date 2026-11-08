@@ -201,7 +201,7 @@ class _ModelManagerPageState extends State<ModelManagerPage> {
                   Text(
                     '${ParkingModelState.fromRecord(model).label} • ${model['version']} • ${((model['size_bytes'] as num) / 1000000).toStringAsFixed(1)} MB • ${model['license']}',
                   ),
-                  ExpansionTile(
+                  ArgoExpansionTile(
                     title: const Text('Model details'),
                     children: [
                       Text(

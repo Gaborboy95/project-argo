@@ -1,350 +1,224 @@
-import '../shared/argo_components.dart';
-
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/connectivity/device_connection_service.dart';
+import 'device_hub_card.dart';
+import '../../core/projection/carplay_settings_service.dart';
+import '../../core/projection/projection_service.dart';
 import '../../core/settings/settings_service.dart';
-import '../../core/settings/app_setting_keys.dart';
+import '../shared/argo_components.dart';
 
+enum ConnectivitySettingsMode { devices, androidAuto }
+
+/// Shared device hub, or Android Auto's separate connection configuration.
 class ConnectivitySettingsCard extends StatefulWidget {
   const ConnectivitySettingsCard({
     required this.service,
     this.settings,
+    this.deviceConnections,
+    this.mode = ConnectivitySettingsMode.devices,
+    this.carPlaySettings,
+    this.projection,
+    this.onAndroidAutoSettings,
+    this.onCarPlaySettings,
     super.key,
   });
   final SettingsService? settings;
+  final DeviceConnectionService? deviceConnections;
   final ConnectivityService service;
+  final ConnectivitySettingsMode mode;
+  final CarPlaySettingsService? carPlaySettings;
+  final ProjectionService? projection;
+  final VoidCallback? onAndroidAutoSettings, onCarPlaySettings;
   @override
   State<ConnectivitySettingsCard> createState() =>
       _ConnectivitySettingsCardState();
 }
 
 class _ConnectivitySettingsCardState extends State<ConnectivitySettingsCard> {
-  String? error;
-  void command(
+  String? _error;
+  bool _pending = false;
+  static const _activePhases = {
+    'preparing',
+    'bootstrap',
+    'connecting',
+    'projecting',
+    'streaming',
+    'backoff',
+    'retrying',
+    'cleanup',
+  };
+  Future<void> _run(Future<void> Function() action) async {
+    if (_pending) return;
+    setState(() {
+      _pending = true;
+      _error = null;
+    });
+    try {
+      await action();
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _pending = false);
+    }
+  }
+
+  Future<void> _command(
     String action, {
     String target = '',
     bool accept = false,
-    int prompt = 0,
-  }) {
-    setState(() => error = null);
-    unawaited(
-      widget.service
-          .connectivityCommand(
-            action,
-            target: target,
-            accept: accept,
-            prompt: prompt,
-          )
-          .catchError((Object e) {
-            if (mounted) setState(() => error = '$e');
-          }),
+  }) => _run(
+    () => widget.service.connectivityCommand(
+      action,
+      target: target,
+      accept: accept,
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.mode == ConnectivitySettingsMode.devices) {
+      final devices = widget.deviceConnections;
+      if (devices == null) {
+        return const Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('Device management is unavailable in this session.'),
+          ),
+        );
+      }
+      return DeviceHubCard(
+        service: devices,
+        onAndroidAutoSettings: widget.onAndroidAutoSettings,
+        onCarPlaySettings: widget.onCarPlaySettings,
+      );
+    }
+    return StreamBuilder<ConnectivitySnapshot>(
+      stream: widget.service.connectivityChanges,
+      initialData: widget.service.connectivity,
+      builder: (context, snapshot) {
+        final state = snapshot.requireData;
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ArgoSection(
+                  title: 'Android Auto connectivity',
+                  children: const [],
+                ),
+                if (_pending) const LinearProgressIndicator(),
+                if (_error != null)
+                  Text(
+                    _error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ..._androidAutoSettings(state),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
-  @override
-  Widget build(BuildContext context) => StreamBuilder<ConnectivitySnapshot>(
-    stream: widget.service.connectivityChanges,
-    initialData: widget.service.connectivity,
-    builder: (context, snapshot) {
-      final s = snapshot.requireData;
-      final prompt = s.prompt;
-      final active = [
-        'preparing',
-        'bootstrap',
-        'connecting',
-        'projecting',
-        'streaming',
-        'backoff',
-        'retrying',
-        'cleanup',
-      ].contains(s.phase);
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const ArgoSection(title: 'Devices & connectivity', children: []),
-              if (widget.settings != null)
-                SwitchListTile(
-                  title: const Text('Auto-connect phone'),
-                  subtitle: const Text(
-                    'Try the last paired phone at startup. Explicit Disconnect stops automatic attempts for this run.',
-                  ),
-                  value: widget.settings!.get(AppSettingKeys.autoConnectPhone),
-                  onChanged: (v) async {
-                    try {
-                      await widget.settings!.set(
-                        AppSettingKeys.autoConnectPhone,
-                        v,
-                      );
-                      if (mounted) setState(() {});
-                    } on Object {
-                      if (mounted) {
-                        setState(
-                          () =>
-                              error = 'Could not save auto-connect preference',
-                        );
-                      }
-                    }
-                  },
-                ),
-              if (prompt != null)
-                Card(
-                  color: Theme.of(context).colorScheme.secondaryContainer,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${prompt.name}\n${prompt.device}\n${prompt.text}\nExpires after 30 seconds.',
-                        ),
-                        Wrap(
-                          spacing: 8,
-                          children: [
-                            FilledButton(
-                              onPressed: () => command(
-                                'confirm',
-                                prompt: prompt.id,
-                                accept: true,
-                              ),
-                              child: const Text('Confirm match'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () =>
-                                  command('confirm', prompt: prompt.id),
-                              child: const Text('Reject'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 8),
-              Text(error ?? s.detail),
-              if (s.cleanupError.isNotEmpty)
-                Text(
-                  s.cleanupError,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              if (active && s.phase != 'streaming')
-                const LinearProgressIndicator(),
-              const SizedBox(height: 20),
-              for (final choice in [
-                (
-                  s.adapters,
-                  s.adapter,
-                  'Bluetooth adapter (all tasks)',
-                  'adapter',
-                ),
-                (
-                  s.networks,
-                  s.interface,
-                  'Projection Wi-Fi interface',
-                  'interface',
-                ),
-              ])
-                if (choice.$1.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: DropdownButtonFormField<String>(
-                      isExpanded: true,
-                      key: ValueKey('${choice.$4}:${choice.$2}'),
-                      initialValue: choice.$1.any((r) => r.id == choice.$2)
-                          ? choice.$2
-                          : null,
-                      decoration: InputDecoration(
-                        labelText: choice.$3,
-                        filled: true,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 18,
-                        ),
-                      ),
-                      items: choice.$1
-                          .map(
-                            (r) => DropdownMenuItem(
-                              value: r.id,
-                              child: Text(
-                                r.name,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: s.available
-                          ? (v) {
-                              if (v != null) command(choice.$4, target: v);
-                            }
-                          : null,
-                    ),
-                  ),
-              const SizedBox(height: 12),
-              for (final radio in s.networks.where((r) => r.id == s.interface))
-                if (radio.detail != null)
-                  Text(
-                    radio.detail!,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-              const SizedBox(height: 12),
-              if (s.band == '2.4ghz' || s.band == '5ghz')
-                DropdownButtonFormField<String>(
-                  key: ValueKey('band:${s.band}'),
-                  initialValue: s.band,
-                  decoration: const InputDecoration(
-                    labelText: 'Projection AP band',
-                    filled: true,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 18,
-                    ),
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: '2.4ghz', child: Text('2.4 GHz')),
-                    DropdownMenuItem(value: '5ghz', child: Text('5 GHz')),
-                  ],
-                  onChanged: s.available
-                      ? (v) {
-                          if (v != null) command('band', target: v);
-                        }
-                      : null,
-                )
-              else if (s.available)
-                const Text(
-                  'AP band selection requires the updated connectivity daemon.',
-                ),
-              if (active)
-                const Text(
-                  'Band changes apply after Disconnect, then Connect. The current attempt keeps its band.',
-                ),
-              if (s.apFrequencyMhz != null)
-                Text(
-                  'Active AP configuration: ${s.apFrequencyMhz! < 3000 ? "2.4" : "5"} GHz (${s.apFrequencyMhz} MHz)',
-                ),
-              const SizedBox(height: 20),
-              const Divider(),
-              const SizedBox(height: 12),
-              Text(
-                'Pairing & devices',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                children: [
-                  OutlinedButton(
-                    onPressed: s.available
-                        ? () => command('discover', accept: !s.discovering)
-                        : null,
-                    child: Text(
-                      s.discovering
-                          ? 'Stop discovery'
-                          : 'Discover devices (60s)',
-                    ),
-                  ),
-                ],
-              ),
-              const Text(
-                'Open Bluetooth settings on the phone, then Pair below. Incoming pairing uses the desktop agent; Argo does not replace it.',
-              ),
-              for (final d in s.devices.where(
-                (d) =>
-                    d.id.startsWith('${s.adapter}/') &&
-                    (d.paired || s.discovering),
-              ))
-                ArgoDeviceChoice(
-                  name: d.name,
-                  identifier: d.id,
-                  selected: s.selected == d.id,
-                  status:
-                      '${d.paired ? 'Paired' : 'Not paired'} · ${d.connected ? 'Connected' : 'Disconnected'}',
-                  actions: Wrap(
-                    spacing: 4,
-                    children: [
-                      if (!d.paired)
-                        TextButton(
-                          onPressed: s.discovering
-                              ? () => command('pair', target: d.id)
-                              : null,
-                          child: const Text('Pair'),
-                        ),
-                      if (d.paired)
-                        TextButton(
-                          onPressed: () => command('select', target: d.id),
-                          child: Text(
-                            s.selected == d.id
-                                ? 'Selected phone'
-                                : 'Select for AA',
-                          ),
-                        ),
-                      if (d.paired)
-                        IconButton(
-                          tooltip: 'Forget device and stop wireless',
-                          onPressed: () async {
-                            if (await confirmArgoAction(
-                                  context,
-                                  title: 'Forget this phone?',
-                                  explanation: 'Pairing will be removed and wireless projection stopped. Your phone content is not deleted.',
-                                  action: 'Forget',
-                                ) &&
-                                mounted) {
-                              command('forget', target: d.id);
-                            }
-                          },
-                          icon: const Icon(Icons.link_off),
-                        ),
-                    ],
-                  ),
-                ),
-              const Divider(height: 32),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Wireless Android Auto'),
-                value: s.enabled,
-                subtitle: const Text(
-                  'Available automatically when the selected Wi-Fi adapter supports a permitted AP channel. Connect starts projection; enabling alone does not start a hotspot.',
-                ),
-                onChanged:
-                    s.available && (s.enabled || s.wirelessAvailable == true)
-                    ? (v) => command('enable', accept: v)
-                    : null,
-              ),
-              Text(
-                'Wi-Fi: ${s.wifiConnected ? 'phone reports joined' : 'not joined'} · Projection: ${s.phase}',
-              ),
-              const Text(
-                'Connect uses the selected idle Wi-Fi interface. Host internet is shared via NAT. Experimental admission: only use a controlled projection network; TCP identity is not cryptographically bound to Bluetooth.',
-              ),
-              Wrap(
-                spacing: 8,
-                children: [
-                  FilledButton(
-                    onPressed:
-                        s.available &&
-                            s.enabled &&
-                            s.selected.isNotEmpty &&
-                            !active
-                        ? () => command('connect')
-                        : null,
-                    child: const Text('Connect'),
-                  ),
-                  OutlinedButton(
-                    onPressed: s.available && s.enabled
-                        ? () => command('disconnect')
-                        : null,
-                    child: const Text('Disconnect'),
-                  ),
-                ],
-              ),
-            ],
+  Widget _radioChoice(
+    ConnectivitySnapshot state,
+    List<ConnectivityRadio> choices,
+    String selected,
+    String label,
+    String action,
+  ) => DropdownButtonFormField<String>(
+    isExpanded: true,
+    key: ValueKey('$action:$selected'),
+    initialValue: choices.any((r) => r.id == selected) ? selected : null,
+    decoration: InputDecoration(labelText: label),
+    items: choices
+        .map(
+          (r) => DropdownMenuItem(
+            value: r.id,
+            child: Text(r.name, overflow: TextOverflow.ellipsis),
           ),
-        ),
-      );
-    },
+        )
+        .toList(),
+    onChanged: state.available && !_pending
+        ? (value) {
+            if (value != null) _command(action, target: value);
+          }
+        : null,
   );
+
+  List<Widget> _androidAutoSettings(ConnectivitySnapshot state) {
+    final ready = state.available && !_pending;
+    final active = _activePhases.contains(state.phase);
+    return [
+      const Text(
+        'Pair phones and start connections in Devices. These settings configure wireless Android Auto.',
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Wireless Android Auto'),
+        value: state.enabled,
+        subtitle: const Text(
+          'Enabling alone does not start a hotspot. Connect explicitly from Devices.',
+        ),
+        onChanged: ready && (state.enabled || state.wirelessAvailable == true)
+            ? (value) => _command('enable', accept: value)
+            : null,
+      ),
+      const SizedBox(height: 16),
+      if (state.networks.isNotEmpty)
+        _radioChoice(
+          state,
+          state.networks,
+          state.interface,
+          'Projection Wi-Fi interface',
+          'interface',
+        ),
+      for (final radio in state.networks.where((r) => r.id == state.interface))
+        if (radio.detail != null)
+          Text(radio.detail!, style: Theme.of(context).textTheme.bodySmall),
+      const SizedBox(height: 16),
+      if (state.band == '2.4ghz' || state.band == '5ghz')
+        DropdownButtonFormField<String>(
+          key: ValueKey('band:${state.band}'),
+          initialValue: state.band,
+          decoration: const InputDecoration(labelText: 'Projection AP band'),
+          items: const [
+            DropdownMenuItem(value: '2.4ghz', child: Text('2.4 GHz')),
+            DropdownMenuItem(value: '5ghz', child: Text('5 GHz')),
+          ],
+          onChanged: ready
+              ? (value) {
+                  if (value != null) _command('band', target: value);
+                }
+              : null,
+        )
+      else if (state.available)
+        const Text(
+          'AP band selection requires the updated connectivity daemon.',
+        ),
+      if (active)
+        const Text(
+          'Band changes apply after Disconnect, then Connect. The current attempt keeps its band.',
+        ),
+      if (state.apFrequencyMhz != null)
+        Text(
+          'Active AP configuration: ${state.apFrequencyMhz! < 3000 ? '2.4' : '5'} GHz (${state.apFrequencyMhz} MHz)',
+        ),
+      const SizedBox(height: 12),
+      Text(state.detail),
+      if (state.cleanupError.isNotEmpty)
+        Text(
+          state.cleanupError,
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+      const Text(
+        'Connect uses the selected idle Wi-Fi interface and shares host internet. Only use a controlled projection network; TCP identity is not cryptographically bound to Bluetooth.',
+      ),
+    ];
+  }
 }

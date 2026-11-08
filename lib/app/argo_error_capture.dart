@@ -1,8 +1,10 @@
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../core/diagnostics/diagnostics_service.dart';
+import 'argo_render_recovery.dart';
 
 /// Installs the Flutter/engine portions of Argo's uncaught-error capture.
 final class ArgoErrorCapture {
@@ -10,6 +12,7 @@ final class ArgoErrorCapture {
     this._diagnostics,
     this._previousFlutterHandler,
     this._previousPlatformHandler,
+    this._previousErrorBuilder,
   );
 
   factory ArgoErrorCapture.install(DiagnosticsService diagnostics) {
@@ -17,15 +20,18 @@ final class ArgoErrorCapture {
       diagnostics,
       FlutterError.onError,
       PlatformDispatcher.instance.onError,
+      ErrorWidget.builder,
     );
     FlutterError.onError = capture._handleFlutterError;
     PlatformDispatcher.instance.onError = capture._handlePlatformError;
+    ErrorWidget.builder = capture._buildRenderFailure;
     return capture;
   }
 
   final DiagnosticsService _diagnostics;
   final FlutterExceptionHandler? _previousFlutterHandler;
   final ErrorCallback? _previousPlatformHandler;
+  final ErrorWidgetBuilder _previousErrorBuilder;
   Object? _lastError;
   StackTrace? _lastStackTrace;
 
@@ -45,7 +51,13 @@ final class ArgoErrorCapture {
     if (PlatformDispatcher.instance.onError == _handlePlatformError) {
       PlatformDispatcher.instance.onError = _previousPlatformHandler;
     }
+    if (ErrorWidget.builder == _buildRenderFailure) {
+      ErrorWidget.builder = _previousErrorBuilder;
+    }
   }
+
+  Widget _buildRenderFailure(FlutterErrorDetails details) =>
+      const ArgoRenderFailure();
 
   void _handleFlutterError(FlutterErrorDetails details) {
     _recordOnce(

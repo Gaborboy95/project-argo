@@ -219,6 +219,7 @@ struct Music {
     player: String,
     blocked: BTreeSet<String>,
     intent: bool,
+    device_generation: u64,
     attempts: u8,
     next: tokio::time::Instant,
     owner: String,
@@ -263,7 +264,11 @@ impl Music {
         }
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if !decode_graph(&command("pw-dump", &["PipeWire:Interface:Link".into()]).await?)?
+                // pw-dump's positional argument matches an object ID/name,
+                // not an interface type. A type string can return empty stdout
+                // even on a healthy server; enumerate the graph before filtering.
+                if !graph()
+                    .await?
                     .iter()
                     .any(|l| props(l)["argo.music.owner"] == self.owner)
                 {
@@ -637,6 +642,7 @@ impl Music {
                 if self.snapshot.selected == "bluetooth" {
                     self.snapshot.selected.clear();
                 }
+                self.device_generation = r.device_generation;
                 self.snapshot.device = r.target;
                 self.intent = true;
                 self.snapshot.phase = "connecting".into();
@@ -645,6 +651,9 @@ impl Music {
                 self.next = tokio::time::Instant::now();
             }
             "musicDisconnect" => {
+                if !r.target.is_empty() && r.target != self.snapshot.device {
+                    return Ok(());
+                }
                 self.intent = false;
                 self.snapshot.source = None;
                 self.cover = Default::default();
@@ -824,6 +833,7 @@ pub async fn run(
         player: String::new(),
         blocked: BTreeSet::new(),
         intent: false,
+        device_generation: 0,
         attempts: 0,
         next: tokio::time::Instant::now(),
         gain: 0.0,
@@ -844,6 +854,8 @@ pub async fn run(
         return;
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let device_control = music.host.connectivity.clone();
+    let mut device_changes = device_control.device_changes.subscribe();
     music.publish();
     loop {
         tokio::select! { biased;
@@ -855,6 +867,15 @@ pub async fn run(
                 if let Err(error)=music.silence().await {music.snapshot.error=Some(error);}
                 music.publish();
             },
+            _=device_changes.changed()=>{
+                if !music.snapshot.device.is_empty() && device_control.device_generation(&music.snapshot.device)!=music.device_generation {
+                    music.intent=false;music.snapshot.source=None;music.cover=Default::default();music.player.clear();
+                    if music.snapshot.selected=="bluetooth" {music.snapshot.selected.clear();}
+                    if let Err(error)=music.silence().await {music.snapshot.error=Some(error);}
+                    music.device_generation=device_control.device_generation(&music.snapshot.device);
+                    music.snapshot.phase="disconnected".into();music.snapshot.detail="Phone disconnected; Connect starts a new attempt".into();music.publish();
+                }
+            },
             Some(event)=removed.next()=>{
                 if let Ok(args)=event.args() && !music.player.is_empty() && (args.object_path().as_str()==music.player || music.player.starts_with(&format!("{}/",args.object_path()))) {
                     music.snapshot.source=None; music.cover=Default::default(); music.player.clear();
@@ -865,11 +886,13 @@ pub async fn run(
             r=requests.recv()=>{
                 let Some(r)=r else {break}; let operation=r.prompt;
                 let routing_action=matches!(r.action.as_str(), "musicSelect"|"musicConnect"|"musicDisconnect");
-                if r.action!="musicDisconnect" && r.generation!=*cancel.borrow() {continue;}
+                if r.action!="musicDisconnect" && (r.generation!=*cancel.borrow() || !device_control.request_current(&r)) {continue;}
+                let request_device=r.device.clone();let request_generation=r.device_generation;
                 cancel.borrow_and_update();
                 music.snapshot.busy=true; music.publish();
                 let result=tokio::select! { biased;
                     _=cancel.changed()=>{music.intent=false; Err("Music operation cancelled".into())},
+                    _=device_control.device_revoked(&request_device,request_generation)=>{music.intent=false;Err("Phone disconnected".into())},
                     _=shutdown.changed()=>break,
                     result=tokio::time::timeout(Duration::from_secs(15),music.request(r,&bt))=>result.unwrap_or_else(|_|Err("Music operation timed out; selection not confirmed".into()))
                 };
@@ -879,8 +902,10 @@ pub async fn run(
                 music.snapshot.error=result.err(); music.publish();
             }
             _=tick.tick()=>{
+                let device=music.snapshot.device.clone();let generation=music.device_generation;
                 if let Err(error)=tokio::select! { biased;
                     _=cancel.changed()=>{music.intent=false; Err("Music connection cancelled".into())},
+                    _=device_control.device_revoked(&device,generation)=>{music.intent=false;Err("Phone disconnected".into())},
                     _=shutdown.changed()=>break,
                     result=tokio::time::timeout(Duration::from_secs(12),music.refresh(&bt))=>result.unwrap_or_else(|_|Err("Bluetooth music refresh timed out".into()))
                 } {

@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import 'audio_types.dart';
+import '../diagnostics/service_failure.dart';
 
 final class AudioSnapshot {
   AudioSnapshot({
@@ -16,6 +17,7 @@ final class AudioSnapshot {
     required Map<String, double> effectiveSourceGains,
     required Iterable<String> focusSources,
     this.selectedSource,
+    this.failure,
   }) : activeSources = UnmodifiableSetView(Set.of(activeSources)),
        effectiveSourceGains = Map.unmodifiable(effectiveSourceGains),
        focusSources = UnmodifiableSetView(Set.of(focusSources));
@@ -32,6 +34,7 @@ final class AudioSnapshot {
   final Map<String, double> effectiveSourceGains;
   final Set<String> focusSources;
   final String? selectedSource;
+  final ServiceFailure? failure;
 
   @override
   bool operator ==(Object other) =>
@@ -45,6 +48,7 @@ final class AudioSnapshot {
       capabilities == other.capabilities &&
       selectedOutput == other.selectedOutput &&
       selectedSource == other.selectedSource &&
+      failure == other.failure &&
       _setEquals(activeSources, other.activeSources) &&
       _mapEquals(effectiveSourceGains, other.effectiveSourceGains) &&
       _setEquals(focusSources, other.focusSources);
@@ -60,6 +64,7 @@ final class AudioSnapshot {
     capabilities,
     selectedOutput,
     selectedSource,
+    failure,
     Object.hashAllUnordered(activeSources),
     Object.hashAllUnordered(
       effectiveSourceGains.entries.map(

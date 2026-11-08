@@ -78,10 +78,33 @@ python3 "$HOME/dev/argo/tool/deployment/argoctl" install \
 The installed command is `$HOME/.local/bin/argoctl`. It runs without this checkout.
 Re-running installation preserves settings, identity references and enablement.
 No root, lingering, desktop autologin or system service changes are involved.
-KDE must have imported `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and
-`DBUS_SESSION_BUS_ADDRESS` into `systemctl --user show-environment`. Run from the
-logged-in desktop; do not source the build workspace's `setup_env.sh` at runtime.
-The target requires an already active `graphical-session.target`.
+KDE imports `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and
+`DBUS_SESSION_BUS_ADDRESS` into `systemctl --user show-environment`. Receivers
+can start before the compositor environment arrives. The managed app waits up
+to 20 seconds for missing Wayland/D-Bus session values and refreshes those two
+values from the user manager before exec; foreground launches require them
+immediately. Run from the logged-in desktop; do not source the build workspace's
+`setup_env.sh` at runtime.
+Managed launch requires an active `graphical-session.target`. All three Argo
+service units explicitly order after that session barrier. Target membership
+queues their jobs but does not order members after the parent target's
+prerequisites; a pending graphical-session job can still report `inactive` while
+Plasma starts. The launcher continues to reject inactive, stopping and failed
+graphical sessions immediately. Its `activating` compatibility path admits only
+the launcher's exact systemd role PID and invocation. No delay or retry loop is
+needed for this ordering.
+
+The app orders after daemon startup, but its own readiness means a
+rendered, responsive application, independently of projection IPC availability.
+A disconnected or disabled projection backend remains visible in
+the UI without restarting Argo. Daemon readiness probes use the selected
+release's IPC version and a bounded response deadline.
+
+Cleanup markers include the boot and invocation that acquired resources. An
+unclean invocation blocks another managed process during the same boot; a
+rejected pre-exec launch preserves that evidence. Inspect the journal and owned
+resources before removing an unconfirmed marker. After reboot, process resources
+are gone, while the separate previous-boot firewall recovery still applies.
 
 ### Debian 13 boot and startup optimization (LattePanda Mu)
 
@@ -187,8 +210,14 @@ journalctl --user -f -u argo-projectiond.service -u argo-app.service
 ```
 
 The app orders after the daemon's bounded IPC readiness probe; its own readiness
-requires an IPC-connected client and a rendered Flutter frame. A readiness probe
-does not acquire the application's projection lease. A daemon restart also
+requires a rendered Flutter frame and its private administration socket, even
+when projection is offline. Managed probes check the service's invocation and
+main PID before accepting a response. If the current main process has already
+exited, they fail immediately with its status rather than waiting another
+20/30 seconds; an obsolete probe cannot accept a replacement invocation. Manager
+queries have at most a one-second deadline and a transient query failure is not
+treated as proof of process exit. A readiness probe does not acquire the
+application's projection lease. A daemon restart also
 restarts the app; stopping the daemon stops its app first. Manual stop and
 successful Quit do not restart either process. Failures have a three-second delay
 and at most three starts in a 90-second window. `systemctl --user reset-failed
@@ -197,14 +226,28 @@ underlying problem is corrected.
 
 ### Startup phone preference
 
-Settings → Devices → **Auto-connect phone** defaults on and remembers the last
-selected paired phone. Once connectivity is ready, Argo makes one initial request
-through the existing wireless controller, or Bluetooth music when wireless is not
-available/enabled. Disable this saved setting to keep startup disconnected; manual
-Connect remains available. Disconnect/Disable suppress pending startup actions for
-the current run. See [configuration](configuration.md#typed-saved-settings) for the
-master setting and [deployment options](configuration.md) for
-additional opt-in profile requests.
+Settings → Devices → **Reconnect selected phone at startup** defaults on. Devices
+remembers one selected physical phone and its Android Auto or CarPlay type, then
+makes at most one initial request within a 90-second startup window once that
+phone's controller is ready. It does not start both protocols or substitute a
+different phone when the selected one is absent. Unknown devices require a
+connection-type choice first. Disable this saved switch to keep startup
+disconnected; manual device Connect remains available.
+
+Use **Add Android phone** or **Add iPhone** in Devices to pair. Each phone has one
+row and device Connect, Disconnect and Forget actions. Bluetooth entries on
+multiple controllers are grouped by address, not by their names. If USB projection
+appears separately, use the explicit link action to confirm which saved Bluetooth
+phone it belongs to. Android Auto and CarPlay settings configure their receivers;
+they contain no separate connection buttons. Changing CarPlay transport stops the
+old receiver and waits for a new device Connect.
+
+Disconnect cancels pending startup intent, stops that phone's projection and its
+Bluetooth endpoints, and waits for cleanup before a replacement can connect. The
+CarPlay retry preference only retries an interrupted selected-phone connection;
+it does not start another receiver at login. See
+[configuration](configuration.md#connectivity-requests) for identity and lifetime
+details.
 
 
 ## Shutdown, updates and rollback
@@ -257,6 +300,15 @@ that an arbitrary old executable implements the current source. A full managed
 app build is recorded with `record-build.py bundle BUNDLE --ihs-prefix PREFIX`
 after assembling the matched app/daemon/native assets. The machine-readable
 manifest is authoritative for IPC and IHS compatibility; retain build provenance.
+New bundle records include the resolved absolute `ihs_prefix` passed to
+`record-build.py`. Validation checks that prefix's executable, shared library and
+platform-view header against `ihs_sha256`; application launch uses that same
+prefix for `homescreen` and its shared-library search path. Older managed
+manifests without `ihs_prefix` retain the `deployment.json` fallback. This allows
+a corrected IHS build to accompany one release while rollback continues using
+the older matched build, without changing the global prefix. Keep both prefixes
+installed and unchanged while their releases remain available. Packaged runtimes
+retain their bundled IHS contract and cannot also select an external prefix.
 
 A retained `$HOME/.local/state/project-argo/firewall-owned.json` means a managed
 attempt's guard cleanup is unconfirmed. New records contain only `interface` and

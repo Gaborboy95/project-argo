@@ -23,10 +23,20 @@ class _AudioOutputSetupCardState extends State<AudioOutputSetupCard> {
   bool _pending = false;
   String? _confirmed;
   ServiceFailure? _failure;
+  late bool _wasAvailable;
   @override
   void initState() {
     super.initState();
+    _wasAvailable = widget.audio.current.backendAvailable;
     _refresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant AudioOutputSetupCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final available = widget.audio.current.backendAvailable;
+    if (available && !_wasAvailable && !_pending) _refresh();
+    _wasAvailable = available;
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -63,6 +73,7 @@ class _AudioOutputSetupCardState extends State<AudioOutputSetupCard> {
   @override
   Widget build(BuildContext context) {
     final selected = widget.audio.current.selectedOutput;
+    final available = widget.audio.current.backendAvailable;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -98,13 +109,13 @@ class _AudioOutputSetupCardState extends State<AudioOutputSetupCard> {
               child: const Text('Refresh outputs'),
             ),
             OutlinedButton(
-              onPressed: _pending || _outputs.isEmpty
+              onPressed: _pending || _outputs.isEmpty || !available
                   ? null
                   : () => _run(widget.setup.testOutput),
               child: const Text('Test tone · 2 seconds'),
             ),
             TextButton(
-              onPressed: _pending || _outputs.isEmpty
+              onPressed: _pending || _outputs.isEmpty || !available
                   ? null
                   : () => setState(() => _confirmed = selected ?? 'default'),
               child: Text(

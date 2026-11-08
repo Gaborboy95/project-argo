@@ -169,7 +169,11 @@ fn fragmented_encrypted_frames_preserve_channels_and_reject_overflow() {
 }
 
 fn opened() -> Channels {
-    let mut channels = Channels::new(DisplayConfig::default());
+    opened_with(DisplayConfig::default())
+}
+
+fn opened_with(display: DisplayConfig) -> Channels {
+    let mut channels = Channels::new(display);
     channels.handle(0, 5, &[]).unwrap();
     for channel in [1, 3, 4, 5, 6, 8] {
         channels
@@ -373,6 +377,46 @@ fn android_touch_ids_stay_bounded_across_many_gestures_and_overlapping_contacts(
         expected(&[0], 0, 0)
     );
 }
+
+#[test]
+fn portrait_pinch_reports_full_contact_sets_and_content_coordinates_through_lift() {
+    let mut channels = opened_with(DisplayConfig {
+        view_insets: [340, 0, 340, 0],
+        ..DisplayConfig::default()
+    });
+    // 1280x720 encoded video contains a 600x720 interactive view. These are
+    // content coordinates, not encoded coordinates shifted by the 340px crop.
+    // The lower second host ID changes action indices without changing IDs.
+    let gestures = [
+        (1001, 0, 0.3, 0, 0, vec![(0, 180, 360)]),
+        (1001, 1, 0.2, 0, 2, vec![(0, 120, 360)]),
+        (969, 0, 0.7, 0, 5, vec![(1, 419, 360), (0, 120, 360)]),
+        (1001, 1, 0.1, 1, 2, vec![(1, 419, 360), (0, 60, 360)]),
+        (969, 1, 0.85, 0, 2, vec![(1, 509, 360), (0, 60, 360)]),
+        (1001, 2, 0.1, 1, 6, vec![(1, 509, 360), (0, 60, 360)]),
+        (969, 1, 0.9, 0, 2, vec![(1, 539, 360)]),
+        (969, 2, 0.9, 0, 1, vec![(1, 539, 360)]),
+    ];
+    for (step, (host, phase, x, action_index, action, points)) in gestures.into_iter().enumerate() {
+        let timestamp = 1000 + step as u64 * 10000;
+        let event = channels
+            .touch(host, phase, x, 0.5, timestamp)
+            .unwrap()
+            .unwrap();
+        let mut touch = Proto::default();
+        for (id, x, y) in points {
+            touch = touch.nested(1, Proto::default().number(1, x).number(2, y).number(3, id));
+        }
+        let expected = Proto::default()
+            .number(1, timestamp)
+            .nested(3, touch.number(2, action_index).number(3, action))
+            .finish();
+        assert_eq!((event.channel, event.id), (8, 0x8001));
+        assert_eq!(event.body, expected, "pinch report {step}");
+    }
+    assert!(channels.touch(969, 1, 0.9, 0.5, 100000).unwrap().is_none());
+    assert!(channels.touch(1001, 1, 0.1, 0.5, 100000).unwrap().is_none());
+}
 #[test]
 fn audio_roles_start_stop_ack_and_fresh_session_are_independent() {
     let mut channels = opened();
@@ -524,7 +568,7 @@ async fn phone_receive(
     }
 }
 #[tokio::test(start_paused = true)]
-async fn full_memory_wire_session_reaches_video_touch_and_graceful_disconnect() {
+async fn full_memory_wire_session_reaches_video_epoch_timestamped_drag_and_graceful_disconnect() {
     exercise_live_session(0, Vec::new()).await;
 }
 #[tokio::test(start_paused = true)]
@@ -548,12 +592,19 @@ async fn wireless_cancellation_and_fresh_replacement() {
     let old_response = exercise_live_session(3, Vec::new()).await;
     exercise_live_session(2, old_response).await;
 }
+#[tokio::test(start_paused = true)]
+async fn early_microphone_requests_and_unavailable_capture_do_not_end_projection() {
+    exercise_live_session(6, Vec::new()).await;
+}
 async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
     crate::logging::init().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(500), async {
         let fixture = IdentityFixture::new();
         let mut phone = fixture.server();
         let control = crate::host_control::HostControl::default();
+        // Reserve only the in-process capture lease. The early-open regression
+        // must never inspect or open the developer machine's actual microphone.
+        let _busy_microphone = (mode == 6).then(|| control.voice.reserve_capture_for_test());
         let path = fixture.root.join("live-video.sock");
         control
             .configuration
@@ -743,6 +794,36 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             })
             .await
             .unwrap();
+        if mode == 6 {
+            phone_send(&mut phone, &phone_tx, 9, 7, vec![8, 0, 16, 9]).await;
+            assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 8);
+            // The phone can directly control the sole advertised source after
+            // ChannelOpen. Capture refusal is an OPEN failure, not AA failure.
+            for (request, expected_status) in [
+                (vec![8, 0], 0),
+                (vec![8, 1, 32, 4], 1),
+                (vec![8, 1], 1),
+                (vec![8, 0], 0),
+            ] {
+                phone_send(&mut phone, &phone_tx, 9, 0x8005, request).await;
+                let (channel, message, payload) = phone_receive(&mut phone, &mut phone_rx).await;
+                assert_eq!((channel, message), (9, 0x8006));
+                assert_eq!(numbers(&payload).unwrap()[&1], expected_status);
+                assert!(!task.is_finished());
+                assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
+                phone_send(&mut phone, &phone_tx, 3, 1, vec![0, 0, 0, 1, 0x65, 2]).await;
+                assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8004);
+            }
+            phone_send(&mut phone, &phone_tx, 9, 0x8000, vec![8, 1]).await;
+            assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8003);
+            phone_send(&mut phone, &phone_tx, 9, 0x8005, vec![8, 0]).await;
+            assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 0x8006);
+            phone_send(&mut phone, &phone_tx, 0, 15, vec![8, 1]).await;
+            assert_eq!(phone_receive(&mut phone, &mut phone_rx).await.1, 16);
+            assert!(task.await.unwrap().is_ok());
+            assert!(!path.exists());
+            return Vec::new();
+        }
         phone_send(
             &mut phone,
             &phone_tx,
@@ -906,12 +987,40 @@ async fn exercise_live_session(mode: u8, old_response: Vec<u8>) -> Vec<u8> {
             .await
             .unwrap();
         assert_eq!(observed.borrow().session.as_ref().unwrap().id, id);
-        control
-            .commands
-            .send(crate::host_control::Command::Touch(id, 1, 0, 0.5, 0.5))
-            .unwrap();
-        let (channel, message, _) = phone_receive(&mut phone, &mut phone_rx).await;
-        assert_eq!((channel, message), (8, 0x8001));
+        // Exercise the real IPC-command -> session -> encrypted AA report path.
+        // Checking an epoch bracket rejects the old session-relative timestamp;
+        // a Channels.touch test with a caller-supplied literal cannot catch it.
+        for (phase, x, action, x_varint) in [
+            (0, 0.5f32, 0, [0x80, 0x05]),
+            (1, 0.6, 2, [0xff, 0x05]),
+            (2, 0.7, 1, [0xff, 0x06]),
+        ] {
+            let epoch_before = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64;
+            let mut command = crate::ipc::PayloadWriter::default();
+            command.string(&id).unwrap();
+            command.u16(1001);
+            command.u8(phase);
+            command.u32(x.to_bits());
+            command.u32(0.5f32.to_bits());
+            control.command(&crate::ipc::Message {kind:23, payload:command.finish()}).unwrap();
+            let (channel, message, payload) = phone_receive(&mut phone, &mut phone_rx).await;
+            let epoch_after = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64;
+            assert_eq!((channel, message), (8, 0x8001));
+            let stamp = numbers(&payload).unwrap()[&1];
+            assert!((epoch_before..=epoch_after).contains(&stamp), "input timestamp {stamp} is not epoch microseconds in {epoch_before}..={epoch_after}");
+            // Independent protobuf wire layout: report.touchscreen_event=3,
+            // pointers=1, x/y/id=1/2/3, action_index=2, action=3. Unlike the
+            // channel tests this expectation does not use Argo's Proto builder.
+            let expected_touch = [
+                0x1a, 0x0e, 0x0a, 0x08,
+                0x08, x_varint[0], x_varint[1],
+                0x10, 0xe8, 0x02, 0x18, 0x00,
+                0x10, 0x00, 0x18, action,
+            ];
+            assert!(payload.ends_with(&expected_touch), "wrong touch report for phase {phase}: {payload:02x?}");
+        }
         phone_send(
             &mut phone,
             &phone_tx,

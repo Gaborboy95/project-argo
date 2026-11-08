@@ -30,7 +30,7 @@ void main() {
       expect(find.text('Connect'), findsNothing);
       expect(find.byType(SwitchListTile), findsNothing);
       expect(
-        find.textContaining('f-io / Lasse Heitgres — LIVI'),
+        find.textContaining('Based on LIVI by Lasse Heitgres'),
         findsOneWidget,
       );
       expect(find.text('192.0.2.20'), findsNothing);

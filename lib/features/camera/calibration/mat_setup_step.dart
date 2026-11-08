@@ -146,7 +146,7 @@ class _MatSetupState extends State<MatSetupStep> {
                     widget.changed();
                   },
                 ),
-              ExpansionTile(
+              ArgoExpansionTile(
                 title: const Text('Advanced / Custom measured layout'),
                 children: [
                   for (final field in const [

@@ -7,15 +7,27 @@ pub mod dongle_iap;
 pub mod hci;
 pub mod link;
 pub mod media;
+#[cfg(feature = "airplay")]
+pub mod mdns_advertisement;
 pub mod protocol;
 pub mod vhci;
 pub mod wifi;
+#[cfg(target_os = "linux")]
+pub mod wireless_bluetooth;
+#[cfg(all(feature = "airplay", feature = "linux-usb"))]
+pub mod wireless_network;
 
 #[cfg(feature = "airplay")]
 pub mod runtime_control;
 
+#[cfg(feature = "airplay")]
+pub mod session_runtime;
+
 #[cfg(all(feature = "airplay", feature = "linux-usb"))]
 pub mod wired_runtime;
+
+#[cfg(all(feature = "airplay", feature = "linux-usb"))]
+pub mod wireless_runtime;
 
 pub mod usb_lease;
 

@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_service.dart';
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/connectivity/device_connection_service.dart';
 import '../../core/projection/projection_settings_service.dart';
 import '../../core/settings/settings_service.dart';
 import 'appearance_settings_card.dart';
@@ -28,6 +29,7 @@ class SettingsPage extends StatefulWidget {
     this.projectionSettings,
     this.settings,
     this.connectivity,
+    this.deviceConnections,
     this.carPlayDiagnostics,
     this.carPlaySettings,
     this.projection,
@@ -45,6 +47,7 @@ class SettingsPage extends StatefulWidget {
   final ProjectionSettingsService? projectionSettings;
   final SettingsService? settings;
   final ConnectivityService? connectivity;
+  final DeviceConnectionService? deviceConnections;
   final CarPlayLinkDiagnostics? carPlayDiagnostics;
   final CarPlaySettingsService? carPlaySettings;
   final ProjectionService? projection;
@@ -71,25 +74,48 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       ),
-      if (widget.connectivity != null || widget.carPlayDiagnostics != null)
+      if (widget.connectivity != null || widget.deviceConnections != null)
         (
           'Devices',
           Icons.devices_outlined,
+          Column(
+            children: [
+              if (widget.connectivity != null ||
+                  widget.deviceConnections != null)
+                ConnectivitySettingsCard(
+                  service:
+                      widget.connectivity ?? widget.deviceConnections!.backend,
+                  deviceConnections: widget.deviceConnections,
+                  settings: widget.settings,
+                  carPlaySettings: widget.carPlaySettings,
+                  projection: widget.projection,
+                  onAndroidAutoSettings: () =>
+                      setState(() => selectedSection = 'Android Auto'),
+                  onCarPlaySettings:
+                      widget.carPlaySettings != null ||
+                          widget.carPlayDiagnostics != null
+                      ? () => setState(() => selectedSection = 'CarPlay')
+                      : null,
+                ),
+            ],
+          ),
+        ),
+      if (widget.projectionSettings != null || widget.connectivity != null)
+        (
+          'Android Auto',
+          Icons.directions_car_outlined,
           Column(
             children: [
               if (widget.connectivity != null)
                 ConnectivitySettingsCard(
                   service: widget.connectivity!,
                   settings: widget.settings,
+                  mode: ConnectivitySettingsMode.androidAuto,
                 ),
+              if (widget.projectionSettings != null)
+                ProjectionSettingsCard(service: widget.projectionSettings!),
             ],
           ),
-        ),
-      if (widget.projectionSettings != null)
-        (
-          'Android Auto',
-          Icons.directions_car_outlined,
-          ProjectionSettingsCard(service: widget.projectionSettings!),
         ),
       if (widget.carPlaySettings != null || widget.carPlayDiagnostics != null)
         (
@@ -101,6 +127,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 CarPlaySettingsCard(
                   service: widget.carPlaySettings!,
                   projection: widget.projection,
+                  onDevices:
+                      widget.connectivity != null ||
+                          widget.deviceConnections != null
+                      ? () => setState(() => selectedSection = 'Devices')
+                      : null,
                 ),
               if (widget.carPlayDiagnostics != null)
                 CarPlayLinkSettingsCard(service: widget.carPlayDiagnostics!),
@@ -134,6 +165,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     camera: widget.camera,
                     presentation: widget.cameraPresentation,
                     connectivity: widget.connectivity,
+                    deviceConnections: widget.deviceConnections,
                   ),
                 ),
               ),
@@ -157,7 +189,11 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     final requestedSection =
         selectedSection ??
-        (widget.carPlaySettings != null ? 'CarPlay' : 'Sound');
+        (widget.connectivity != null || widget.deviceConnections != null
+            ? 'Devices'
+            : widget.carPlaySettings != null
+            ? 'CarPlay'
+            : 'Sound');
     final index = sections
         .indexWhere((section) => section.$1 == requestedSection)
         .clamp(0, sections.length - 1);
@@ -196,15 +232,19 @@ class _SettingsPageState extends State<SettingsPage> {
                             : colors.onSurfaceVariant,
                       ),
                       const SizedBox(width: 14),
-                      Text(
-                        sections[i].$1,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: index == i
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                          color: index == i
-                              ? colors.onSecondaryContainer
-                              : colors.onSurfaceVariant,
+                      Flexible(
+                        child: Text(
+                          sections[i].$1,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: index == i
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                            color: index == i
+                                ? colors.onSecondaryContainer
+                                : colors.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ],
@@ -218,12 +258,16 @@ class _SettingsPageState extends State<SettingsPage> {
             ? SizedBox(
                 width: 210,
                 child: ListView(
+                  key: const PageStorageKey('settings-navigation-scroll'),
                   children: [
                     for (var i = 0; i < sections.length; i++) destination(i),
                   ],
                 ),
               )
             : SingleChildScrollView(
+                key: const PageStorageKey(
+                  'settings-navigation-horizontal-scroll',
+                ),
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
@@ -281,7 +325,10 @@ class _SettingsPageState extends State<SettingsPage> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(24),
               child: ListView(
-                key: PageStorageKey(sections[index].$1),
+                key: PageStorageKey((
+                  'settings-section-scroll',
+                  sections[index].$1,
+                )),
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
                   if (sections[index].$1 == 'Application')
@@ -310,29 +357,6 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
-              if (widget.connectivity != null)
-                StreamBuilder<ConnectivitySnapshot>(
-                  stream: widget.connectivity!.connectivityChanges,
-                  initialData: widget.connectivity!.connectivity,
-                  builder: (context, snapshot) =>
-                      snapshot.data?.prompt != null &&
-                          sections[index].$1 != 'Devices'
-                      ? Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: TextButton.icon(
-                              icon: const Icon(Icons.bluetooth_searching),
-                              label: Text(
-                                'Pairing request from ${snapshot.data!.prompt!.name} — review in Devices',
-                              ),
-                              onPressed: () =>
-                                  setState(() => selectedSection = 'Devices'),
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
               if (!wide) ...[navigation, const SizedBox(height: 12)],
               Expanded(
                 child: wide

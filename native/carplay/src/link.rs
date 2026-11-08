@@ -79,7 +79,10 @@ struct MfiConnection {
 #[derive(Clone)]
 pub struct LinkClient {
     pub(crate) config: LinkConfig,
-    pub(crate) permit: Arc<Mutex<()>>,
+    // Separate remote services: a status poll must never take the physical
+    // coprocessor's certificate/signing lease. Clones still share each lease.
+    mfi_permit: Arc<Mutex<()>>,
+    pub(crate) wifi_permit: Arc<Mutex<()>>,
     mfi_socket: Arc<Mutex<Option<MfiConnection>>>,
 }
 impl LinkClient {
@@ -93,7 +96,8 @@ impl LinkClient {
         }
         Ok(Self {
             config,
-            permit: Arc::new(Mutex::new(())),
+            mfi_permit: Arc::new(Mutex::new(())),
+            wifi_permit: Arc::new(Mutex::new(())),
             mfi_socket: Arc::new(Mutex::new(None)),
         })
     }
@@ -108,14 +112,15 @@ impl LinkClient {
     }
     /// Reuse a healthy connection, matching the single-client remote service.
     /// Take ownership during IO: cancellation/errors drop the socket, never reuse partial replies.
-    /// Concurrent callers receive Busy (there is no unbounded queue or implicit sign retry).
+    /// Concurrent MFi callers receive Busy (no queue or implicit sign retry).
+    /// Wi-Fi control/status uses its own service lease and can run independently.
     async fn request(
         &self,
         bytes: &[u8],
         maximum: usize,
         cached_certificate: bool,
     ) -> Result<Vec<u8>, Error> {
-        let _guard = self.permit.try_lock().map_err(|_| Error::Busy)?;
+        let _guard = self.mfi_permit.try_lock().map_err(|_| Error::Busy)?;
         let mut connection = self.mfi_socket.lock().await;
         if cached_certificate
             && let Some(certificate) = connection

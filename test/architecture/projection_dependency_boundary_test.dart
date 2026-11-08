@@ -40,7 +40,8 @@ Iterable<File> _sourceFiles(Directory directory) sync* {
       final name = entity.uri.pathSegments
           .where((part) => part.isNotEmpty)
           .last;
-      if (!{'target', 'build', '.dart_tool', '.git'}.contains(name)) {
+      if (!{'target', 'build', '.dart_tool', '.git'}.contains(name) &&
+          !name.startsWith('build-')) {
         yield* _sourceFiles(entity);
       }
     } else if (entity is File) {

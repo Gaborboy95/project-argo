@@ -113,9 +113,9 @@ pub async fn run(
                 host.voice.stop_test();
                 host.projection_enabled.send_replace(false);
                 c.calls_cancel.send_modify(|g|*g+=1);
-                let _=call_requests.try_send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});
+                let _=call_requests.try_send(Request{generation:0,device:String::new(),device_generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});
                 music_cancel.send_modify(|v|*v+=1);
-                let _ = music_requests.try_send(Request { generation:0, action:"musicDisconnect".into(), target:String::new(), accept:false, prompt:0 });
+                let _ = music_requests.try_send(Request { generation:0,device:String::new(),device_generation:0, action:"musicDisconnect".into(), target:String::new(), accept:false, prompt:0 });
                 while requests.try_recv().is_ok() {}
                 if let Some(a) = activity.take() { a.stop().await; }
                 if let Some(d) = discovery.take() { d.stop().await; }
@@ -142,6 +142,7 @@ pub async fn run(
             }
             Some(r) = requests.recv() => {
                 if c.stopping.load(std::sync::atomic::Ordering::SeqCst) && r.action!="stopAll" {continue;}
+                if !c.request_current(&r) {continue;}
 
                 if r.action.starts_with("calls") {
                     if call_requests.try_send(r).is_err() {c.state.send_modify(|s|s.detail="Call controller busy".into());}
@@ -156,6 +157,29 @@ pub async fn run(
                     let result=if r.action=="microphone" {host.voice.select(&r.target)}else {host.voice.state.send_modify(|s|s.muted=r.accept);Ok(())};
                     if let Err(e)=result {host.voice.state.send_modify(|s|s.detail=e);}
                     c.state.send_modify(|s|s.voice=Some(host.voice.state.borrow().clone()));continue;
+                }
+                if r.action=="deviceDisconnect" {
+                    let target=r.target.clone();
+                    if let Some(a)=activity.take() {
+                        if a.peer==target {a.stop().await;c.progress("disconnected","Phone disconnected; Connect starts a new attempt");}
+                        else {activity=Some(a);}
+                    }
+                    let cleanup=async {
+                        // Each worker rechecks its current owner, so queued work
+                        // for another phone cannot be disconnected by this row.
+                        // A missing optional audio worker must not prevent the
+                        // physical phone disconnection.
+                        let mut errors=Vec::new();
+                        if !matches!(tokio::time::timeout(Duration::from_secs(2),music_requests.send(Request{action:"musicDisconnect".into(),target:target.clone(),..Default::default()})).await,Ok(Ok(()))) && c.state.borrow().music.as_ref().is_some_and(|m|m.device==target) {errors.push("Music cleanup unavailable".to_string());}
+                        if !matches!(tokio::time::timeout(Duration::from_secs(2),call_requests.send(Request{action:"callsDisconnect".into(),target:target.clone(),..Default::default()})).await,Ok(Ok(()))) && c.state.borrow().calls.as_ref().is_some_and(|m|m.device==target) {errors.push("Call cleanup unavailable".to_string());}
+                        match tokio::time::timeout(Duration::from_secs(8),bt.disconnect_device(&target)).await {
+                            Ok(Ok(()))=>{},Ok(Err(error))=>errors.push(error),Err(_)=>errors.push("Phone disconnection timed out".into()),
+                        }
+                        match tokio::time::timeout(Duration::from_secs(4),bt.refresh()).await {Ok(Ok(()))=>{},Ok(Err(error))=>errors.push(error),Err(_)=>errors.push("Bluetooth refresh timed out".into()),}
+                        if errors.is_empty(){Ok(())}else{Err(errors.join("; "))}
+                    }.await;
+                    if let Err(error)=cleanup {c.state.send_modify(|s|s.detail=error);}
+                    continue;
                 }
                 if r.action=="stopAll" {
                     host.voice.stop_test();
@@ -173,8 +197,8 @@ pub async fn run(
                     bt.respond(c.state.borrow().prompt.as_ref().map_or(0,|p|p.id),false);
                     let stop = async {
                         host.voice.stop_test_and_wait().await?;
-                        music_requests.send(Request{generation:0,action:"musicDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Music controller unavailable")?;
-                        call_requests.send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Call controller unavailable")?;
+                        music_requests.send(Request{generation:0,device:String::new(),device_generation:0,action:"musicDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Music controller unavailable")?;
+                        call_requests.send(Request{generation:0,device:String::new(),device_generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:r.prompt}).await.map_err(|_|"Call controller unavailable")?;
                         let mut changes=c.state.subscribe();
                         loop {
                             let snapshot=changes.borrow_and_update().clone();
@@ -194,14 +218,14 @@ pub async fn run(
                     match stop {Ok(())=>{c.state.send_modify(|s|s.stopped=Some(r.prompt));c.progress("disabled","Connections stopped; application may exit");},Err(e)=>c.state.send_modify(|s|s.cleanup_error=e)}
                     continue;
                 }
-                if r.action=="forget" {let _=call_requests.try_send(Request{generation:0,action:"callsDisconnect".into(),target:String::new(),accept:false,prompt:0});}
+                if r.action=="forget" {let _=call_requests.try_send(Request{generation:0,device:String::new(),device_generation:0,action:"callsDisconnect".into(),target:r.target.clone(),accept:false,prompt:0});}
 
                 if r.action.starts_with("music") {
                     if music_requests.try_send(r).is_err() { c.state.send_modify(|s|s.detail="Bluetooth music controller busy".into()); }
                     continue;
                 }
                 if r.action=="forget" && c.state.borrow().music.as_ref().is_some_and(|m|m.device==r.target) {
-                    let _=music_requests.try_send(Request{generation:0, action:"musicDisconnect".into(),target:r.target.clone(),accept:false,prompt:0});
+                    let _=music_requests.try_send(Request{generation:0,device:String::new(),device_generation:0, action:"musicDisconnect".into(),target:r.target.clone(),accept:false,prompt:0});
                 }
                 let result = process_request(r, &bt, &host, &state, &mut activity, &mut discovery, &mut pairing).await;
                 if let Err(e) = result { c.state.send_modify(|s| s.detail = e); }
@@ -419,7 +443,11 @@ async fn process_request(
             }
         }
         "disconnect" | "forget" => {
-            if let Some(a) = activity.take() {
+            let disconnect = r.action == "disconnect";
+            let selected = c.state.borrow().selected == r.target;
+            let stop_projection =
+                disconnect || activity.as_ref().is_some_and(|a| a.peer == r.target);
+            if stop_projection && let Some(a) = activity.take() {
                 a.stop().await;
             }
             if r.action == "forget" {
@@ -442,10 +470,30 @@ async fn process_request(
                 .await
                 .map_err(|_| "Bond removed; AP credential removal timed out".to_string())??;
             }
-            c.progress(
-                "disconnected",
-                "Reconnect stopped. Press Connect for a new attempt.",
-            );
+            if stop_projection || (selected && activity.is_none()) {
+                c.progress(
+                    "disconnected",
+                    "Reconnect stopped. Press Connect for a new attempt.",
+                );
+            } else {
+                c.state
+                    .send_modify(|s| s.detail = "Bluetooth pairing removed".into());
+            }
+        }
+        "deviceConnect" => {
+            if !c.request_current(&r) {
+                return Ok(());
+            }
+            let device = bt.device(&r.target)?;
+            if !device.is_paired().await.map_err(|e| e.to_string())? {
+                return Err("Pair this device before connecting".into());
+            }
+            tokio::select! {
+                biased;
+                _=c.device_revoked(&r.device,r.device_generation)=>return Ok(()),
+                result=tokio::time::timeout(Duration::from_secs(8),device.connect())=>result.map_err(|_|"Bluetooth connection timed out")?.map_err(|e|e.to_string())?,
+            }
+            tokio::time::timeout(Duration::from_secs(4),bt.refresh()).await.map_err(|_|"Bluetooth refresh timed out")??;
         }
         "connect" => {
             if !*host.projection_enabled.borrow() {
@@ -598,6 +646,48 @@ async fn reconnect(
         }
     }
 }
+
+fn projection_listener(
+    address: std::net::SocketAddrV4,
+    interface: Option<&str>,
+) -> Result<tokio::net::TcpListener, Failure> {
+    let endpoint = match interface {
+        Some(interface) => format!("{address} on interface {interface}"),
+        None => address.to_string(),
+    };
+    let failed = |stage: &str, error: std::io::Error| {
+        Failure::configuration(format!(
+            "Wireless TCP listener {endpoint}, {stage}: {error}"
+        ))
+    };
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .map_err(|error| failed("create socket", error))?;
+    // Accepted sessions inherit this option. After Disconnect, their FIN/TIME_WAIT
+    // state must not prevent the next explicitly owned listener on this address.
+    // SO_REUSEPORT is deliberately absent: a live listener remains a conflict.
+    socket
+        .set_reuse_address(true)
+        .map_err(|error| failed("set SO_REUSEADDR", error))?;
+    if let Some(interface) = interface {
+        socket
+            .bind_device(Some(interface.as_bytes()))
+            .map_err(|error| failed("restrict interface", error))?;
+    }
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| failed("set nonblocking", error))?;
+    socket
+        .bind(&address.into())
+        .map_err(|error| failed("bind", error))?;
+    socket.listen(1).map_err(|error| failed("listen", error))?;
+    tokio::net::TcpListener::from_std(socket.into())
+        .map_err(|error| failed("adopt async listener", error))
+}
+
 async fn attempt_connection(
     bt: &Bluetooth,
     host: &HostControl,
@@ -661,25 +751,10 @@ async fn attempt_connection(
         c.state
             .send_modify(|s| s.ap_frequency_mhz = Some(ap.band.frequency(ap.channel)));
         c.progress("bootstrap", "AP and DHCP ready; waiting for selected phone's Bluetooth bootstrap. Check phone prompts / desktop HFP connection.");
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )
-        .map_err(Failure::configuration)?;
-        socket
-            .bind_device(Some(interface.as_bytes()))
-            .map_err(|e| format!("Restrict TCP to projection interface: {e}"))
-            .map_err(Failure::configuration)?;
-        socket
-            .set_nonblocking(true)
-            .map_err(Failure::configuration)?;
-        socket
-            .bind(&std::net::SocketAddr::from((ap.address, 5288)).into())
-            .map_err(Failure::configuration)?;
-        socket.listen(1).map_err(Failure::configuration)?;
-        let listener =
-            tokio::net::TcpListener::from_std(socket.into()).map_err(Failure::configuration)?;
+        let listener = projection_listener(
+            std::net::SocketAddrV4::new(ap.address, 5288),
+            Some(interface),
+        )?;
         let device = bt.device(selected)?;
         if !device.is_paired().await.map_err(Failure::configuration)? {
             return Err(Failure::new(
@@ -705,9 +780,7 @@ async fn attempt_connection(
             .session
             .register_profile(profile)
             .await
-            .map_err(|e| {
-                format!("AA Bluetooth profile/channel conflict or permission failure: {e}")
-            })
+            .map_err(|e| format!("Register AA Bluetooth RFCOMM profile {UUID}, channel 8: {e}"))
             .map_err(Failure::configuration)?;
         // Existing desktop HFP implementation owns signaling. Connect only the
         // selected paired device; do not implement/advertise competing profiles.
@@ -999,6 +1072,117 @@ pub(crate) fn retry_allowed(error: &Failure, explicitly_stopped: bool, attempt: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn accepted_tcp_session_can_close_and_rebind_the_same_endpoint_without_waiting() {
+        use crate::session::AndroidAutoTransport;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = projection_listener("127.0.0.1:0".parse().unwrap(), None).unwrap();
+        let std::net::SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+            panic!("IPv4 projection listener required");
+        };
+        let mut phone = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(listener); // The real attempt stops listening once the phone is admitted.
+        let mut transport = crate::tcp_transport::TcpAaTransport::admitted(stream).unwrap();
+        transport.close().await.unwrap(); // Host Disconnect sends the first FIN.
+        let mut byte = [0];
+        assert_eq!(phone.read(&mut byte).await.unwrap(), 0);
+        phone.shutdown().await.unwrap();
+        assert_eq!(transport.read(&mut byte).await.unwrap(), 0);
+        drop(transport);
+        drop(phone);
+
+        // Show that this fixture really retains the old local TCP endpoint;
+        // merely dropping an unused listener would not reproduce the failure.
+        let non_reusable = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        assert_eq!(
+            non_reusable.bind(&address.into()).unwrap_err().kind(),
+            std::io::ErrorKind::AddrInUse
+        );
+        let replacement = projection_listener(address, None).unwrap();
+        assert_eq!(replacement.local_addr().unwrap(), address.into());
+    }
+
+    #[tokio::test]
+    async fn reusable_tcp_endpoint_still_refuses_a_live_listener_with_endpoint_diagnostics() {
+        let listener = projection_listener("127.0.0.1:0".parse().unwrap(), None).unwrap();
+        let std::net::SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+            panic!("IPv4 projection listener required");
+        };
+        let failure = projection_listener(address, None).unwrap_err();
+        assert_eq!(failure.kind, Kind::Configuration);
+        assert!(
+            failure
+                .detail
+                .contains(&format!("Wireless TCP listener {address}, bind:"))
+        );
+        assert!(!failure.retryable());
+        assert_eq!(listener.local_addr().unwrap(), address.into());
+    }
+
+    #[tokio::test]
+    async fn cancelled_tcp_worker_retires_its_socket_before_releasing_the_session_lease() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let host = HostControl::default();
+        let lease = host.session_lease.clone().try_acquire_owned().unwrap();
+        let listener = projection_listener("127.0.0.1:0".parse().unwrap(), None).unwrap();
+        let std::net::SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+            panic!("IPv4 projection listener required");
+        };
+        let (cancel, mut cancelled) = watch::channel(false);
+        let (accepted, connected) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _lease = lease;
+            let readiness = crate::readiness::Readiness::default();
+            let operation = async move {
+                let (stream, _) = listener.accept().await.map_err(Failure::from)?;
+                drop(listener);
+                let _transport = crate::tcp_transport::TcpAaTransport::admitted(stream)
+                    .map_err(Failure::from)?;
+                let _ = accepted.send(());
+                std::future::pending::<Result<(), Failure>>().await
+            };
+            run_until_end(&readiness, &mut cancelled, operation).await
+        });
+        let mut phone = tokio::net::TcpStream::connect(address).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), connected)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(host.session_lease.clone().try_acquire_owned().is_err());
+        cancel.send_replace(true);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .kind,
+            Kind::Cancelled
+        );
+        let _next_owner = host.session_lease.clone().try_acquire_owned().unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), phone.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        phone.shutdown().await.unwrap();
+        drop(phone);
+        let replacement = projection_listener(address, None).unwrap();
+        assert_eq!(replacement.local_addr().unwrap(), address.into());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn deadline_cancellation_cleanup_and_fresh_attempt_are_independent() {
         let (cancel, _) = watch::channel(false);

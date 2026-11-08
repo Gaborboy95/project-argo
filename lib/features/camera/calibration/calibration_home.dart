@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../shared/argo_components.dart';
+
 import '../../../core/camera/camera_service.dart';
 import '../../../core/camera/calibration_manager.dart';
 import '../calibration_wizard.dart';
@@ -539,7 +541,7 @@ class _HomeState extends State<CalibrationHome> {
     _ => [
       Text(_revision.isEmpty ? 'Candidate not saved' : 'Candidate saved'),
       if (_revision.isNotEmpty)
-        ExpansionTile(
+        ArgoExpansionTile(
           title: const Text('Details'),
           children: [SelectableText('Calibration revision: $_revision')],
         ),

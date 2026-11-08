@@ -1,6 +1,8 @@
 import '../../core/projection/projection_recovery.dart';
+import '../../core/projection/carplay_settings_service.dart';
 import '../../features/setup/setup_assistant.dart';
 import '../../core/connectivity/connectivity_service.dart';
+import '../../core/connectivity/device_connection_service.dart';
 import '../../features/camera/camera_page.dart' show CameraActivityScope;
 import '../../core/camera/camera_service.dart';
 import '../../core/camera/camera_presentation_policy.dart';
@@ -35,8 +37,10 @@ class AppShell extends StatefulWidget {
     super.key,
     required this.environment,
     this.showSetupOnFirstRun = false,
+    this.initialModuleId,
   });
   final bool showSetupOnFirstRun;
+  final String? initialModuleId;
 
   final ArgoEnvironment environment;
 
@@ -90,7 +94,8 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     final modules = widget.environment.moduleRegistry.modules;
-    final storedId = _settings.get(AppSettingKeys.lastModule);
+    final storedId =
+        widget.initialModuleId ?? _settings.get(AppSettingKeys.lastModule);
     final storedIndex = modules.indexWhere(
       (module) => module.id == storedId && module.id != 'camera',
     );
@@ -130,6 +135,11 @@ class _AppShellState extends State<AppShell> {
         Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => SetupAssistant(
+              deviceConnections:
+                  widget.environment.services
+                      .contains<DeviceConnectionService>()
+                  ? widget.environment.services.get<DeviceConnectionService>()
+                  : null,
               settings: _settings,
               audio: widget.environment.services.get<AudioService>(),
               camera: _camera,
@@ -337,20 +347,32 @@ class _AppShellState extends State<AppShell> {
                   AppSettingKeys.appearanceControlSize,
                 );
                 final services = widget.environment.services;
-                if (services.contains<ProjectionSettingsService>()) {
+                if (services.contains<ProjectionSettingsService>() ||
+                    services.contains<CarPlaySettingsService>()) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (mounted) {
-                      services.get<ProjectionSettingsService>().setViewport(
-                        constraints.maxWidth,
-                        geometry.dockTop,
-                        geometry.mediaSafeHeight,
-                      );
+                      if (services.contains<ProjectionSettingsService>()) {
+                        services.get<ProjectionSettingsService>().setViewport(
+                          constraints.maxWidth,
+                          geometry.dockTop,
+                          geometry.mediaSafeHeight,
+                        );
+                      }
+                      if (services.contains<CarPlaySettingsService>()) {
+                        services.get<CarPlaySettingsService>().setViewport(
+                          constraints.maxWidth,
+                          geometry.dockTop,
+                          geometry.mediaSafeHeight,
+                        );
+                      }
                     }
                   });
                 }
 
                 final panel = _panel;
-                final sheetHeight = geometry.dockTop * .82;
+                final sheetHeight = geometry.dockTop < 360
+                    ? geometry.dockTop
+                    : geometry.dockTop * .82;
                 return Stack(
                   children: [
                     Positioned(
@@ -358,7 +380,12 @@ class _AppShellState extends State<AppShell> {
                       right: 0,
                       top: 0,
                       height: geometry.dockTop,
-                      child: _buildContent(modules),
+                      child: ProjectionPresentationScope(
+                        waiting: _waitingSession != null,
+                        error: _activationError,
+                        bottomOverlayHeight: geometry.mediaSafeHeight,
+                        child: _buildContent(modules),
+                      ),
                     ),
                     if (_modal)
                       Positioned(
@@ -388,6 +415,7 @@ class _AppShellState extends State<AppShell> {
                           child: switch (_panel) {
                             'climate' => DashboardClimate(
                               onDismiss: _dismissPanel,
+                              compact: sheetHeight < 360,
                               service: services.contains<ClimateService>()
                                   ? services.get<ClimateService>()
                                   : null,
@@ -410,7 +438,12 @@ class _AppShellState extends State<AppShell> {
                         maintainState: true,
                         child: DashboardFloatingMedia(
                           collapsedHeight: geometry.closedMediaHeight,
-                          expandedHeight: sheetHeight,
+                          expandedHeight:
+                              (sheetHeight - DashboardGeometry.mediaEdgeGap)
+                                  .clamp(
+                                    geometry.closedMediaHeight,
+                                    double.infinity,
+                                  ),
                           open: _panel == 'media',
                           onOpen: () {
                             if (!_reverseOwnsPresentation) {
@@ -519,64 +552,75 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Widget _appsPanel(List<AppModule> modules, double scale) => Padding(
-    padding: const EdgeInsets.all(24),
-    child: Column(
-      children: [
-        Row(
+  Widget _appsPanel(List<AppModule> modules, double scale) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact = constraints.maxWidth < 400;
+      return Padding(
+        padding: EdgeInsets.all(compact ? 16 : 24),
+        child: Column(
           children: [
-            Expanded(
-              child: Text(
-                'Apps',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Apps',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Close apps',
+                  onPressed: _dismissPanel,
+                  icon: const Icon(Icons.close),
+                ),
+              ],
             ),
-            IconButton(
-              tooltip: 'Close apps',
-              onPressed: _dismissPanel,
-              icon: const Icon(Icons.close),
+            SizedBox(height: compact ? 12 : 20),
+            LayoutBuilder(
+              builder: (context, c) {
+                final columns = (c.maxWidth / (180 * scale)).floor().clamp(
+                  c.maxWidth >= 220 ? 2 : 1,
+                  5,
+                );
+                final extent = c.maxWidth / columns;
+                return Wrap(
+                  alignment: WrapAlignment.center,
+                  runSpacing: compact ? 12 : 20,
+                  children: [
+                    for (var i = 0; i < modules.length; i++)
+                      SizedBox(
+                        width: extent,
+                        height: (compact ? 100 : 140) * scale,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () {
+                            _dismissPanel();
+                            _selectModule(i);
+                          },
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                modules[i].icon,
+                                size: (compact ? 40 : 54) * scale,
+                              ),
+                              SizedBox(height: compact ? 8 : 16),
+                              Text(
+                                modules[i].label,
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ],
         ),
-        const SizedBox(height: 20),
-        LayoutBuilder(
-          builder: (context, c) {
-            final columns = (c.maxWidth / (180 * scale)).floor().clamp(2, 5);
-            final extent = c.maxWidth / columns;
-            return Wrap(
-              alignment: WrapAlignment.center,
-              runSpacing: 20,
-              children: [
-                for (var i = 0; i < modules.length; i++)
-                  SizedBox(
-                    width: extent,
-                    height: 140 * scale,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () {
-                        _dismissPanel();
-                        _selectModule(i);
-                      },
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(modules[i].icon, size: 54 * scale),
-                          const SizedBox(height: 16),
-                          Text(
-                            modules[i].label,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
-      ],
-    ),
+      );
+    },
   );
 
   Widget _buildContent(List<AppModule> modules) {

@@ -42,8 +42,7 @@ is separate from an Argo build.
 ## IHS base and local patch
 
 The Mu IHS source is based on
-`50cbfb5b29266821091dd5a15edb6fe0a8547a91` with a local change in
-`shell/platform/homescreen/platform_views/platform_view_host.cc`.
+`50cbfb5b29266821091dd5a15edb6fe0a8547a91` with the local patches described below.
 `BUILD_COMPOSITOR=ON` is required. Headers, libihs_shared.so and homescreen must
 come from the same installed build.
 
@@ -68,6 +67,36 @@ GBM/DRM behavior. The local diff's SHA-256 at the reference setup is
 Record any subsequent dependency patch changes in the release manifest. Do not reset
 or update this checkout as part of an Argo build. DRM/KMS GL-fallback retirement and
 long-running projection still need separate validation.
+
+The [display-ID patch](../release/patches/ihs-display-id.patch) aligns startup
+and runtime Wayland display advertisements with the existing window-metrics
+display ID `0`. The unpatched shell advertises display `1` while its implicit
+view and additional views refer to display `0`; accessing `FlutterView.display`
+then throws because that display is absent from Flutter's display map. Both
+metadata publication sites must use the same ID, including after output-scale
+changes. This preserves IHS's current one-display-per-engine model and does not
+change the platform-view ABI, Engine, shared library or headers.
+
+For an existing configured reference build, apply that patch only after inspecting
+the dependency's local changes. Rebuild the shell and install to a new prefix,
+retaining the old matched prefix for rollback:
+
+```bash
+: "${IHS_SOURCE:?Set the existing patched IHS source directory}"
+: "${IHS_BUILD:?Set its existing configured build directory}"
+: "${IHS_NEW_PREFIX:?Set a new absolute installation prefix}"
+test ! -e "$IHS_NEW_PREFIX"
+git -C "$IHS_SOURCE" apply --check "$ARGO/tool/release/patches/ihs-display-id.patch"
+git -C "$IHS_SOURCE" apply "$ARGO/tool/release/patches/ihs-display-id.patch"
+cmake --build "$IHS_BUILD" --target ivi-homescreen --parallel 2
+cmake --install "$IHS_BUILD" --prefix "$IHS_NEW_PREFIX"
+```
+
+Do not reapply an already present patch. Compare the old/new shared library and
+installed headers before reusing native plugins, and record the new shell hash,
+patch revision and selected prefix with release validation. Starting or selecting
+that prefix is a separate managed deployment operation; an incremental build alone
+does not validate visible rendering or input.
 
 ## Daemon build and safe staging
 

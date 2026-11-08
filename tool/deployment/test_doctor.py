@@ -15,7 +15,9 @@ class DoctorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             deployment = a.Deployment(Path(root))
             with patch.object(a.subprocess, 'run', side_effect=FileNotFoundError), patch.object(a, 'program_pids', return_value=set()):
-                result = a.doctor(deployment, environment={})
+                # An installed system runtime must not make this missing-release
+                # fixture depend on the developer machine's deployment.
+                result = a.doctor(deployment, environment={}, release=Path(root) / 'missing-release')
             self.assertFalse(result['ok'])
             self.assertTrue(result['readOnly'])
             self.assertEqual(list(Path(root).iterdir()), [])

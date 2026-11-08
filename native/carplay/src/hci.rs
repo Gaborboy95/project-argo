@@ -94,6 +94,16 @@ pub async fn bridge(
     }
     let device = AsyncFd::new(device)?;
     transport.set_nodelay(true)?;
+    // A vanished USB-network dongle must release its virtual adapter promptly,
+    // even when the TCP stream has no new HCI traffic to write.
+    let socket = socket2::SockRef::from(&transport);
+    socket.set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(1))
+            .with_interval(Duration::from_secs(1))
+            .with_retries(2),
+    )?;
+    socket.set_tcp_user_timeout(Some(Duration::from_secs(3)))?;
     let work = async {
         device_write(&device, &[0xff, 0]).await?;
         let created = timeout(Duration::from_secs(5), device_read(&device))

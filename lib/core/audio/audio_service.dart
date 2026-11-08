@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../diagnostics/diagnostics_service.dart';
+import '../diagnostics/service_failure.dart';
 import '../settings/app_setting_keys.dart';
 import '../settings/settings_service.dart';
 import 'audio_backend.dart';
@@ -61,15 +62,13 @@ final class DefaultAudioService implements AudioService {
       );
     }
     focusPolicy.validate();
+    Object? startupError;
+    StackTrace? startupStack;
     try {
       await backend.start();
     } on Object catch (error, stackTrace) {
-      try {
-        await backend.close();
-      } on Object {
-        // Preserve the backend startup failure.
-      }
-      Error.throwWithStackTrace(error, stackTrace);
+      startupError = error;
+      startupStack = stackTrace;
     }
     final backendState = backend.current;
     final equalizer = AudioEqualizer(
@@ -100,28 +99,28 @@ final class DefaultAudioService implements AudioService {
         focusSources: const [],
       ),
     );
-    try {
-      await service._restoreBackend();
-      service._backendSubscription = backend.changes.listen(
-        service._onBackendChanged,
-        onError: (Object error, StackTrace stackTrace) {
-          diagnostics.error(
-            'audio.backend',
-            'Audio backend state observation failed.',
-            error: error,
-            stackTrace: stackTrace,
-          );
-        },
-      );
-      return service;
-    } on Object catch (error, stackTrace) {
+    service._backendStarted = startupError == null;
+    if (startupError != null) {
+      service._backendUnavailable(startupError, startupStack!, starting: true);
+    } else {
       try {
-        await backend.close();
-      } on Object {
-        // Preserve startup failure.
+        await service._restoreBackend();
+      } on Object catch (error, stackTrace) {
+        service._backendUnavailable(error, stackTrace);
       }
-      Error.throwWithStackTrace(error, stackTrace);
     }
+    service._backendSubscription = backend.changes.listen(
+      service._onBackendChanged,
+      onError: (Object error, StackTrace stackTrace) {
+        diagnostics.error(
+          'audio.backend',
+          'Audio backend state observation failed.',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      },
+    );
+    return service;
   }
 
   final AudioBackend backend;
@@ -138,11 +137,40 @@ final class DefaultAudioService implements AudioService {
   late AudioSnapshot _current;
   var _nextFocusId = 1;
   var _closed = false;
+  var _backendStarted = false;
 
   @override
   AudioSnapshot get current => _current;
   @override
   Stream<AudioSnapshot> get changes => _changes.stream;
+
+  void _backendUnavailable(
+    Object cause,
+    StackTrace stackTrace, {
+    bool starting = false,
+  }) {
+    final selected = _current.selectedOutput;
+    final failure = ServiceFailure(
+      feature: 'audio',
+      operation: 'configure',
+      kind: starting
+          ? FailureKind.missingService
+          : FailureKind.unavailableDevice,
+      summary: selected == null
+          ? 'Host audio is unavailable'
+          : 'Selected audio output is unavailable',
+      cause: cause,
+      retryable: true,
+      recovery: 'Reconnect the saved output and retry, or explicitly choose another output in Sound settings. Volume, mute and test tone remain disabled until the output is available.',
+    );
+    diagnostics.error(
+      'audio.backend',
+      failure.summary,
+      error: cause,
+      stackTrace: stackTrace,
+    );
+    _replace(backendAvailable: false, failure: failure);
+  }
 
   Future<void> _restoreBackend() async {
     if (!backend.current.available) return;
@@ -156,6 +184,11 @@ final class DefaultAudioService implements AudioService {
       _onBackendChanged(backend.current);
       return;
     }
+    // Resolve the saved destination before applying any restored level. A
+    // missing destination must never transfer its settings to another sink.
+    if (capabilities.outputSelection && _current.selectedOutput != null) {
+      await backend.selectOutput(_current.selectedOutput);
+    }
     if (capabilities.masterVolume) {
       await backend.setMasterVolume(_current.masterVolume);
     }
@@ -165,9 +198,6 @@ final class DefaultAudioService implements AudioService {
     }
     if (capabilities.equalizer) {
       await backend.setEqualizer(_current.equalizer);
-    }
-    if (capabilities.outputSelection && _current.selectedOutput != null) {
-      await backend.selectOutput(_current.selectedOutput);
     }
   }
 
@@ -192,7 +222,7 @@ final class DefaultAudioService implements AudioService {
 
   Future<void> _applyMasterVolume(double value) async {
     if (_current.masterVolume == value) return;
-    if (backend.current.available &&
+    if (_current.backendAvailable &&
         backend.current.capabilities.masterVolume) {
       await backend.setMasterVolume(value);
     }
@@ -203,7 +233,7 @@ final class DefaultAudioService implements AudioService {
   @override
   Future<void> setMuted(bool value) => _serialize(() async {
     if (_current.muted == value) return;
-    if (backend.current.available && backend.current.capabilities.mute) {
+    if (_current.backendAvailable && backend.current.capabilities.mute) {
       await backend.setMuted(value);
     }
     _replace(muted: value);
@@ -213,7 +243,7 @@ final class DefaultAudioService implements AudioService {
   @override
   Future<void> toggleMuted() => _serialize(() async {
     final value = !_current.muted;
-    if (backend.current.available && backend.current.capabilities.mute) {
+    if (_current.backendAvailable && backend.current.capabilities.mute) {
       await backend.setMuted(value);
     }
     _replace(muted: value);
@@ -225,10 +255,10 @@ final class DefaultAudioService implements AudioService {
     requireAudioSignedUnit(value, 'value');
     return _serialize(() async {
       if (_current.balance == value) return;
-      if (backend.current.available && !backend.current.capabilities.balance) {
+      if (_current.backendAvailable && !backend.current.capabilities.balance) {
         throw UnsupportedAudioFeatureException('balance');
       }
-      if (backend.current.available) {
+      if (_current.backendAvailable) {
         await backend.setChannelGains(_channelGains(balance: value));
       }
       _replace(balance: value);
@@ -241,10 +271,10 @@ final class DefaultAudioService implements AudioService {
     requireAudioSignedUnit(value, 'value');
     return _serialize(() async {
       if (_current.fader == value) return;
-      if (backend.current.available && !backend.current.capabilities.fader) {
+      if (_current.backendAvailable && !backend.current.capabilities.fader) {
         throw UnsupportedAudioFeatureException('fader');
       }
-      if (backend.current.available) {
+      if (_current.backendAvailable) {
         await backend.setChannelGains(_channelGains(fader: value));
       }
       _replace(fader: value);
@@ -257,11 +287,11 @@ final class DefaultAudioService implements AudioService {
     value.validate();
     return _serialize(() async {
       if (_current.equalizer == value) return;
-      if (backend.current.available &&
+      if (_current.backendAvailable &&
           !backend.current.capabilities.equalizer) {
         throw UnsupportedAudioFeatureException('equalizer');
       }
-      if (backend.current.available) await backend.setEqualizer(value);
+      if (_current.backendAvailable) await backend.setEqualizer(value);
       _replace(equalizer: value);
       await Future.wait([
         settings.set(AppSettingKeys.audioBassDb, value.bassDb),
@@ -277,13 +307,42 @@ final class DefaultAudioService implements AudioService {
     if (normalized != null && normalized.isEmpty) {
       throw ArgumentError.value(outputId, 'outputId', 'Must not be empty');
     }
-    if (_current.selectedOutput == normalized) return;
+    if (_current.selectedOutput == normalized && _current.failure == null) {
+      return;
+    }
+    if (!_backendStarted) {
+      try {
+        await backend.start();
+        _backendStarted = true;
+      } on Object catch (error, stackTrace) {
+        _backendUnavailable(error, stackTrace, starting: true);
+        rethrow;
+      }
+    }
     if (backend.current.available &&
         !backend.current.capabilities.outputSelection) {
       throw UnsupportedAudioFeatureException('output selection');
     }
-    if (backend.current.available) await backend.selectOutput(normalized);
-    _replace(selectedOutput: normalized, replaceOutput: true);
+    try {
+      if (backend.current.available) {
+        await backend.selectOutput(normalized);
+      } else if (_current.failure != null) {
+        throw StateError('The audio service is still unavailable.');
+      }
+    } on Object catch (error, stackTrace) {
+      if (_current.failure != null) _backendUnavailable(error, stackTrace);
+      rethrow;
+    }
+    final state = backend.current;
+    _replace(
+      selectedOutput: normalized,
+      replaceOutput: true,
+      backendAvailable: state.available,
+      capabilities: state.capabilities,
+      masterVolume: state.masterVolume,
+      muted: state.muted,
+      clearFailure: true,
+    );
     await settings.set(AppSettingKeys.audioPreferredOutput, normalized ?? '');
   });
 
@@ -298,7 +357,7 @@ final class DefaultAudioService implements AudioService {
 
   @override
   Future<void> unregisterSource(String sourceId) => _serialize(() async {
-    if (backend.current.available &&
+    if (_current.backendAvailable &&
         backend.current.capabilities.perSourceRouting &&
         _sources.containsKey(sourceId)) {
       await backend.setSourceGain(sourceId, 0);
@@ -384,7 +443,7 @@ final class DefaultAudioService implements AudioService {
       }
       gains[sourceId] = gain.clamp(0.0, 1.0);
     }
-    if (backend.current.available &&
+    if (_current.backendAvailable &&
         backend.current.capabilities.perSourceRouting) {
       for (final entry in gains.entries) {
         await backend.setSourceGain(entry.key, entry.value);
@@ -437,6 +496,12 @@ final class DefaultAudioService implements AudioService {
 
   void _onBackendChanged(AudioBackendState state) {
     if (_closed) return;
+    // Availability of the desktop default does not establish availability of
+    // the saved output. Only a successful explicit selection clears failure.
+    if (_current.failure != null) {
+      _replace(capabilities: state.capabilities, backendAvailable: false);
+      return;
+    }
     _replace(
       masterVolume: state.masterVolume,
       muted: state.muted,
@@ -460,6 +525,8 @@ final class DefaultAudioService implements AudioService {
     Map<String, double>? effectiveSourceGains,
     String? selectedSource,
     bool replaceSelectedSource = false,
+    ServiceFailure? failure,
+    bool clearFailure = false,
   }) {
     final next = AudioSnapshot(
       masterVolume: masterVolume ?? _current.masterVolume,
@@ -477,6 +544,7 @@ final class DefaultAudioService implements AudioService {
       selectedSource: replaceSelectedSource
           ? selectedSource
           : _current.selectedSource,
+      failure: clearFailure ? null : failure ?? _current.failure,
     );
     if (next == _current) return;
     _current = next;

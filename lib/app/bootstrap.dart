@@ -14,6 +14,7 @@ import 'climate_composition.dart';
 import '../core/lifecycle/managed_application.dart';
 import '../core/lifecycle/application_exit_service.dart';
 import '../core/connectivity/connectivity_service.dart';
+import '../core/connectivity/device_connection_service.dart';
 import '../core/media/media_session_service.dart';
 import '../core/projection/projection_service.dart';
 
@@ -346,6 +347,9 @@ Future<Widget> bootstrapArgoApplication({
         : null;
     final managed = ManagedApplication(processEnvironment, connectivity);
     final exitService = ApplicationExitService(
+      beforeQuit: services.contains<DeviceConnectionService>()
+          ? services.get<DeviceConnectionService>().prepareExit
+          : null,
       lifecycle: lifecycle,
       exitProcess: () => exit(0),
       connectivity: connectivity,

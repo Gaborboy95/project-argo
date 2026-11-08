@@ -8,16 +8,24 @@ Argo-owned NetworkManager AP; projection then runs over TCP. Read
 
 ## Pairing and connection
 
-1. Open Settings → Devices. Select the Bluetooth adapter and an
-   idle projection Wi-Fi interface when discovery is ambiguous.
-2. Start the bounded discovery window, open the phone's Bluetooth settings and
-   pair the intended device. Confirm matching device-scoped passkeys; reject
-   unexpected requests. Prompts expire. Existing BlueZ bonds can be reused.
-3. Select the paired phone and AP band. Disconnect USB data for wireless testing.
-4. With a viable selected adapter, wireless is available automatically. Press Connect. Approve any required phone or desktop permission
-   prompts. AP readiness, Bluetooth bootstrap, TCP and streaming are distinct stages.
-5. Use Disconnect or Disable to stop the connection request and its retries.
-   Forget revokes the device selection and removes its BlueZ bond.
+1. Open Settings → Devices. Use Android Auto settings to choose an idle projection
+   Wi-Fi interface and AP band when discovery is ambiguous, then return to Devices.
+2. Choose **Add Android phone** to start bounded Bluetooth discovery. Open the
+   phone's Bluetooth settings and pair the intended device. Confirm matching
+   device-scoped passkeys; reject unexpected requests. Prompts expire. Existing
+   BlueZ bonds can be reused.
+3. Devices shows one physical-phone row with its Android Auto type. For an existing
+   unknown phone, choose Android Auto as its connection type. Disconnect USB data
+   for wireless testing. Equal names do not join devices; link a separate USB
+   identity to its saved Bluetooth phone only after explicitly confirming the match.
+4. With a viable selected adapter, wireless is available automatically. Use the
+   phone's **Connect** action in Devices; completing the Android pairing flow also
+   requests that phone. Approve any required phone or desktop permission prompts.
+   AP readiness, Bluetooth bootstrap, TCP and streaming are distinct stages.
+5. Use the phone's **Disconnect** action to stop its projection, retries and all
+   Bluetooth endpoints without disconnecting unrelated devices. Forget removes
+   its bonds and saved identity. Disabling wireless AA in its settings also ends
+   that controller's request.
 
 Wireless availability follows read-only NetworkManager managed/radio state, AP/band
 capabilities and current permitted channels. An idle viable interface is selected
@@ -28,11 +36,20 @@ Disable stays in effect for the current application connection until enabled aga
 Saved adapter/interface/phone/band choices are restored without connecting. Changed
 choices remain pending for the next connection; current attempts and retries retain
 their frozen selection. Bluetooth pairing/music do not depend on NM readiness.
+The Devices startup reconnect switch can issue one request for the selected known
+phone. CarPlay is not started alongside an AA request; both protocols share the
+same application connection owner. Their settings pages configure receivers rather
+than providing independent Connect or Disconnect controls.
 
-Argo registers one non-default BlueZ pairing agent for Argo-initiated pairing.
-Incoming desktop pairing continues through the desktop agent. Argo does not replace
-the default agent, auto-accept passkeys, set blanket trust or authorize unrelated
-profiles. Generic pairing/readiness works without an AA certificate or live session.
+While the shared connectivity daemon runs, Argo registers the default BlueZ agent
+for incoming and app-initiated pairing on every Bluetooth radio, including LIVI Link.
+Device-scoped prompts appear over any Argo page, expire after 30 seconds and are
+withdrawn on BlueZ cancellation or application disconnect. Approval is explicit;
+there is no automatic passkey acceptance or blanket trust. Existing bonded phones
+may reconnect supported audio/call/Android Auto/CarPlay services without another
+prompt; other service requests require approval. Generic pairing/readiness works
+without an AA certificate or live projection session. Stopping the connectivity
+daemon unregisters its agent and releases default-agent ownership back to BlueZ.
 
 ## Projection network
 
@@ -174,12 +191,24 @@ Unavailable/disabled → available/enabled → connecting → established descri
 video visibility is a separate state. One session lease arbitrates USB and Wi-Fi
 before AP/listener/media resources are created. An incoming wireless request cannot
 replace wired projection. Explicit switching waits for old cleanup.
+The shared device coordinator also arbitrates AA against CarPlay and waits for
+actual receiver/session cleanup before starting the replacement phone. A cleanup
+failure remains visible and prevents the replacement. Merely opening Devices or
+the protocol settings does not start either receiver.
 
 The AP and interface-bound TCP listener must be ready before Bluetooth advertises
 connection details. The selected phone's Audio Gateway profile (`111f`) is requested
 through the existing desktop Hands-Free implementation (`111e`). The bootstrap trigger is separate from the [Calls page](media.md#bluetooth-calls),
 which also uses the installed PipeWire HFP implementation. No competing HFP stack is
 registered. UUID/channel conflicts are errors; bluetoothd is not restarted.
+The TCP listener sets `SO_REUSEADDR` before binding so an accepted connection's
+FIN/TIME_WAIT state does not block Disconnect → Connect on the same AP address
+and port 5288. It does not enable `SO_REUSEPORT`: an existing live listener still
+fails closed. Socket errors identify the TCP endpoint, selected interface and
+operation; Bluetooth profile errors identify the AA UUID and RFCOMM channel 8.
+Each cancelled attempt drops its listener/accepted transport and awaits owned
+media/AP cleanup before releasing the session lease. No port killing, socket
+unlinking or delay-based bind retry is used.
 
 Authenticated RFCOMM negotiates WPP version, delivers Wi-Fi credentials and receives
 a successful StartResponse. One in-subnet TCP candidate may wait for that acceptance.

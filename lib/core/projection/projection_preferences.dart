@@ -96,18 +96,31 @@ final class ProjectionPreferences {
     double viewportHeight,
     double overlayHeight,
   ) {
-    if (viewportWidth <= 0 || viewportHeight <= 0) return this;
+    if (!viewportWidth.isFinite ||
+        !viewportHeight.isFinite ||
+        !overlayHeight.isFinite ||
+        viewportWidth <= 0 ||
+        viewportHeight <= 0 ||
+        overlayHeight < 0) {
+      return this;
+    }
     var left = viewInsets.left.toInt(), right = viewInsets.right.toInt();
     var top = viewInsets.top.toInt(), bottom = viewInsets.bottom.toInt();
     final availableW = width - left - right, availableH = height - top - bottom;
     final aspect = viewportWidth / viewportHeight;
+    // Preserve saved minimum margins even when a host window becomes narrower
+    // than them. Letterboxing is preferable to throwing during dashboard layout.
+    final minimumW = (safeInsets.left + safeInsets.right).floor() + 1;
+    final minimumH = (safeInsets.top + safeInsets.bottom).floor() + 1;
     if (availableW / availableH > aspect) {
-      final content = (availableH * aspect).floor().clamp(2, availableW) & ~1;
+      final content = ((availableH * aspect).floor().clamp(2, availableW) & ~1)
+          .clamp(minimumW, availableW);
       final margin = availableW - content;
       left += margin ~/ 2;
       right += margin - margin ~/ 2;
     } else {
-      final content = (availableW / aspect).floor().clamp(2, availableH) & ~1;
+      final content = ((availableW / aspect).floor().clamp(2, availableH) & ~1)
+          .clamp(minimumH, availableH);
       final margin = availableH - content;
       top += margin ~/ 2;
       bottom += margin - margin ~/ 2;
@@ -115,8 +128,24 @@ final class ProjectionPreferences {
     final scaleY = viewportHeight / (height - top - bottom);
     final scaleX = viewportWidth / (width - left - right);
     final scale = scaleX < scaleY ? scaleX : scaleY;
-    final reserve = (overlayHeight / scale).ceilToDouble();
+    final reserve = (overlayHeight / scale).ceilToDouble().clamp(
+      0.0,
+      (height - top - bottom - safeInsets.top - 1).clamp(
+        0.0,
+        height.toDouble(),
+      ),
+    );
+    final contentWidth = width - left - right;
+    final contentHeight = height - top - bottom;
+    // Some AA navigation apps reject input in narrow portrait layouts. Announce
+    // at least 730 dp of content width where the protocol's 80-DPI floor allows
+    // it; this measured compatibility workaround is not a phone guarantee.
+    final portraitDpiLimit = (contentWidth * 160 ~/ 730).clamp(80, 640);
+    final fittedDpi = contentHeight > contentWidth && dpi > portraitDpiLimit
+        ? portraitDpiLimit
+        : dpi;
     return copyWith(
+      dpi: fittedDpi,
       viewInsets: ProjectionInsets(
         left: left.toDouble(),
         top: top.toDouble(),
