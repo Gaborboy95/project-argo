@@ -206,9 +206,7 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
         }
         state.send_replace(wired::State::Identifying);
         control.send(identity).await?;
-        if control.message().await? != csm::Message::empty(csm::IDENTIFICATION_ACCEPTED) {
-            return Err(ProtocolError::Rejected.into());
-        }
+        csm::identification_accepted(&control.message().await?)?;
         Ok::<_, wired::Error>(())
     })
     .await
@@ -356,6 +354,11 @@ pub async fn run_with_updates<S: AsyncRead + AsyncWrite + Unpin>(
         _ = async { let _ = stop.wait_for(|v| *v).await; } => Err(wired::Error::Cancelled),
         result = session(&mut control, link, configuration, controller, &state) => result,
     };
+    if matches!(result, Err(wired::Error::Cancelled)) {
+        for stop in control.updates.unsubscribe() {
+            let _ = timeout(Duration::from_millis(250), control.send(stop)).await;
+        }
+    }
     state.send_replace(wired::State::Closed);
     result
 }

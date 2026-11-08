@@ -333,6 +333,11 @@ pub async fn run_with_updates<S: AsyncRead + AsyncWrite + Unpin>(
             }
         } => result,
     };
+    if matches!(result, Err(Error::Cancelled)) {
+        for stop in control.updates.unsubscribe() {
+            let _ = timeout(Duration::from_millis(250), control.send(stop)).await;
+        }
+    }
     state.send_replace(State::Closed);
     result
 }
@@ -402,9 +407,7 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
         return Err(ProtocolError::State.into());
     }
     control.send(identity).await?;
-    if control.message().await? != csm::Message::empty(csm::IDENTIFICATION_ACCEPTED) {
-        return Err(ProtocolError::Rejected.into());
-    }
+    csm::identification_accepted(&control.message().await?)?;
     state.send_replace(State::Authenticating);
     let started = Instant::now();
     let mut auth = csm::Authentication::new(Duration::ZERO);

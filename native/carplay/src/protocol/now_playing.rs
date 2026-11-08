@@ -17,8 +17,10 @@ use tokio::sync::watch;
 
 pub const START: u16 = 0x5000;
 pub const UPDATE: u16 = 0x5001;
+pub const STOP: u16 = 0x5002;
 pub const POWER_START: u16 = 0xae00;
 pub const POWER_UPDATE: u16 = 0xae01;
+pub const POWER_STOP: u16 = 0xae02;
 pub const FILE_TRANSFER_SESSION: u8 = 12;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -400,6 +402,15 @@ impl Updates {
             },
         ])
     }
+    /// Each advertised update family includes its matching explicit stop.
+    pub fn unsubscribe(&mut self) -> Vec<Message> {
+        if !self.enabled {
+            return vec![];
+        }
+        self.enabled = false;
+        self.transfer = Transfer::default();
+        vec![Message::empty(STOP), Message::empty(POWER_STOP)]
+    }
     pub fn observe(&mut self, message: &Message) -> bool {
         if !self.enabled || ![UPDATE, POWER_UPDATE].contains(&message.id) {
             return false;
@@ -482,6 +493,18 @@ mod tests {
                 .any(|p| p.id == 26)
         );
         assert!(Updates::new(None).subscribe(true).unwrap().is_empty());
+        let stops = updates.unsubscribe();
+        assert_eq!(
+            stops.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [STOP, POWER_STOP]
+        );
+        for message in stops {
+            assert_eq!(
+                Message::decode(&message.encode().unwrap()).unwrap(),
+                message
+            );
+        }
+        assert!(updates.unsubscribe().is_empty());
     }
 
     #[test]

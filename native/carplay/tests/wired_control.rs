@@ -314,6 +314,16 @@ async fn wired_handshake(metadata: bool) {
             Err(wired::Error::Cancelled)
         ));
         assert_eq!(*state_rx.borrow(), wired::State::Closed);
+        if metadata {
+            for expected in [now_playing::STOP, now_playing::POWER_STOP] {
+                assert_eq!(
+                    csm::Message::decode(&read_frame(&mut phone).await.payload)
+                        .unwrap()
+                        .id,
+                    expected
+                );
+            }
+        }
         assert_eq!(phone.read(&mut [0]).await.unwrap(), 0);
         mfi.await.unwrap();
     })

@@ -138,6 +138,25 @@ impl Message {
     }
 }
 
+/// Identification rejection flags contain field IDs, never the rejected
+/// values. Keep this diagnostic bounded and free of phone/accessory identity.
+pub fn identification_accepted(message: &Message) -> Result<(), Error> {
+    if *message == Message::empty(IDENTIFICATION_ACCEPTED) {
+        return Ok(());
+    }
+    let fields: Vec<_> = message
+        .parameters
+        .iter()
+        .take(32)
+        .map(|p| (p.id, p.value.len()))
+        .collect();
+    eprintln!(
+        "CarPlay identification response: message={:#06x}, field_ids_and_lengths={fields:?}",
+        message.id
+    );
+    Err(Error::Rejected)
+}
+
 /// Minimal wired identity. Optional vehicle/navigation capabilities are omitted.
 pub struct AccessoryIdentity {
     pub name: String,
@@ -172,7 +191,9 @@ impl AccessoryIdentity {
         let sent: Vec<u8> = [
             START_SESSION,
             super::now_playing::START,
+            super::now_playing::STOP,
             super::now_playing::POWER_START,
+            super::now_playing::POWER_STOP,
         ]
         .iter()
         .flat_map(|v| v.to_be_bytes())
@@ -225,7 +246,9 @@ impl AccessoryIdentity {
                     WIFI_CONFIGURATION,
                     START_SESSION,
                     super::now_playing::START,
+                    super::now_playing::STOP,
                     super::now_playing::POWER_START,
+                    super::now_playing::POWER_STOP,
                 ]
                 .into_iter()
                 .flat_map(u16::to_be_bytes)
@@ -681,7 +704,10 @@ mod tests {
         let wifi = decode_parameters(wire.one(24).unwrap()).unwrap();
         assert_eq!(wifi.iter().find(|p| p.id == 0).unwrap().value, [0, 1]);
         assert!(wifi.iter().any(|p| p.id == 4 && p.value.is_empty()));
-        assert_eq!(wire.one(6).unwrap(), [0x57, 3, 0x43, 1, 0x50, 0, 0xae, 0]);
+        assert_eq!(
+            wire.one(6).unwrap(),
+            [0x57, 3, 0x43, 1, 0x50, 0, 0x50, 2, 0xae, 0, 0xae, 2]
+        );
         assert!(identity.wireless_message([0; 6], "Argo").is_err());
     }
 
