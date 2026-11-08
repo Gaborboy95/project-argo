@@ -6,9 +6,14 @@ import 'dart:io';
 
 /// Persistent native receiver settings; no media or phone credentials enter Dart.
 class CarPlaySettingsService {
-  CarPlaySettingsService({required this.socketPath, this.selectedMicrophone});
+  CarPlaySettingsService({
+    required this.socketPath,
+    this.selectedMicrophone,
+    this.selectedAudioOutput,
+  });
   final String socketPath;
   final String? Function()? selectedMicrophone;
+  final String? Function()? selectedAudioOutput;
   final _changes = StreamController<void>.broadcast();
   Stream<void> get changes => _changes.stream;
   Map<String, dynamic> current = const {};
@@ -20,12 +25,12 @@ class CarPlaySettingsService {
   bool _closed = false;
   Future<void>? _polling;
   Future<void>? _sendingViewport;
+  Future<void>? _sendingAudio;
   Timer? _viewportTimer;
   (double, double, double)? _viewport;
   (double, double, double)? _sentViewport;
   (double, double, double)? get measuredViewport => _viewport;
   final Set<Socket> _sockets = {};
-  String? _sentSource;
 
   Future<Map<String, dynamic>> _request(Map<String, Object?> request) async {
     if (_closed) throw StateError('CarPlay settings are closed');
@@ -98,17 +103,7 @@ class CarPlaySettingsService {
         _sentViewport = null;
       }
       await _syncViewport();
-      final source = selectedMicrophone?.call();
-      if (source != null &&
-          source.isNotEmpty &&
-          source != _sentSource &&
-          (reply['settings'] as Map)['audio_sink'] != null) {
-        await _request({
-          'action': 'configure',
-          'settings': {'audio_source': source},
-        });
-        _sentSource = source;
-      }
+      await _syncSharedAudio();
     } on Object catch (cause) {
       available = false;
       failure = ServiceFailure(
@@ -123,10 +118,50 @@ class CarPlaySettingsService {
         recovery: 'Check the receiver service and retry.',
       );
       error = failure!.summary;
-      _sentSource = null;
       _sentViewport = null;
     }
     _notify();
+  }
+
+  Map<String, String> _sharedAudioPatch() {
+    final settings = current['settings'] as Map? ?? const {};
+    final sink = selectedAudioOutput?.call();
+    final source = selectedMicrophone?.call();
+    final selectedSink = sink != null && sink.isNotEmpty ? sink : null;
+    final effectiveSink = selectedSink ?? settings['audio_sink'];
+    return {
+      if (selectedSink != null && selectedSink != settings['audio_sink'])
+        'audio_sink': selectedSink,
+      if (source != null &&
+          source.isNotEmpty &&
+          effectiveSink is String &&
+          effectiveSink.isNotEmpty &&
+          source != settings['audio_source'])
+        'audio_source': source,
+    };
+  }
+
+  /// Shared choices configure the next phone negotiation. Updating these
+  /// preferences never starts, stops or reconnects an existing receiver.
+  Future<void> _syncSharedAudio() {
+    if (_closed || !available) return Future<void>.value();
+    final pending = _sendingAudio;
+    if (pending != null) return pending;
+    final patch = _sharedAudioPatch();
+    if (patch.isEmpty) return Future<void>.value();
+    final operation = _request({'action': 'configure', 'settings': patch});
+    _sendingAudio = operation
+        .then((_) {
+          if (_closed) return;
+          // The native acknowledgement confirms saved preferences, not a live
+          // route change. Keep the cache coherent until the next status poll.
+          current = {
+            ...current,
+            'settings': {...current['settings'] as Map, ...patch},
+          };
+        })
+        .whenComplete(() => _sendingAudio = null);
+    return _sendingAudio!;
   }
 
   /// Runtime dashboard measurements; applied at the next phone negotiation.
@@ -197,7 +232,20 @@ class CarPlaySettingsService {
     saving = true;
     _notify();
     try {
-      if (command['action'] == 'connect') await _syncViewport();
+      if (command['action'] == 'connect') {
+        await refresh();
+        if (!available || failure != null) {
+          throw StateError(error ?? 'CarPlay receiver settings unavailable');
+        }
+        await _syncViewport();
+        await _syncSharedAudio();
+        // A selection changed while an earlier configure request was in
+        // flight. Apply its latest value once, without an unbounded retry loop.
+        if (_sharedAudioPatch().isNotEmpty) await _syncSharedAudio();
+        if (_sharedAudioPatch().isNotEmpty) {
+          throw StateError('Shared audio selection changed; retry Connect');
+        }
+      }
       await _request(command);
       await refresh();
     } on Object catch (e) {
@@ -228,6 +276,11 @@ class CarPlaySettingsService {
       await _sendingViewport;
     } on Object {
       // Closing owned sockets cancels an outstanding viewport request.
+    }
+    try {
+      await _sendingAudio;
+    } on Object {
+      // Closing owned sockets cancels an outstanding shared-audio update.
     }
     await _changes.close();
   }

@@ -345,7 +345,13 @@ fn view_area(display: &Display) -> Value {
     ])
 }
 
-fn info(display: &Display, device_identifier: &str, audio: bool, microphone: bool) -> Value {
+fn info(
+    display: &Display,
+    device_identifier: &str,
+    device_identity: DeviceIdentity,
+    audio: bool,
+    microphone: bool,
+) -> Value {
     // Native UI initially owns the screen, but no native audio is playing.
     // Do not permanently take mainAudio on startup. Resource ownership follows
     // actual use: https://developer.apple.com/videos/play/wwdc2016/723/.
@@ -433,6 +439,14 @@ fn info(display: &Display, device_identifier: &str, audio: bool, microphone: boo
             ]),
         ),
     ]);
+    // Associate wireless CarPlay with the actual local Bluetooth controller.
+    // A wired pairing identity is not evidence that a Bluetooth radio exists.
+    if matches!(device_identity, DeviceIdentity::Bluetooth(_)) {
+        result.as_dictionary_mut().unwrap().insert(
+            "bluetoothIDs".into(),
+            Value::Array(vec![string(device_identifier)]),
+        );
+    }
     if audio {
         let fields = result.as_dictionary_mut().unwrap();
         let mut formats = Vec::new();
@@ -772,7 +786,7 @@ impl Receiver {
                         authenticated = true; kind = "application/octet-stream";
                     }
                     ("GET"|"POST", "/info") => {
-                        let capabilities = info(&self.display, &device_identifier, self.audio.is_some(), self.audio.as_ref().is_some_and(|a|a.input.is_some()));
+                        let capabilities = info(&self.display, &device_identifier, self.device_identity, self.audio.is_some(), self.audio.as_ref().is_some_and(|a|a.input.is_some()));
                         let formats = capabilities.as_dictionary().and_then(|d|d.get("audioFormats")).and_then(Value::as_array);
                         let inputs = formats.map_or(0, |formats| formats.iter().filter(|format| format.as_dictionary().is_some_and(|f| f.contains_key("audioInputFormats"))).count());
                         eprintln!("CarPlay capabilities: version={}, audio={}, output_entries={}, input_entries={}", SOURCE_VERSION, self.audio.is_some(), formats.map_or(0,Vec::len), inputs);
@@ -1483,14 +1497,26 @@ mod tests {
     #[test]
     fn output_capabilities_advertise_only_implemented_formats() {
         let identity = Identity::generate("fixture".into()).unwrap();
-        let disabled = info(&display(), &identity.identifier, false, false);
+        let disabled = info(
+            &display(),
+            &identity.identifier,
+            DeviceIdentity::Pairing,
+            false,
+            false,
+        );
         assert!(
             !disabled
                 .as_dictionary()
                 .unwrap()
                 .contains_key("audioFormats")
         );
-        let enabled = info(&display(), &identity.identifier, true, false);
+        let enabled = info(
+            &display(),
+            &identity.identifier,
+            DeviceIdentity::Pairing,
+            true,
+            false,
+        );
         let fields = enabled.as_dictionary().unwrap();
         let formats = fields["audioFormats"].as_array().unwrap();
         assert_eq!(formats.len(), 9);
@@ -1517,7 +1543,13 @@ mod tests {
     #[test]
     fn capture_capability_is_limited_to_explicit_pcm_voice_support() {
         let identity = Identity::generate("fixture".into()).unwrap();
-        let enabled = info(&display(), &identity.identifier, true, true);
+        let enabled = info(
+            &display(),
+            &identity.identifier,
+            DeviceIdentity::Pairing,
+            true,
+            true,
+        );
         let formats = enabled.as_dictionary().unwrap()["audioFormats"]
             .as_array()
             .unwrap();
@@ -1575,16 +1607,30 @@ mod tests {
         let identity = Identity::generate("persistent-pairing-identity".into()).unwrap();
         let key = identity.public_key().unwrap();
         let wired = DeviceIdentity::Pairing.identifier(&identity).unwrap();
-        let wireless = DeviceIdentity::Bluetooth([2, 0, 0, 0, 0, 7])
-            .identifier(&identity)
-            .unwrap();
+        let controller = DeviceIdentity::Bluetooth([2, 0, 0, 0, 0, 7]);
+        let wireless = controller.identifier(&identity).unwrap();
         assert_eq!(wired, "persistent-pairing-identity");
         assert_eq!(wireless, "02:00:00:00:00:07");
-        let capabilities = info(&display(), &wireless, false, false);
+        let capabilities = info(&display(), &wireless, controller, false, false);
         assert_eq!(
             capabilities.as_dictionary().unwrap()["deviceID"].as_string(),
             Some(wireless.as_str())
         );
+        let bluetooth = capabilities.as_dictionary().unwrap()["bluetoothIDs"]
+            .as_array()
+            .unwrap();
+        assert_eq!(bluetooth.len(), 1);
+        assert_eq!(bluetooth[0].as_string(), Some(wireless.as_str()));
+        // Even MAC-shaped pairing identifiers must not invent a wired radio.
+        for pairing in [wired.as_str(), wireless.as_str()] {
+            let capabilities = info(&display(), pairing, DeviceIdentity::Pairing, true, false);
+            assert!(
+                !capabilities
+                    .as_dictionary()
+                    .unwrap()
+                    .contains_key("bluetoothIDs")
+            );
+        }
         assert_eq!(identity.identifier, wired);
         assert_eq!(identity.public_key().unwrap(), key);
         assert!(
@@ -1813,7 +1859,7 @@ mod tests {
     #[tokio::test]
     async fn media_hid_is_advertised_and_encrypted_pulses_release_every_button() {
         timeout(Duration::from_secs(3), async {
-            let advertised = info(&display(), "fixture", false, false);
+            let advertised = info(&display(), "fixture", DeviceIdentity::Pairing, false, false);
             let devices = advertised.as_dictionary().unwrap()["hidDevices"]
                 .as_array()
                 .unwrap();

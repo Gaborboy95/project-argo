@@ -6,6 +6,157 @@ import 'package:argo/core/projection/carplay_settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('shared output and microphone update next-connection settings without receiver actions', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'old.missing',
+      'audio_source': 'old.microphone',
+    });
+    String? output = 'jbl.present';
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => output,
+      selectedMicrophone: () => 'shared.microphone',
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    expect(receiver.settings['audio_sink'], 'jbl.present');
+    expect(receiver.settings['audio_source'], 'shared.microphone');
+    expect(receiver.configures.single['settings'], {
+      'audio_sink': 'jbl.present',
+      'audio_source': 'shared.microphone',
+    });
+    expect((service.current['settings'] as Map)['audio_sink'], 'jbl.present');
+    final statusCount = receiver.requests
+        .where((r) => r['action'] == 'status')
+        .length;
+    await Future.wait([
+      service.refresh(),
+      service.refresh(),
+      service.refresh(),
+    ]);
+    expect(
+      receiver.requests.where((r) => r['action'] == 'status').length,
+      statusCount + 1,
+    );
+    expect(receiver.configures, hasLength(1));
+    output = 'usb.present';
+    await service.refresh();
+    expect(receiver.configures.last['settings'], {'audio_sink': 'usb.present'});
+    expect(receiver.settings['audio_sink'], 'usb.present');
+    receiver.settings['audio_sink'] = 'old.after.restart';
+    await service.refresh();
+    expect(receiver.configures, hasLength(3));
+    expect(receiver.settings['audio_sink'], 'usb.present');
+    expect(
+      receiver.requests.every(
+        (r) => {'status', 'configure'}.contains(r['action']),
+      ),
+      isTrue,
+    );
+    expect(service.failure, isNull);
+  });
+
+  test('missing or unset shared output never overwrites a native choice or invents a fallback', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'saved.missing',
+      'audio_source': null,
+    });
+    String? output;
+    String? microphone;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => output,
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    output = '';
+    await service.refresh();
+    expect(receiver.configures, isEmpty);
+    expect(receiver.settings['audio_sink'], 'saved.missing');
+    receiver.settings['audio_sink'] = null;
+    output = null;
+    microphone = 'shared.microphone';
+    await service.refresh();
+    expect(receiver.configures, isEmpty);
+    expect(receiver.settings['audio_sink'], isNull);
+    output = 'jbl.present';
+    await service.refresh();
+    expect(receiver.configures.single['settings'], {
+      'audio_sink': 'jbl.present',
+      'audio_source': 'shared.microphone',
+    });
+    expect(
+      receiver.requests.where(
+        (r) => r['action'] == 'connect' || r['action'] == 'disconnect',
+      ),
+      isEmpty,
+    );
+  });
+
+  test('connect waits for the latest shared output acknowledgement before starting the phone', () async {
+    final receiver = await _Receiver.start({'audio_sink': 'stale.output'});
+    String? output;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => output,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    receiver.configureGate = Completer<void>();
+    output = 'first.present';
+    final connecting = service.connectDevice('02:00:00:00:00:01');
+    await receiver.configureSeen.future.timeout(const Duration(seconds: 2));
+    expect(receiver.requests.where((r) => r['action'] == 'connect'), isEmpty);
+    expect(service.saving, isTrue);
+    output = 'latest.present';
+    final polling = service.refresh();
+    receiver.configureGate!.complete();
+    await connecting;
+    await polling;
+    expect(receiver.connectSinks, ['latest.present']);
+    expect(receiver.configures, hasLength(2));
+    expect(
+      receiver.requests.singleWhere((r) => r['action'] == 'connect')['target'],
+      '02:00:00:00:00:01',
+    );
+    expect(service.failure, isNull);
+  });
+
+  test('a rejected shared-output update prevents connect and does not use a default sink', () async {
+    final receiver = await _Receiver.start({'audio_sink': 'saved.stale'});
+    String? output;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => output,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    output = 'chosen.present';
+    receiver.rejectConfigure = true;
+    await service.connect();
+    expect(service.failure, isNotNull);
+    expect(receiver.connectSinks, isEmpty);
+    expect(receiver.settings['audio_sink'], 'saved.stale');
+    receiver.rejectConfigure = false;
+    await service.refresh();
+    expect(service.failure, isNull);
+    expect(receiver.settings['audio_sink'], 'chosen.present');
+    expect(receiver.connectSinks, isEmpty);
+  });
+
   test('dashboard viewport coalesces without persistent writes or reconnects', () async {
     final directory = await Directory.systemTemp.createTemp(
       'carplay-viewport-',
@@ -128,4 +279,100 @@ void main() {
     await service.refresh();
     service.setViewport(800, 498, 48);
   });
+}
+
+class _Receiver {
+  _Receiver(this.directory, this.server, this.settings);
+  final Directory directory;
+  final ServerSocket server;
+  final Map<String, dynamic> settings;
+  final requests = <Map<String, dynamic>>[];
+  final connectSinks = <Object?>[];
+  final sockets = <Socket>{};
+  final work = <Future<void>>{};
+  final configureSeen = Completer<void>();
+  Completer<void>? configureGate;
+  bool rejectConfigure = false;
+  late final StreamSubscription<Socket> subscription;
+  String get path => '${directory.path}/settings';
+  List<Map<String, dynamic>> get configures =>
+      requests.where((r) => r['action'] == 'configure').toList();
+  static Future<_Receiver> start(Map<String, dynamic> settings) async {
+    final directory = await Directory.systemTemp.createTemp(
+      'carplay-shared-audio-',
+    );
+    final server = await ServerSocket.bind(
+      InternetAddress(
+        '${directory.path}/settings',
+        type: InternetAddressType.unix,
+      ),
+      0,
+    );
+    final receiver = _Receiver(directory, server, settings);
+    receiver.subscription = server.listen((socket) {
+      receiver.sockets.add(socket);
+      final task = receiver.handle(socket);
+      receiver.work.add(task);
+      task.whenComplete(() => receiver.work.remove(task));
+    });
+    return receiver;
+  }
+
+  Future<void> handle(Socket socket) async {
+    try {
+      final line = await utf8.decoder
+          .bind(socket)
+          .transform(const LineSplitter())
+          .first;
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      requests.add(request);
+      var ok = true;
+      switch (request['action']) {
+        case 'configure':
+          if (!configureSeen.isCompleted) configureSeen.complete();
+          await configureGate?.future;
+          ok = !rejectConfigure;
+          if (ok) {
+            settings.addAll(
+              Map<String, dynamic>.from(request['settings'] as Map),
+            );
+          }
+        case 'connect':
+          connectSinks.add(settings['audio_sink']);
+      }
+      socket.writeln(
+        jsonEncode(
+          request['action'] == 'status'
+              ? {
+                  'ok': true,
+                  'contract': 1,
+                  'settings': {...settings},
+                  'running': false,
+                  'phase': 'Disconnected',
+                }
+              : {'ok': ok, if (!ok) 'error': 'Selected output rejected'},
+        ),
+      );
+      await socket.flush();
+      await socket.close();
+    } on Object {
+      // Closing the fixture cancels outstanding local requests.
+    } finally {
+      sockets.remove(socket);
+      socket.destroy();
+    }
+  }
+
+  Future<void> close() async {
+    if (configureGate != null && !configureGate!.isCompleted) {
+      configureGate!.complete();
+    }
+    for (final socket in sockets.toList()) {
+      socket.destroy();
+    }
+    await subscription.cancel();
+    await server.close();
+    await Future.wait(work.toList());
+    await directory.delete(recursive: true);
+  }
 }

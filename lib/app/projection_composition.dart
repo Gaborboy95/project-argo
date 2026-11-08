@@ -201,6 +201,10 @@ Future<ProjectionService> registerProjectionServices({
           '${environment['XDG_RUNTIME_DIR']}/project-argo/carplay-settings.sock',
       selectedMicrophone: () =>
           connectivity?.connectivity.voice?['selected'] as String?,
+      selectedAudioOutput: () {
+        final audio = services.get<AudioService>().current;
+        return audio.backendAvailable ? audio.selectedOutput : null;
+      },
     );
     services.register<CarPlaySettingsService>(carPlaySettings);
     lifecycle.registerShutdown(

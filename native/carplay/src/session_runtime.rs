@@ -64,7 +64,7 @@ impl Progress {
             Self::WaitingPhone => "Waiting for iPhone",
             Self::Connecting => "Connecting to iPhone",
             Self::Authenticating => "Authenticating iPhone",
-            Self::AwaitingPermission => "Waiting for Use CarPlay approval on iPhone",
+            Self::AwaitingPermission => "Waiting for iPhone CarPlay availability",
             Self::ConnectingAirPlay => "Connecting CarPlay video",
             Self::Connected => "Connected",
             Self::Retrying => "Retrying wireless CarPlay",
@@ -825,8 +825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_watch_reports_authentication_and_human_approval_before_any_airplay_connection()
-    {
+    async fn runtime_watch_reports_authentication_and_availability_before_any_airplay_connection() {
         let (fixture, owner) = Fixture::owner().await;
         let (progress, mut observed) = watch::channel(Progress::WaitingPhone);
         let session = owner
@@ -866,6 +865,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+            if state == wired::State::WaitingForAvailability {
+                assert_eq!(
+                    observed.borrow().label(),
+                    "Waiting for iPhone CarPlay availability"
+                );
+            }
         }
         stop.send_replace(true);
         assert!(!running.await.unwrap().unwrap());
