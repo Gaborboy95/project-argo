@@ -298,12 +298,23 @@ impl Control {
                 if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
                     return Err(io::Error::other("invalid gain"));
                 }
+                let information = self.information.borrow();
+                let stream = information
+                    .audio
+                    .iter()
+                    .find(|stream| stream.connection == connection)
+                    .ok_or_else(|| io::Error::other("unknown audio stream"))?;
+                // Entertainment selection owns media gain independently of
+                // the displayed projection. Other audio keeps its existing
+                // presentation policy; a numeric connection alone cannot
+                // claim the media exception.
+                let allowed = presentation.active || stream.category == "media";
                 let connection = connection
                     .parse()
                     .map_err(|_| io::Error::other("invalid audio stream"))?;
                 self.command(Command::AudioGain {
                     connection,
-                    gain: if presentation.active { gain } else { 0.0 },
+                    gain: if allowed { gain } else { 0.0 },
                 })?;
             }
             Request::Disconnect { .. } => {
@@ -437,6 +448,189 @@ mod tests {
             phase,
             x: 0.5,
             y: 0.5,
+        }
+    }
+
+    fn audio_stream(connection: &str, category: &str) -> crate::protocol::receiver::AudioInfo {
+        crate::protocol::receiver::AudioInfo {
+            connection: connection.into(),
+            category: category.into(),
+            rate: 48000,
+            channels: 2,
+            active: true,
+            #[cfg(feature = "linux-audio")]
+            metrics: Default::default(),
+        }
+    }
+
+    fn gain(session: u64, connection: &str, gain: f64) -> Request {
+        Request::Gain {
+            session,
+            connection: connection.into(),
+            gain,
+        }
+    }
+
+    #[tokio::test]
+    async fn reported_media_gain_does_not_require_video_ownership() {
+        let (mut control, mut commands) = fixture(4);
+        control.information = watch::channel(SessionInfo {
+            recorded: true,
+            audio_available: true,
+            audio: vec![audio_stream("41", "media")],
+            ..Default::default()
+        })
+        .1;
+        control.request(gain(7, "41", 0.625)).await.unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::AudioGain {
+                connection: 41,
+                gain: 0.625
+            })
+        ));
+        let state = control.presentation.lock().await;
+        assert!(!state.active && !state.visible);
+        assert_eq!(state.revision, 0);
+        assert!(state.pointers.is_empty());
+        drop(state);
+        assert!(control.request(touch(Phase::Down)).await.is_err());
+        assert!(commands.try_recv().is_err());
+        assert!(!*control.disconnect.borrow());
+    }
+
+    #[tokio::test]
+    async fn non_media_gain_keeps_presentation_policy_and_uses_current_category() {
+        let (mut control, mut commands) = fixture(4);
+        let (information, _) = watch::channel(SessionInfo {
+            recorded: true,
+            audio: vec![audio_stream("41", "media")],
+            ..Default::default()
+        });
+        control.information = information.subscribe();
+        for category in [
+            "default",
+            "telephony",
+            "speechRecognition",
+            "alert",
+            "compatibility",
+        ] {
+            information.send_modify(|info| info.audio[0].category = category.into());
+            control.request(gain(7, "41", 0.75)).await.unwrap();
+            assert!(matches!(
+                commands.recv().await,
+                Some(Command::AudioGain {
+                    connection: 41,
+                    gain: 0.0
+                })
+            ));
+        }
+        control
+            .request(Request::Activate { session: 7 })
+            .await
+            .unwrap();
+        assert!(matches!(commands.recv().await, Some(Command::Keyframe)));
+        control.request(gain(7, "41", 0.75)).await.unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::AudioGain {
+                connection: 41,
+                gain: 0.75
+            })
+        ));
+        control
+            .request(Request::Visibility {
+                session: 7,
+                visible: false,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::ReleaseTouches)
+        ));
+        information.send_modify(|info| info.audio[0].category = "media".into());
+        control.request(gain(7, "41", 1.0)).await.unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::AudioGain {
+                connection: 41,
+                gain: 1.0
+            })
+        ));
+        assert!(control.request(touch(Phase::Down)).await.is_err());
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn gain_rejects_stale_ended_unknown_and_invalid_requests() {
+        let (mut control, mut commands) = fixture(4);
+        let (information, _) = watch::channel(SessionInfo {
+            recorded: true,
+            audio: vec![audio_stream("41", "media")],
+            ..Default::default()
+        });
+        control.information = information.subscribe();
+        for request in [
+            gain(6, "41", 1.0),
+            gain(7, "42", 1.0),
+            gain(7, "+41", 1.0),
+            gain(7, "41", -0.1),
+            gain(7, "41", 1.1),
+            gain(7, "41", f64::NAN),
+            gain(7, "41", f64::INFINITY),
+        ] {
+            assert!(control.request(request).await.is_err());
+            assert!(commands.try_recv().is_err());
+            assert!(!*control.disconnect.borrow());
+        }
+        information.send_modify(|info| info.audio.clear());
+        assert!(control.request(gain(7, "41", 1.0)).await.is_err());
+        assert!(commands.try_recv().is_err());
+        information.send_modify(|info| info.audio.push(audio_stream("41", "media")));
+        control
+            .request(Request::Disconnect { session: 7 })
+            .await
+            .unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::ReleaseTouches)
+        ));
+        assert!(control.request(gain(7, "41", 1.0)).await.is_err());
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejected_media_gain_does_not_mutate_presentation_or_end_session() {
+        for closed in [false, true] {
+            let (mut control, mut commands) = fixture(1);
+            control.information = watch::channel(SessionInfo {
+                audio: vec![audio_stream("41", "media")],
+                ..Default::default()
+            })
+            .1;
+            control.commands.try_send(Command::Night(false)).unwrap();
+            if closed {
+                commands.close();
+            }
+            assert!(control.request(gain(7, "41", 1.0)).await.is_err());
+            assert!(!*control.disconnect.borrow());
+            let state = control.presentation.lock().await;
+            assert!(!state.active && !state.visible);
+            assert_eq!(state.revision, 0);
+            drop(state);
+            assert!(matches!(commands.recv().await, Some(Command::Night(false))));
+            assert!(commands.try_recv().is_err());
+            if !closed {
+                control.request(gain(7, "41", 1.0)).await.unwrap();
+                assert!(matches!(
+                    commands.recv().await,
+                    Some(Command::AudioGain {
+                        connection: 41,
+                        gain: 1.0
+                    })
+                ));
+            }
         }
     }
 

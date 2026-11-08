@@ -352,13 +352,12 @@ fn info(
     audio: bool,
     microphone: bool,
 ) -> Value {
-    // Native UI initially owns the screen, but no native audio is playing.
-    // Do not permanently take mainAudio on startup. Resource ownership follows
-    // actual use: https://developer.apple.com/videos/play/wwdc2016/723/.
+    // Establish initial resources using LIVI's Take/Anytime declaration.
+    // Runtime handover is a separate Untake request without take constraints.
     let resources = [1, 2].map(|id| {
         dict([
             ("resourceID", number(id)),
-            ("transferType", number(if id == 2 { 2 } else { 1 })),
+            ("transferType", number(1)),
             ("transferPriority", number(100)),
             ("takeConstraint", number(100)),
             ("borrowConstraint", number(100)),
@@ -1495,6 +1494,30 @@ mod tests {
     }
 
     #[test]
+    fn initial_resources_use_take_with_permissive_constraints() {
+        let capabilities = info(&display(), "fixture", DeviceIdentity::Pairing, true, false);
+        let modes = capabilities.as_dictionary().unwrap()["modes"]
+            .as_dictionary()
+            .unwrap();
+        let resources = modes["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 2);
+        for (resource, id) in resources.iter().zip([1, 2]) {
+            let resource = resource.as_dictionary().unwrap();
+            assert_eq!(resource.len(), 6);
+            assert_eq!(uint(resource, "resourceID").unwrap(), id);
+            assert_eq!(uint(resource, "transferType").unwrap(), 1);
+            for key in [
+                "transferPriority",
+                "takeConstraint",
+                "borrowConstraint",
+                "unborrowConstraint",
+            ] {
+                assert_eq!(uint(resource, key).unwrap(), 100, "{key}");
+            }
+        }
+    }
+
+    #[test]
     fn output_capabilities_advertise_only_implemented_formats() {
         let identity = Identity::generate("fixture".into()).unwrap();
         let disabled = info(
@@ -1857,7 +1880,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn media_hid_is_advertised_and_encrypted_pulses_release_every_button() {
+    async fn encrypted_events_release_media_buttons_and_audio_without_take_constraints() {
         timeout(Duration::from_secs(3), async {
             let advertised = info(&display(), "fixture", DeviceIdentity::Pairing, false, false);
             let devices = advertised.as_dictionary().unwrap()["hidDevices"]
@@ -1911,6 +1934,24 @@ mod tests {
                     assert_eq!(payload["hidReport"].as_data(), Some([expected].as_slice()));
                 }
             }
+            commands.send(Command::ReleaseAudio).await.unwrap();
+            let mut header = [0; 2];
+            phone.read_exact(&mut header).await.unwrap();
+            let mut frame = vec![0; u16::from_le_bytes(header) as usize + 18];
+            frame[..2].copy_from_slice(&header);
+            phone.read_exact(&mut frame[2..]).await.unwrap();
+            let plain = receiver.decrypt(&frame).unwrap();
+            let boundary = plain.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let payload = parse(&plain[boundary..]).unwrap();
+            assert_eq!(payload["type"].as_string(), Some("changeModes"));
+            let params = payload["params"].as_dictionary().unwrap();
+            assert_eq!(params.len(), 1);
+            let resources = params["resources"].as_array().unwrap();
+            assert_eq!(resources.len(), 1);
+            let resource = resources[0].as_dictionary().unwrap();
+            assert_eq!(resource.len(), 2);
+            assert_eq!(uint(resource, "resourceID").unwrap(), 2);
+            assert_eq!(uint(resource, "transferType").unwrap(), 2);
             drop(phone);
             let _ = task.await;
             assert!(!state.borrow().media_commands);
