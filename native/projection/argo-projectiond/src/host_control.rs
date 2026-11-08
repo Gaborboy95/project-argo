@@ -19,6 +19,7 @@ pub enum Command {
     Disconnect(String),
     Activate(String),
     Touch(String, u16, u8, f32, f32),
+    Button(String, u64, bool),
     Visibility(String, bool),
     Gain(String, String, f32),
     MediaKey {
@@ -192,6 +193,26 @@ impl HostControl {
                 reader.f32().ok_or("missing x")?,
                 reader.f32().ok_or("missing y")?,
             ),
+            24 => {
+                // ProjectionInputButton indexes are stable; v8 adds discrete
+                // Play/Pause after the existing button values.
+                // These commands are delivered through AA's input channel,
+                // independently of Bluetooth AVRCP availability.
+                let code = match reader.u8() {
+                    Some(7) => 85,   // playPause
+                    Some(8) => 87,   // next
+                    Some(9) => 88,   // previous
+                    Some(13) => 126, // play
+                    Some(14) => 127, // pause
+                    _ => return Err("unsupported Android Auto playback button".into()),
+                };
+                let pressed = match reader.u8() {
+                    Some(0) => false,
+                    Some(1) => true,
+                    _ => return Err("invalid playback button state".into()),
+                };
+                Command::Button(target, code, pressed)
+            }
             26 => Command::Visibility(
                 target,
                 match reader.u8() {
@@ -240,5 +261,65 @@ impl Drop for SessionSelection {
                 config.active = None;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::PayloadWriter;
+
+    #[test]
+    fn playback_button_ipc_is_validated_and_keeps_its_session_and_edge() {
+        let host = HostControl::default();
+        let mut received = host.commands.subscribe();
+        for (button, expected) in [(7, 85), (8, 87), (9, 88), (13, 126), (14, 127)] {
+            for pressed in [0, 1] {
+                let mut payload = PayloadWriter::default();
+                payload.string("aa-session:current").unwrap();
+                payload.u8(button);
+                payload.u8(pressed);
+                host.command(&Message {
+                    kind: 24,
+                    payload: payload.finish(),
+                })
+                .unwrap();
+                let Command::Button(session, code, down) = received.try_recv().unwrap() else {
+                    panic!("not a button")
+                };
+                assert_eq!(session, "aa-session:current");
+                assert_eq!(code, expected);
+                assert_eq!(down, pressed == 1);
+            }
+        }
+        for (button, pressed, trailing) in [(255, 0, false), (7, 2, false), (7, 1, true)] {
+            let mut payload = PayloadWriter::default();
+            payload.string("aa-session:current").unwrap();
+            payload.u8(button);
+            payload.u8(pressed);
+            if trailing {
+                payload.u8(0);
+            }
+            assert!(
+                host.command(&Message {
+                    kind: 24,
+                    payload: payload.finish()
+                })
+                .is_err()
+            );
+            assert!(received.try_recv().is_err());
+        }
+        // Requests are not retained for a later session subscriber.
+        drop(received);
+        let mut payload = PayloadWriter::default();
+        payload.string("obsolete").unwrap();
+        payload.u8(7);
+        payload.u8(1);
+        host.command(&Message {
+            kind: 24,
+            payload: payload.finish(),
+        })
+        .unwrap();
+        assert!(host.commands.subscribe().try_recv().is_err());
     }
 }

@@ -146,19 +146,14 @@ impl Bluetooth {
                 if devices.len() >= 64 {
                     break;
                 }
+                let uuids = d.uuids().await.unwrap_or_default().unwrap_or_default();
                 devices.push(Device {
                     id: format!("{name}/{address}"),
                     name: d.alias().await.unwrap_or_else(|_| address.to_string()),
                     paired: d.is_paired().await.unwrap_or(false),
                     connected: d.is_connected().await.unwrap_or(false),
-                    protocols: protocols(
-                        d.uuids()
-                            .await
-                            .unwrap_or_default()
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|u| u.to_string()),
-                    ),
+                    protocols: protocols(uuids.iter().map(|u| u.to_string())),
+                    audio_source: audio_source(uuids.iter().map(|u| u.to_string())),
                 });
             }
         }
@@ -226,6 +221,12 @@ fn protocols(uuids: impl IntoIterator<Item = String>) -> Vec<&'static str> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+fn audio_source(uuids: impl IntoIterator<Item = String>) -> bool {
+    uuids
+        .into_iter()
+        .any(|uuid| uuid.eq_ignore_ascii_case("0000110a-0000-1000-8000-00805f9b34fb"))
 }
 
 type Pending = Arc<Mutex<Option<(u64, oneshot::Sender<bool>)>>>;
@@ -344,6 +345,29 @@ async fn request_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_source_requires_positive_a2dp_source_not_headset_sink_or_avrcp() {
+        assert!(audio_source(
+            ["0000110A-0000-1000-8000-00805F9B34FB".into()]
+        ));
+        assert!(!audio_source([
+            "0000110b-0000-1000-8000-00805f9b34fb".into()
+        ]));
+        assert!(!audio_source([
+            "0000110e-0000-1000-8000-00805f9b34fb".into()
+        ]));
+        assert!(!audio_source(Vec::new()));
+        let phone = Device {
+            audio_source: true,
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(phone).unwrap()["audio_source"], true);
+        assert_eq!(
+            serde_json::to_value(Device::default()).unwrap()["audio_source"],
+            false
+        );
+    }
 
     #[test]
     fn phone_protocols_require_positive_service_capabilities() {

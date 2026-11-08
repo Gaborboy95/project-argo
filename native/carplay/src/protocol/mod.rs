@@ -13,6 +13,7 @@ pub mod csm;
 pub mod iap2;
 #[cfg(all(feature = "linux-usb", target_os = "linux"))]
 pub mod ncm;
+pub mod now_playing;
 #[cfg(feature = "airplay")]
 pub mod pairing;
 #[cfg(feature = "airplay")]

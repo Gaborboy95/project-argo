@@ -141,7 +141,7 @@ A camera-capable bundle includes both `bin/argo-camerad` and
 `lib/libargo_camera_view.so`, recorded as `camera_contract=1`. The ordinary bundle
 hash manifest covers both. `argoctl` accepts older releases with neither asset,
 but rejects partial pairs or mismatched contracts. Camera absence does not fail
-application startup. Projection remains IPC7; camera control/creation/ring are v1.
+application startup. Projection remains IPC8; camera control/creation/ring are v1.
 
 After building the changed Flutter application into a fresh bundle using the
 [normal build workflow](../../docs/setup.md#shutdown-updates-and-rollback), add these camera assets

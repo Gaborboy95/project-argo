@@ -14,6 +14,14 @@ pub struct Metadata {
     pub application: Option<String>,
     pub position_ms: Option<u64>,
     pub duration_ms: Option<u64>,
+    pub playlist: Option<String>,
+    pub shuffle: Option<bool>,
+    pub repeat: Option<bool>,
+    pub repeat_one: Option<bool>,
+    /// Raw signed AA rating. The protocol does not specify a star scale.
+    pub rating: Option<i32>,
+    /// Previous, Play, Pause, Next and Toggle (bits 0 through 4).
+    pub media_commands: u8,
     pub device_name: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
@@ -34,11 +42,16 @@ pub enum Update {
         album: Option<String>,
         artwork: Option<Vec<u8>>,
         duration_ms: Option<u64>,
+        playlist: Option<String>,
+        rating: Option<i32>,
     },
     Playback {
         state: Option<u8>,
         application: Option<String>,
         position_ms: Option<u64>,
+        shuffle: Option<bool>,
+        repeat: Option<bool>,
+        repeat_one: Option<bool>,
     },
     Phone {
         name: Option<String>,
@@ -48,6 +61,7 @@ pub enum Update {
         level: Option<u8>,
         critical: Option<bool>,
     },
+    MediaCommands(u8),
 }
 impl Snapshot {
     pub fn apply(&mut self, update: Update) -> bool {
@@ -60,6 +74,8 @@ impl Snapshot {
                 album,
                 artwork,
                 duration_ms,
+                playlist,
+                rating,
             } => {
                 // A track message replaces all descriptive fields. Artwork-only
                 // refreshes with identical text do not reset the position.
@@ -73,6 +89,8 @@ impl Snapshot {
                 d.artist = artist;
                 d.album = album;
                 d.duration_ms = duration_ms;
+                d.playlist = playlist;
+                d.rating = rating;
                 d.artwork = artwork.and_then(|bytes| {
                     if let Some(old) = &d.artwork
                         && old.matches(&bytes)
@@ -93,6 +111,9 @@ impl Snapshot {
                 state,
                 application,
                 position_ms,
+                shuffle,
+                repeat,
+                repeat_one,
             } => {
                 // Independent status patch. A changed application cannot retain
                 // the old application's track while awaiting new metadata.
@@ -104,6 +125,11 @@ impl Snapshot {
                         d.artwork = None;
                         d.position_ms = None;
                         d.duration_ms = None;
+                        d.playlist = None;
+                        d.rating = None;
+                        d.shuffle = None;
+                        d.repeat = None;
+                        d.repeat_one = None;
                     }
                     d.application = Some(app);
                 }
@@ -112,6 +138,15 @@ impl Snapshot {
                 }
                 if let Some(position) = position_ms {
                     d.position_ms = Some(position);
+                }
+                if let Some(shuffle) = shuffle {
+                    d.shuffle = Some(shuffle);
+                }
+                if let Some(repeat) = repeat {
+                    d.repeat = Some(repeat);
+                }
+                if let Some(repeat_one) = repeat_one {
+                    d.repeat_one = Some(repeat_one);
                 }
                 d.media_received = true;
             }
@@ -128,6 +163,7 @@ impl Snapshot {
                     d.critical = Some(critical);
                 }
             }
+            Update::MediaCommands(commands) => d.media_commands = commands,
         }
         if self.data == before {
             return false;
@@ -177,6 +213,21 @@ impl Snapshot {
             Some(true) => 2,
         });
         optional_string(&mut w, &d.artwork.as_ref().map(|a| a.path()))?;
+        // IPC v8 extension: playlist, independent reported modes, raw rating,
+        // and capabilities of the negotiated AA input channel.
+        optional_string(&mut w, &d.playlist)?;
+        for value in [d.shuffle, d.repeat, d.repeat_one] {
+            w.u8(match value {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            });
+        }
+        w.u8(u8::from(d.rating.is_some()));
+        if let Some(rating) = d.rating {
+            w.u32(rating as u32);
+        }
+        w.u8(d.media_commands);
         Ok(Message {
             kind: 11,
             payload: w.finish(),
@@ -271,6 +322,14 @@ pub fn parse(channel: u8, id: u16, body: &[u8]) -> Result<Update, String> {
             _ => Err("invalid number".into()),
         }
     };
+    let boolean = |key| -> Result<Option<bool>, String> {
+        match number(key)? {
+            None => Ok(None),
+            Some(0) => Ok(Some(false)),
+            Some(1) => Ok(Some(true)),
+            _ => Err("invalid boolean".into()),
+        }
+    };
     match (channel, id) {
         (CHANNEL, 0x8003) => Ok(Update::Track {
             title: text(1)?,
@@ -283,17 +342,28 @@ pub fn parse(channel: u8, id: u16, body: &[u8]) -> Result<Update, String> {
             duration_ms: number(6)?
                 .filter(|v| *v <= u64::from(u32::MAX))
                 .map(|v| v * 1000),
+            playlist: text(5)?,
+            rating: match number(7)? {
+                None => None,
+                Some(value) if value <= u64::from(u32::MAX) || value >= 0xffff_ffff_8000_0000 => {
+                    Some(value as u32 as i32)
+                }
+                _ => return Err("invalid rating".into()),
+            },
         }),
         (CHANNEL, 0x8001) => {
             let state = number(1)?;
             let position = number(3)?;
-            if state.is_some_and(|s| s > 4) || position.is_some_and(|p| p > u64::from(u32::MAX)) {
+            if position.is_some_and(|p| p > u64::from(u32::MAX)) {
                 return Err("invalid playback value".into());
             }
             Ok(Update::Playback {
-                state: state.map(|s| s as u8),
+                state: state.map(|s| if matches!(s, 1..=3) { s as u8 } else { 0 }),
                 application: text(2)?,
                 position_ms: position.map(|p| p * 1000),
+                shuffle: boolean(4)?,
+                repeat: boolean(5)?,
+                repeat_one: boolean(6)?,
             })
         }
         (0, 5) => Ok(Update::Phone {
@@ -319,6 +389,122 @@ pub fn parse(channel: u8, id: u16, body: &[u8]) -> Result<Update, String> {
 mod tests {
     use super::*;
     use crate::aa_channels::{Channels, DisplayConfig, Effect, Proto};
+    #[test]
+    fn reported_modes_playlist_and_rating_survive_patches_but_not_an_app_replacement() {
+        let mut snapshot = Snapshot::default();
+        snapshot.apply(Update::MediaCommands(31));
+        assert!(!snapshot.data.media_received);
+        snapshot.apply(
+            parse(
+                CHANNEL,
+                0x8003,
+                &Proto::default()
+                    .bytes(1, b"Track")
+                    .bytes(5, b"Playlist")
+                    .number(6, 123)
+                    .number(7, u64::MAX)
+                    .finish(),
+            )
+            .unwrap(),
+        );
+        snapshot.apply(
+            parse(
+                CHANNEL,
+                0x8001,
+                &Proto::default()
+                    .number(1, 2)
+                    .bytes(2, b"Player")
+                    .number(3, 42)
+                    .number(4, 1)
+                    .number(5, 0)
+                    .number(6, 1)
+                    .finish(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(snapshot.data.playlist.as_deref(), Some("Playlist"));
+        assert_eq!(snapshot.data.rating, Some(-1));
+        assert_eq!(
+            (
+                snapshot.data.shuffle,
+                snapshot.data.repeat,
+                snapshot.data.repeat_one
+            ),
+            (Some(true), Some(false), Some(true))
+        );
+        let mut tail = PayloadWriter::default();
+        optional_string(&mut tail, &Some("Playlist".into())).unwrap();
+        for flag in [2, 1, 2, 1] {
+            tail.u8(flag);
+        }
+        tail.u32(u32::MAX);
+        tail.u8(31);
+        assert!(
+            snapshot
+                .message("s", "d")
+                .unwrap()
+                .payload
+                .ends_with(&tail.finish())
+        );
+        snapshot.apply(parse(CHANNEL, 0x8001, &Proto::default().number(3, 43).finish()).unwrap());
+        assert_eq!(snapshot.data.position_ms, Some(43000));
+        assert_eq!(snapshot.data.shuffle, Some(true));
+        snapshot.apply(
+            parse(
+                CHANNEL,
+                0x8001,
+                &Proto::default().bytes(2, b"Other player").finish(),
+            )
+            .unwrap(),
+        );
+        assert_eq!((snapshot.data.playlist, snapshot.data.rating), (None, None));
+        assert_eq!(
+            (
+                snapshot.data.shuffle,
+                snapshot.data.repeat,
+                snapshot.data.repeat_one
+            ),
+            (None, None, None)
+        );
+        assert!(snapshot.data.title.is_none());
+        assert_eq!(snapshot.data.media_commands, 31);
+    }
+
+    #[test]
+    fn invalid_mode_values_and_oversized_fields_do_not_replace_valid_metadata() {
+        assert!(parse(CHANNEL, 0x8001, &Proto::default().number(4, 2).finish()).is_err());
+        assert!(
+            parse(
+                CHANNEL,
+                0x8003,
+                &Proto::default().bytes(5, &[b'p'; 1025]).finish()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                CHANNEL,
+                0x8003,
+                &Proto::default().number(7, u64::from(u32::MAX) + 1).finish()
+            )
+            .is_err()
+        );
+        let Update::Playback { state, .. } =
+            parse(CHANNEL, 0x8001, &Proto::default().number(1, 99).finish()).unwrap()
+        else {
+            panic!("not playback")
+        };
+        assert_eq!(state, Some(0));
+        let Update::Track { rating, .. } = parse(
+            CHANNEL,
+            0x8003,
+            &Proto::default().number(7, u64::from(u32::MAX)).finish(),
+        )
+        .unwrap() else {
+            panic!("not track")
+        };
+        assert_eq!(rating, Some(-1));
+    }
     #[test]
     fn aa_artwork_and_duration_follow_track_replacement_and_session_removal() {
         let mut png = vec![0; 33];
@@ -480,7 +666,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             actual,
-            include_str!("../../../../test/fixtures/projection/ipc_v7_metadata.hex").trim()
+            include_str!("../../../../test/fixtures/projection/ipc_v8_metadata.hex").trim()
         );
         let initial =
             crate::daemon_state::snapshot_messages(&Default::default(), &current).unwrap();

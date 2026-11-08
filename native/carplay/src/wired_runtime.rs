@@ -158,16 +158,23 @@ where
             let device_id = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
             let wired_link = link.clone();
             session
-                .run_with_options(
+                .run_with_metadata(
                     options,
                     link,
                     device_id,
                     SessionTransport::Usb,
                     stop,
-                    move |cancel, state| async move {
-                        wired::run(carkit, &wired_link, configuration, cancel, state)
-                            .await
-                            .map_err(|e| e.to_string())
+                    move |cancel, state, metadata| async move {
+                        wired::run_with_updates(
+                            carkit,
+                            &wired_link,
+                            configuration,
+                            cancel,
+                            state,
+                            Some(metadata),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())
                     },
                     async { format!("USB network ended: {:?}", bridge.ended().await) },
                 )

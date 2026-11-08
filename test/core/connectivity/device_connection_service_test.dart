@@ -282,6 +282,69 @@ void main() {
     },
   );
 
+  test('Bluetooth source phones connect their media receiver while headsets remain output devices', () async {
+    for (final audioSource in [true, false]) {
+      final fixture = await _Fixture.create(
+        selected: _other,
+        phones: [_phone(_otherEndpoint, audioSource: audioSource)],
+      );
+      await fixture.hub.selectProtocol(_other, null);
+      await fixture.hub.connect(_other);
+      expect(
+        fixture.calls.where((call) => call.startsWith('aa.deviceConnect:')),
+        ['aa.deviceConnect:$_otherEndpoint'],
+      );
+      expect(
+        fixture.calls.where((call) => call.startsWith('aa.musicConnect:')),
+        audioSource ? ['aa.musicConnect:$_otherEndpoint'] : isEmpty,
+      );
+      expect(fixture.hub.devices.single.audioSource, audioSource);
+      expect(fixture.hub.devices.single.mediaConnected, audioSource);
+      expect(fixture.hub.error, isNull);
+      await fixture.close();
+    }
+  });
+
+  test('a grouped phone routes music only through an endpoint with positive source capability', () async {
+    final fixture = await _Fixture.create(
+      selected: _other,
+      phones: [
+        _phone(_otherEndpoint),
+        _phone('hci1/$_otherAddress', audioSource: true),
+      ],
+    );
+    addTearDown(fixture.close);
+    await fixture.hub.selectProtocol(_other, null);
+    await fixture.hub.connect(_other);
+    expect(fixture.calls.where((call) => call.startsWith('aa.musicConnect:')), [
+      'aa.musicConnect:hci1/$_otherAddress',
+    ]);
+    expect(fixture.hub.devices, hasLength(1));
+    expect(fixture.hub.devices.single.mediaConnected, isTrue);
+    expect(fixture.hub.error, isNull);
+  });
+
+  test(
+    'a rejected Bluetooth receiver connection remains a visible media error',
+    () async {
+      final fixture = await _Fixture.create(
+        selected: _other,
+        phones: [_phone(_otherEndpoint, audioSource: true)],
+      );
+      addTearDown(fixture.close);
+      fixture.backend.musicFailure = 'Phone audio receiver is unavailable';
+      await fixture.hub.selectProtocol(_other, null);
+      await fixture.hub.connect(_other);
+      expect(fixture.calls, contains('aa.musicConnect:$_otherEndpoint'));
+      expect(fixture.hub.devices.single.mediaConnected, isFalse);
+      expect(
+        fixture.hub.error,
+        contains('Phone audio receiver is unavailable'),
+      );
+      expect(fixture.hub.busy, isFalse);
+    },
+  );
+
   test(
     'a Bluetooth-only choice survives snapshots and uses device connection',
     () async {
@@ -647,6 +710,7 @@ ConnectivityDevice _phone(
   String endpoint, {
   ProjectionProtocol? protocol,
   bool connected = false,
+  bool audioSource = false,
 }) => ConnectivityDevice(
   endpoint,
   endpoint == _aaEndpoint
@@ -657,6 +721,7 @@ ConnectivityDevice _phone(
   true,
   connected,
   protocols: {?protocol},
+  audioSource: audioSource,
 );
 
 class _Fixture {
@@ -744,6 +809,12 @@ class _Connectivity implements ConnectivityService {
       cleanupError = '';
   bool autoStop = true, autoForget = true, wirelessReady = true;
   Completer<void>? selectionGate;
+  String? musicFailure;
+  Map<String, dynamic> music = {
+    'phase': 'disconnected',
+    'device': '',
+    'selected': 'projection',
+  };
   @override
   ConnectivitySnapshot get connectivity => ConnectivitySnapshot(
     available: true,
@@ -759,6 +830,7 @@ class _Connectivity implements ConnectivityService {
       ConnectivityRadio('hci1', 'Link'),
     ],
     devices: phones,
+    music: music,
   );
   @override
   Stream<ConnectivitySnapshot> get connectivityChanges => events.stream;
@@ -778,6 +850,7 @@ class _Connectivity implements ConnectivityService {
             phone.paired,
             value,
             protocols: phone.protocols,
+            audioSource: phone.audioSource,
           )
         else
           phone,
@@ -808,9 +881,28 @@ class _Connectivity implements ConnectivityService {
         phase = autoStop ? 'disconnected' : 'cleanup';
         publish();
       case 'deviceDisconnect':
+        if (music['device'] == target) {
+          music = {'phase': 'disconnected', 'device': target, 'selected': ''};
+        }
         setConnected(target, false);
       case 'deviceConnect':
         setConnected(target, true);
+      case 'musicConnect':
+        final failure =
+            musicFailure ??
+            (target.startsWith('$adapter/')
+                ? null
+                : 'Choose this device on the selected adapter');
+        music = {
+          'phase': failure == null ? 'connected' : 'failed',
+          'operation': prompt,
+          'device': target,
+          'selected': 'bluetooth',
+          'error': ?failure,
+          if (failure == null)
+            'source': {'id': 'bluetooth:$target', 'name': 'Fixture music'},
+        };
+        publish();
       case 'forget':
         if (autoForget) removeDevice(target);
     }

@@ -626,6 +626,12 @@ async fn run_engine(
                         None
                     },
                     Command::Touch(target,pointer,phase,x,y) if target==id=>channels.touch(pointer,phase,x,y,input_timestamp_us()?)?,
+                    Command::Button(target,code,pressed) if target==id=>{
+                        match channels.button(code,pressed,input_timestamp_us()?) {
+                            Ok(reply)=>Some(reply),
+                            Err(error)=>{crate::daemon_log!(Debug,"aa-input","Playback button unavailable: {error}");None},
+                        }
+                    },
                     Command::Activate(target) if target==id=>{crate::daemon_log!(Debug,"aa-focus","host activation requested");channels.set_video_requested(true);awaiting_video=true;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,1).number(2,1).finish()))},
                     Command::Visibility(target,visible) if target==format!("{id}:main")=>{crate::daemon_log!(Debug,"aa-focus","host visibility requested: {visible}");channels.set_video_requested(visible);awaiting_video=visible;set_visibility(&state,&id,false);Some(Reply::new(3,0x8008,Proto::default().number(1,if visible{1}else{2}).number(2,1).finish()))},
                     Command::Gain(target,stream,gain) if target==id=>{let channel=match stream.as_str(){"media"=>4,"speech"=>5,"system"=>6,_=>return Err("unknown native audio stream".into())};if channel==4 {media_gain=gain as f64;}

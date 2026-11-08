@@ -43,13 +43,13 @@ connecting music; merely writing the file does not change an already-running
 WirePlumber configuration.
 
 1. Launch the matched daemon and application using [the normal workflow](setup.md#graphical-session-deployment).
-2. Choose **Bluetooth adapter (all tasks)** under Settings → Devices,
+2. Choose the Bluetooth controller in Settings → Android Auto,
    then pair/confirm the actual phone. Pairing, wireless AA and music share this
    adapter. The saved hardware address survives `hciN` renumbering; an absent radio
    does not select a different card. Stop discovery and disconnect wireless/music
    before changing adapters. Bonds on the other radio remain in BlueZ.
-3. In Media, select the paired music phone and press **Connect music**.
-4. Select its Bluetooth entertainment source. Start playback with **play** or on
+3. In Devices, choose **Bluetooth only** for the paired music phone and press **Connect device**. A remote A2DP Source capability starts the media receiver; a headset/sink is not treated as a music phone.
+4. In Media, select its Bluetooth entertainment source. Start playback with **Play** or on
    the phone. Some phones instantiate their A2DP receiver only after first Play;
    selection can request that initial Play with AA entertainment already gated.
 5. Use the offered playback controls. Unsupported remote commands report an error
@@ -58,8 +58,7 @@ WirePlumber configuration.
 For Bluetooth-only operation set `ARGO_PROJECTION_BACKEND=disabled` in both launch
 terminals before starting the daemon/application. Identity exports can be unset;
 the launcher no longer requires them for shared connectivity. Identity remains
-mandatory on the daemon for actual AA projection. No boot-time music connection or
-startup auto-connect is enabled (see [configuration](configuration.md)).
+mandatory on the daemon for actual AA projection. Automatic startup is owned by the single selected device in Devices (see [configuration](configuration.md)); opening Media never starts a radio or connects a phone.
 
 ## Artwork and output volume
 
@@ -87,7 +86,7 @@ CarPlay file-transfer artwork is not an A2DP artwork mechanism.
 Artwork accepts bounded PNG/JPEG headers (at most 1 MiB encoded and 2048 pixels per
 side); the UI handles decode failures with a music placeholder. The daemon owns
 private runtime cache files, retiring them with their last metadata owner. A crash
-may leave files until the runtime directory is cleared at logout. IPC v7 carries
+may leave files until the runtime directory is cleared at logout. IPC v8 carries
 only an opaque local cache reference, never embedded image bytes or phone URLs.
 The UI rejects references outside the private cache pattern. Lua receives only
 `hasArtwork`, not filesystem paths, images or retrieval permissions.
@@ -117,16 +116,42 @@ links. A failed pause cannot leave music audible through those links. Before
 Bluetooth routing is created, the AA engine acknowledges that its media channel
 (channel 4) is gated. This gate multiplies the existing source gain and applies to
 newly opened media streams too; navigation/speech/system channels keep their normal
-focus and gain behavior. When the daemon advertises `music.projection_commands`,
-the AA source offers previous, next, play/resume and pause through the existing
-shared media command acknowledgement path. The daemon validates the exact source
-and live session, then sends media-key press/release reports on AA input channel 8.
-These commands work while presentation is suspended and do not request video focus.
-A two-second delivery deadline rejects queued stale commands; success means reports
-were written, not proof that a particular phone media app obeyed. Track skipping
-still depends on the phone app and its current queue. Older daemons omit the
-capability and retain metadata-only AA controls. IPC remains v7 with this optional
-connectivity field; use a matched release.
+focus and gain behavior. AA playback controls use the projection provider's
+own transport, not the Bluetooth player's executor. Multiplex resolves its public
+session identity back to the current native session. Input-channel binding
+publishes supported Previous/Play/Pause/Next/Play-pause controls independently of
+track metadata. The media-only buttons work with hidden or suspended video;
+touch, navigation and rotary input still require their visible input owner.
+The main player prefers Android's actual Play-pause toggle (85), as in current
+LIVI, while explicit Play (126) and Pause (127) remain available to callers.
+Success is delivery of the request, not proof a phone application obeyed; the UI
+changes playback state only when the phone reports it.
+
+IPC v8 adds playlist, shuffle, repeat, repeat-one, raw signed provider rating and
+a media-command capability mask to the existing AA metadata. The client and
+daemon must be upgraded together; v7 is rejected at the framing boundary. Rating
+is retained without guessing a star or thumbs scale. Track/application changes
+clear unrelated cached facts. Position is the last value reported by the phone;
+metadata receive time also changes for artwork and battery, so it is not used as
+a speculative playback clock.
+
+CarPlay publishes optional iAP2 Now Playing title, artist, album, album artist,
+genre, application/name identifiers, track identity, playback state and reported
+position/duration. Negotiated iAP2 file transfer supplies bounded PNG/JPEG artwork
+through the same private cache-reference boundary as AA. The receiver advertises
+a consumer-control HID device; controls appear only after RECORD and a live
+encrypted event channel. Play/Pause, explicit Play/Pause and Previous/Next send a
+complete HID press/release pulse without activating or showing video. Optional
+metadata or artwork failures do not tear down the media session. Power updates
+can report phone battery and external power; external power is not inferred to
+mean charging.
+
+Each media provider owns its selection and command handlers. Queued operations
+capture the provider lease, device and session; a replacement cannot inherit an
+old button press. Switching to Bluetooth first confirms that projection media
+gain is zero, while navigation, calls and system audio keep their normal policy.
+Switching back retires Bluetooth routing before restoring the selected projection
+media stream. Neither operation changes video focus or the native view.
 
 The independently encoded wire fields follow aasdk revision
 [`046b3b3`](https://github.com/f1xpl/aasdk/tree/046b3b381595509d0939fa84b14a90978f46ff63/aasdk_proto):
@@ -281,7 +306,7 @@ Forget, loss of the call connection and Quit clear the memory cache and stop own
 OBEX work. A private runtime directory holds the downloaded page only while it is
 processed; normal completion and cancellation remove it. Downloads are limited
 to 256 KiB per page and serialized entries to 16 KiB inside the existing bounded
-IPC7 control snapshot. Contacts are not published to Lua or diagnostic logs.
+IPC8 control snapshot. Contacts are not published to Lua or diagnostic logs.
 Daemon crashes can leave a private temporary directory under `$XDG_RUNTIME_DIR`;
 it contains personal data and can be removed after the daemon has stopped.
 Unconfirmed OBEX cleanup blocks further imports until daemon restart.
@@ -347,7 +372,7 @@ revision `1.4.2`; LIVI microphone channel/protobuf definitions at revision
 H.264 is the default offer. Set `ARGO_ANDROID_AUTO_HEVC=1` in the daemon terminal
 before launch to additionally offer HEVC/H.265. H.264 remains configuration index 0
 and HEVC index 1; Argo validates the phone's codec and configuration selection and
-reports it in the existing IPC7 video descriptor. The selected codec is fixed for the AA session, including stream stops and
+reports it in the existing IPC8 video descriptor. The selected codec is fixed for the AA session, including stream stops and
 presentation suspension. A different codec requires a new connection. This does not implement automatic reconnection in a different
 codec after rejection; disable the offer and start a new explicit connection to
 return to the H.264-only path.
@@ -390,7 +415,7 @@ unknown and unsupported commands are omitted. Pull down anywhere in the panel,
 including over a control, to collapse; small movement still permits a tap.
 Height follows the finger before release, compact/expanded content crossfades,
 and distance plus velocity chooses the final position.
-Apps → Media also opens the full Now Playing destination.
+Apps → Media opens the same Now Playing content. Both surfaces use large supported transport controls, a source picker, artwork, reported progress and optional playlist/mode/phone facts. Devices links open the shared physical-device hub; Media has no separate radio/profile connect or disconnect controls.
 
 The strip toggle and expanded panels are independent of AA Exit, which navigates
 to Media while retaining the session. Home resumes that session. Opening a panel
@@ -408,3 +433,13 @@ The collapsed floating surface overlays the extended projection View Area. Its s
 remains reserved in AA's Safe Area even when hidden, so toggling media never changes
 phone geometry or the native view. See [View Area and Safe Area](configuration.md#view-area-and-safe-area)
 for negotiation, manual insets and next-connection behavior.
+
+## Current media protocol references
+
+The media integration was reviewed against LIVI Rust revision
+[`34ae05e`](https://github.com/f-io/LIVI/tree/34ae05e14df68f12d06cde0589f27d6d5b449ddb).
+CarPlay references include its
+[consumer HID reports](https://github.com/f-io/LIVI/blob/34ae05e14df68f12d06cde0589f27d6d5b449ddb/native/crates/livi-cp/src/hid.rs)
+and [iAP2 Now Playing messages](https://github.com/f-io/LIVI/blob/34ae05e14df68f12d06cde0589f27d6d5b449ddb/native/crates/iap2-csm/src/messages/now_playing.rs).
+The AA implementation independently encodes protocol fields and key numbers;
+the GPL CarPlay component retains the LIVI notices and corresponding source.

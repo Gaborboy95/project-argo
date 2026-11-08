@@ -10,7 +10,17 @@ import '../../core/media/media_state.dart';
 /// Adapts daemon facts/acknowledgements. BlueZ objects and PCM stay in Linux.
 final class BluetoothMediaSource {
   BluetoothMediaSource(this.connectivity, this.media, {this.audio}) {
-    _provider = media.register('bluetooth');
+    _provider = media.register(
+      'bluetooth',
+      select: (source) async {
+        await beforeBluetoothSelection?.call();
+        await request('musicSelect', target: source.id);
+      },
+      execute: (source, command) => request(
+        'music${command[0].toUpperCase()}${command.substring(1)}',
+        target: source.id,
+      ),
+    );
     _audioTail =
         audio?.registerSource(
           AudioSource(id: 'bluetooth.music', role: AudioSourceRole.media),
@@ -18,23 +28,10 @@ final class BluetoothMediaSource {
         Future.value();
     _audioSubscription = audio?.changes.listen((_) => _sendGain());
     _subscription = connectivity.connectivityChanges.listen(_update);
-    media.select = (source) => request(
-      'musicSelect',
-      target: switch (source.kind) {
-        MediaSourceKind.bluetooth => source.id,
-        MediaSourceKind.androidAuto => 'projection',
-        _ => throw UnsupportedError(
-          'This media provider has no implemented audio routing',
-        ),
-      },
-    );
-    media.execute = (source, command) => request(
-      'music${command[0].toUpperCase()}${command.substring(1)}',
-      target: source.id,
-    );
     _update(connectivity.connectivity);
   }
   final ConnectivityService connectivity;
+  Future<void> Function()? beforeBluetoothSelection;
   final AudioService? audio;
   StreamSubscription<Object?>? _audioSubscription;
   Future<void> _audioTail = Future.value();
@@ -134,20 +131,29 @@ final class BluetoothMediaSource {
     }
     if (music != null) {
       final selected = music['selected'];
-      media.reflectSelection(
-        selected == 'bluetooth'
-            ? (source?['id'] as String?)
-            : selected == 'projection'
-            ? media.current.sources
+      final active = media.current.activeSource;
+      if (selected == 'bluetooth' && source?['id'] is String) {
+        media.reflectSelection(source!['id'] as String);
+      } else if (selected == 'projection') {
+        final currentProjection =
+            active != null &&
+            (active.kind == MediaSourceKind.androidAuto ||
+                active.kind == MediaSourceKind.carPlay);
+        final target = currentProjection
+            ? active
+            : media.current.sources
                   .where(
                     (s) =>
                         s.kind == MediaSourceKind.androidAuto ||
                         s.kind == MediaSourceKind.carPlay,
                   )
-                  .firstOrNull
-                  ?.id
-            : null,
-      );
+                  .firstOrNull;
+        // Waiting for the first phone metadata is not an explicit selection of
+        // silence. It must not suppress the projection provider's initial source.
+        if (target != null) media.reflectSelection(target.id);
+      } else if (active?.kind == MediaSourceKind.bluetooth) {
+        media.reflectSelection(null);
+      }
     }
   }
 

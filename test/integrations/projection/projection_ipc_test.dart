@@ -21,14 +21,14 @@ void main() {
     final old = const ProjectionIpcCodec().encode(
       const ProjectionIpcMessage(ProjectionIpcKind.hello),
     );
-    old[5] = 1;
+    old[5] = 7;
     expect(
       () => ProjectionIpcDecoder().add(old),
       throwsA(
         isA<FormatException>().having(
           (e) => e.message,
           'message',
-          contains('matching Argo/daemon IPC v7'),
+          contains('matching Argo/daemon IPC v8'),
         ),
       ),
     );

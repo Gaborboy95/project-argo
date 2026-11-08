@@ -3,7 +3,7 @@
 CarPlay's separate diagnostic/protocol crate builds with
 `cargo build --locked --offline --release --manifest-path native/carplay/Cargo.toml`.
 The [CarPlay runbook](../../docs/carplay.md) defines tests, optional usbmuxd library,
-Link checks and managed release integration. Wired phone sessions are implemented; wireless remains unfinished and new stabilization behavior still needs physical acceptance. Native ARPM/1 is separate from AA IPC7 and ARVW; see the
+Link checks and managed release integration. Wired and wireless phone sessions are implemented; new media behavior still needs physical acceptance. Native ARPM/1 is separate from AA IPC8 and ARVW; see the
 [encoded media contract](../../native/projection/argo-projection-view/README.md)
 for H.264/H.265 framing, color/range, limits and native tests. Rebuild the view in
 a fresh directory against matched IHS. No Engine/IHS dependency update is required.
@@ -115,14 +115,14 @@ Offline builds require cached locked dependencies. Resolve missing dependencies
 explicitly without updating the lockfile; do not silently upgrade the toolchain.
 Tests use OpenSSL for isolated memory-TLS fixtures, not production identity provisioning.
 
-Choose an existing compatible IPC v7 bundle and a **new, nonexistent** destination.
+Choose an existing compatible IPC v8 bundle and a **new, nonexistent** destination.
 ARGO_BASE_BUNDLE and ARGO_RELEASE below are shell recipe variables, not application
 configuration options.
 The working source bundle may remain running because its files are only read:
 
 ```bash
 set -euo pipefail
-: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v7 release directory}"
+: "${ARGO_BASE_BUNDLE:?Set an existing compatible IPC v8 release directory}"
 : "${ARGO_RELEASE:?Set a new absolute release directory}"
 test -d "$ARGO_BASE_BUNDLE"
 test ! -e "$ARGO_RELEASE"
@@ -140,8 +140,8 @@ Keep the previous bundle as rollback. Stop the previous processes before selecti
 the new bundle through the [shared launch workflow](../../docs/setup.md#graphical-session-deployment).
 No Engine, IHS, Flutter application or native-view rebuild is needed for this path.
 
-For application changes within IPC7, build a new application with `emb` and copy only
-unchanged compatible IPC7 native assets from the preserved bundle. For migration from IPC6 use the native-view build recipe below. Do not copy the old
+For application changes within IPC8, build a new application with `emb` and copy only
+unchanged compatible IPC8 native assets from the preserved bundle. For migration from IPC6 use the native-view build recipe below. Do not copy the old
 `libapp.so` or Flutter assets over the new build:
 
 ```bash
@@ -160,7 +160,7 @@ install -m 755 "$ARGO/tool/connectivity/run-release.sh" "$ARGO_RELEASE/run-relea
 ```
 
 Use the installed `emb` path from the next section. Verify the unchanged Engine,
-IHS/native-view and Lua/SQLite asset hashes against the source manifest. IPC7 requires a rebuilt native view with the ARVW creation contract: do not reuse
+IHS/native-view and Lua/SQLite asset hashes against the source manifest. IPC8 requires a rebuilt native view with the ARVW creation contract: do not reuse
 an IPC6 native-view library. Engine, IHS and Lua/SQLite may be reused when their
 recorded requirements match. The native video socket framing itself is unchanged.
 
@@ -331,7 +331,7 @@ media or AA identity is exposed to Lua.
 
 ## Negotiated View Area native contract
 
-IPC7 adds eight u16 configuration values: View Area then Safe Area, each in
+IPC7 introduced eight u16 configuration values, retained by IPC8: View Area then Safe Area, each in
 left/top/right/bottom order. The native platform view receives a 20-byte big-endian
 creation payload: `ARVW`, u32 version 1, then six u16 values for encoded width,
 height, left, top, right and bottom crop. The matched bundle manifest records
@@ -352,3 +352,20 @@ and its media UiConfig/Insets schemas at revision
 UiConfig: margins 1, content insets 2, stable content insets 3. Insets use
 **top, bottom, left, right** fields 1–4. Argo implements the wire contract
 independently; no LIVI code or credentials are included.
+
+## IPC8 media metadata tail
+
+IPC8 preserves the ARVW and native media contracts and extends metadata kind 11.
+After the existing optional artwork cache reference, it carries an optional
+playlist string; shuffle, repeat and repeat-one tri-state bytes (0 unknown,
+1 false, 2 true); a rating-presence byte and optional raw signed i32 bits in a
+u32; then a command bitmask (previous 1, play 2, pause 4, next 8, play-pause 16).
+Text and payload bounds remain unchanged. Rating is not interpreted as a scale.
+Input-channel binding can publish commands before track metadata. Application and
+daemon reject older framing versions; use a matched immutable release.
+
+Button kind 24 retains session string, button index and pressed byte. Play/pause
+is index 7; next/previous 8/9; explicit play/pause are appended as 13/14. Public
+Multiplex IDs are unwrapped before sending to the native writer. Media keys do
+not request video visibility/focus; the provider lease and live session still own
+which source may receive a control. The player updates only from reported state.

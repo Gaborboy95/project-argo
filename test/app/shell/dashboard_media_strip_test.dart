@@ -6,6 +6,77 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
+    'compact hardware play-pause remains a toggle until fresh phone state arrives',
+    (tester) async {
+      final media = CachedMediaSessionService();
+      final provider = media.register('phone');
+      provider.publish(1, [
+        const MediaSourceState(
+          id: 'phone',
+          deviceId: 'phone',
+          sessionId: 'session',
+          kind: MediaSourceKind.androidAuto,
+          details: MediaDetails(
+            title: 'Track',
+            playback: MediaPlaybackState.playing,
+          ),
+          commands: ['playPause'],
+          revision: 1,
+          updatedAtMs: 1,
+        ),
+      ]);
+      final commands = <String>[];
+      media.execute = (_, command) async => commands.add(command);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 96,
+                child: DashboardMediaStrip(media: media, scale: 1),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.byTooltip('pause'), findsNothing);
+      expect(find.byTooltip('play'), findsNothing);
+      await tester.tap(find.byTooltip('Play/pause'));
+      await tester.pumpAndSettle();
+      expect(commands, ['playPause']);
+      expect(
+        media.current.activeSource!.details.playback,
+        MediaPlaybackState.playing,
+      );
+      expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+      provider.publish(2, [
+        const MediaSourceState(
+          id: 'phone',
+          deviceId: 'phone',
+          sessionId: 'session',
+          kind: MediaSourceKind.androidAuto,
+          details: MediaDetails(
+            title: 'Track',
+            playback: MediaPlaybackState.unknown,
+          ),
+          commands: ['playPause'],
+          revision: 2,
+          updatedAtMs: 2,
+        ),
+      ]);
+      await tester.pump();
+      expect(find.byTooltip('Play/pause'), findsOneWidget);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+      expect(commands, ['playPause']);
+      await tester.pumpWidget(const SizedBox());
+      provider.close();
+      await tester.runAsync(media.close);
+    },
+  );
+
+  testWidgets(
     'compact player keeps readable metadata and full transport targets across dashboard sizes',
     (tester) async {
       tester.view.devicePixelRatio = 1;

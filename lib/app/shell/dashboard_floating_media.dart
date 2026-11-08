@@ -15,10 +15,12 @@ class DashboardFloatingMedia extends StatefulWidget {
     required this.onClose,
     required this.media,
     required this.scale,
+    this.onDevices,
   });
   final double collapsedHeight, expandedHeight, scale;
   final bool open;
   final VoidCallback onOpen, onClose;
+  final VoidCallback? onDevices;
   final MediaSessionService? media;
   @override
   State<DashboardFloatingMedia> createState() => _DashboardFloatingMediaState();
@@ -145,6 +147,7 @@ class _DashboardFloatingMediaState extends State<DashboardFloatingMedia>
                           media: widget.media,
                           scale: widget.scale,
                           expanded: true,
+                          onDevices: widget.onDevices,
                           onDismiss: () => _snap(false),
                         ),
                       ),

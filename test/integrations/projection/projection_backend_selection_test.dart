@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:argo/core/media/media_session_service.dart';
 import 'package:argo/core/projection/projection_service.dart';
+import 'package:argo/core/projection/projection_backend.dart';
+import 'package:argo/core/projection/multiplex_projection_backend.dart';
 import 'package:argo/core/projection/projection_models.dart';
 import 'package:argo/integrations/projection/projection_media_source.dart';
 import 'package:argo/integrations/bluetooth/bluetooth_media_source.dart';
@@ -31,7 +33,7 @@ void main() {
   );
 
   test(
-    'IPC v7 connectivity is independent of AA readiness and closes truthfully',
+    'IPC v8 connectivity is independent of AA readiness and closes truthfully',
     () async {
       final transport = _FakeTransport();
       final backend = AndroidAutoProjectionBackend(
@@ -42,7 +44,7 @@ void main() {
       );
       await backend.start();
       transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
-      final hex = File('test/fixtures/projection/ipc_v7_connectivity.hex')
+      final hex = File('test/fixtures/projection/ipc_v8_connectivity.hex')
           .readAsStringSync()
           .trim();
       transport.emit(
@@ -108,7 +110,7 @@ void main() {
       ),
     );
     session('aa-wired:device');
-    final hex = File('test/fixtures/projection/ipc_v7_metadata.hex')
+    final hex = File('test/fixtures/projection/ipc_v8_metadata.hex')
         .readAsStringSync()
         .trim();
     final packet = ProjectionIpcDecoder().add([
@@ -135,7 +137,7 @@ void main() {
     final subscription = media.changes.listen((_) => changes++);
     transport.emit(packet);
     expect(changes, 0);
-    final returnHex = File('test/fixtures/projection/ipc_v7_host_return.hex')
+    final returnHex = File('test/fixtures/projection/ipc_v8_host_return.hex')
         .readAsStringSync()
         .trim();
     transport.emit(
@@ -162,16 +164,17 @@ void main() {
     transport.emit(
       packet,
     ); // late update from old session cannot populate replacement
-    expect(media.current.activeSource, isNull);
+    expect(media.current.sources.single.details.title, isNull);
+    expect(media.current.sources.single.commands, isEmpty);
     expect(backend.current.sessions.single.metadata, isNull);
-    expect(changes, 1);
+    expect(changes, 2);
     await subscription.cancel();
     await source.close();
     await media.close();
     await backend.close();
   });
 
-  test('AA commands are capability gated and target the suspended session through control IPC', () async {
+  test('qualified AA sources control hidden media through their own input transport', () async {
     final transport = _FakeTransport();
     final backend = AndroidAutoProjectionBackend(
       socketPath: '/tmp/test.sock',
@@ -179,120 +182,176 @@ void main() {
       diagnostics: DiagnosticsService(),
       transportFactory: (_) async => transport,
     );
-    await backend.start();
+    final multiplex = MultiplexProjectionBackend([backend, _AbsentCarPlay()]);
+    await multiplex.start();
     transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
     transport.emit(_capabilities());
-    transport.emit(
-      ProjectionIpcMessage(
-        ProjectionIpcKind.device,
-        (ProjectionIpcWriter()
-              ..string('device')
-              ..string('Phone')
-              ..uint8(0)
-              ..uint8(0))
-            .takeBytes(),
-      ),
-    );
-    transport.emit(
-      ProjectionIpcMessage(
-        ProjectionIpcKind.session,
-        (ProjectionIpcWriter()
-              ..string('aa-wired:device')
-              ..string('device')
-              ..uint8(3)
-              ..string('')
-              ..uint32(0))
-            .takeBytes(),
-      ),
-    );
-    final hex = File('test/fixtures/projection/ipc_v7_metadata.hex')
-        .readAsStringSync()
-        .trim();
-    transport.emit(
-      ProjectionIpcDecoder().add([
-        for (var i = 0; i < hex.length; i += 2)
-          int.parse(hex.substring(i, i + 2), radix: 16),
-      ]).single,
-    );
+    _announcePhone(transport, state: ProjectionSessionState.suspended);
     final media = CachedMediaSessionService();
-    final playback = BluetoothMediaSource(backend, media);
+    final bluetooth = BluetoothMediaSource(backend, media);
     final provider = ProjectionMediaSource(
-      _BackendProjection(backend),
+      _BackendProjection(multiplex),
       media,
       connectivity: backend,
     );
     expect(media.current.sources.single.commands, isEmpty);
-    void capabilities({bool supported = true, int operation = 0}) {
-      transport.emit(
-        ProjectionIpcMessage(
-          ProjectionIpcKind.connectivity,
-          utf8.encode(
-            jsonEncode({
-              'adapters': [],
-              'networks': [],
-              'devices': [],
-              'adapter': '',
-              'interface': '',
-              'selected': '',
-              'enabled': true,
-              'discovering': false,
-              'wifi_connected': true,
-              'phase': 'streaming',
-              'detail': '',
-              'music': {
-                'projection_commands': supported,
-                'selected': 'projection',
-                'operation': operation,
-              },
-            }),
-          ),
-        ),
-      );
+    final fixture = _fixture('ipc_v8_metadata.hex');
+    transport.emit(
+      ProjectionIpcMessage(fixture.kind, [...fixture.payload]..last = 31),
+    );
+    final source = media.current.activeSource!;
+    expect(source.sessionId, isNot('aa-wired:device'));
+    expect(source.id, 'projection:${source.sessionId}:media');
+    expect(source.commands, ['previous', 'play', 'pause', 'next', 'playPause']);
+    expect(multiplex.current.sessions.single.videoStreams, isEmpty);
+    transport.sent.clear();
+    for (final entry in [
+      ('previous', 9),
+      ('play', 13),
+      ('pause', 14),
+      ('next', 8),
+      ('playPause', 7),
+    ]) {
+      await media.command(source.id, entry.$1);
+      final packets = transport.sent.toList();
+      expect(packets, hasLength(2));
+      for (var i = 0; i < packets.length; i++) {
+        expect(packets[i].kind, ProjectionIpcKind.button);
+        final payload = ProjectionIpcReader(packets[i].payload);
+        expect(payload.string(), 'aa-wired:device');
+        expect(payload.uint8(), entry.$2);
+        expect(payload.uint8(), i == 0 ? 1 : 0);
+        expect(payload.isDone, isTrue);
+      }
+      transport.sent.clear();
     }
-
-    capabilities();
-    expect(media.current.activeSource!.commands, [
-      'previous',
-      'play',
-      'pause',
-      'next',
-    ]);
-    for (final command in ['previous', 'play', 'pause', 'next']) {
-      final done = media.command('projection:aa-wired:device:media', command);
-      await Future<void>.delayed(Duration.zero);
-      final request = jsonDecode(utf8.decode(transport.sent.last.payload));
-      expect(request['target'], 'projection:aa-wired:device:media');
-      expect(
-        request['action'],
-        'music${command[0].toUpperCase()}${command.substring(1)}',
-      );
-      capabilities(operation: request['prompt'] as int);
-      await done;
-    }
+    expect(backend.current.activeSessionId, isNull);
     expect(
       backend.current.sessions.single.state,
       ProjectionSessionState.suspended,
     );
-    capabilities(supported: false);
+    transport.emit(_mediaMetadata(revision: 4, commands: 0));
     expect(media.current.sources.single.commands, isEmpty);
     await expectLater(
-      media.command('projection:aa-wired:device:media', 'play'),
+      media.command(source.id, 'playPause'),
       throwsUnsupportedError,
     );
+    expect(transport.sent, isEmpty);
     transport.emit(
       ProjectionIpcMessage(
         ProjectionIpcKind.sessionRemoved,
         (ProjectionIpcWriter()..string('aa-wired:device')).takeBytes(),
       ),
     );
-    await expectLater(
-      media.command('projection:aa-wired:device:media', 'play'),
-      throwsStateError,
-    );
+    _announcePhone(transport, state: ProjectionSessionState.suspended);
+    transport.emit(_mediaMetadata(revision: 5, commands: 31));
+    expect(media.current.sources.single.id, isNot(source.id));
+    await expectLater(media.command(source.id, 'playPause'), throwsStateError);
+    expect(transport.sent, isEmpty);
     await provider.close();
-    await playback.close();
+    await bluetooth.close();
     await media.close();
-    await backend.close();
+    await multiplex.close();
+  });
+
+  test(
+    'input capability metadata exposes an idle player before any track arrives',
+    () async {
+      final transport = _FakeTransport();
+      final backend = AndroidAutoProjectionBackend(
+        socketPath: '/tmp/test.sock',
+        preferences: preferences,
+        diagnostics: DiagnosticsService(),
+        transportFactory: (_) async => transport,
+      );
+      await backend.start();
+      transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+      transport.emit(_capabilities());
+      _announcePhone(transport);
+      final media = CachedMediaSessionService();
+      final provider = ProjectionMediaSource(
+        _BackendProjection(backend),
+        media,
+      );
+      transport.emit(_mediaMetadata(received: false));
+      final source = media.current.activeSource!;
+      expect(source.details.title, isNull);
+      expect(source.commands, contains('playPause'));
+      expect(backend.current.sessions.single.metadata!.media, isNull);
+      transport.sent.clear();
+      await media.command(source.id, 'playPause');
+      expect(transport.sent.map((m) => m.kind), [
+        ProjectionIpcKind.button,
+        ProjectionIpcKind.button,
+      ]);
+      await provider.close();
+      await media.close();
+      await backend.close();
+    },
+  );
+
+  test(
+    'v8 media fields preserve reported modes and a signed unscaled rating',
+    () async {
+      final transport = _FakeTransport();
+      final backend = AndroidAutoProjectionBackend(
+        socketPath: '/tmp/test.sock',
+        preferences: preferences,
+        diagnostics: DiagnosticsService(),
+        transportFactory: (_) async => transport,
+      );
+      await backend.start();
+      transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+      transport.emit(_capabilities());
+      _announcePhone(transport);
+      transport.emit(_mediaMetadata());
+      final metadata = backend.current.sessions.single.metadata!;
+      final details = metadata.media!;
+      expect(
+        (details.title, details.application, details.playlist),
+        ('Track', 'Player', 'Roadtrip'),
+      );
+      expect((details.positionMs, details.durationMs), (42000, 123000));
+      expect(
+        (details.shuffle, details.repeat, details.repeatOne),
+        (true, false, true),
+      );
+      expect(details.rating, -1);
+      expect(metadata.mediaCommands, [
+        'previous',
+        'play',
+        'pause',
+        'next',
+        'playPause',
+      ]);
+      await backend.close();
+    },
+  );
+
+  test('malformed optional v8 extensions retain good media and keep the receiver available', () async {
+    for (final malformed in ['shuffle', 'rating', 'commands', 'truncated']) {
+      final transport = _FakeTransport();
+      final backend = AndroidAutoProjectionBackend(
+        socketPath: '/tmp/test.sock',
+        preferences: preferences,
+        diagnostics: DiagnosticsService(),
+        transportFactory: (_) async => transport,
+      );
+      await backend.start();
+      transport.emit(const ProjectionIpcMessage(ProjectionIpcKind.hello));
+      transport.emit(_capabilities());
+      _announcePhone(transport);
+      transport.emit(_mediaMetadata());
+      final good = backend.current.sessions.single.metadata;
+      transport.emit(_mediaMetadata(revision: 4, malformed: malformed));
+      expect(backend.current.backendAvailable, isTrue, reason: malformed);
+      expect(
+        backend.current.sessions.single.metadata,
+        same(good),
+        reason: malformed,
+      );
+      await backend.close();
+    }
   });
 
   test('disabled backend is safe and default', () async {
@@ -514,7 +573,7 @@ final class _FakeTransport implements ProjectionControlTransport {
 }
 
 ProjectionIpcMessage _capabilities() {
-  final hex = File('test/fixtures/projection/ipc_v7_capabilities.hex')
+  final hex = File('test/fixtures/projection/ipc_v8_capabilities.hex')
       .readAsStringSync()
       .trim();
   final bytes = [
@@ -558,11 +617,136 @@ ProjectionIpcMessage _configuration(
 
 final class _BackendProjection implements ProjectionService {
   _BackendProjection(this.backend);
-  final AndroidAutoProjectionBackend backend;
+  final ProjectionBackend backend;
   @override
   ProjectionSnapshot get current => backend.current;
   @override
   Stream<ProjectionSnapshot> get changes => backend.changes;
   @override
+  Future<void> sendButton(
+    String sessionId,
+    ProjectionInputButton button, {
+    required bool pressed,
+  }) => backend.sendButton(sessionId, button, pressed: pressed);
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _AbsentCarPlay implements ProjectionBackend {
+  @override
+  ProjectionProtocol get protocol => ProjectionProtocol.carPlay;
+  @override
+  ProjectionSnapshot get current => const ProjectionSnapshot.disabled();
+  @override
+  Stream<ProjectionSnapshot> get changes => const Stream.empty();
+  @override
+  Future<void> start() async {}
+  @override
+  Future<void> close() async {}
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+ProjectionIpcMessage _fixture(String name) {
+  final hex = File('test/fixtures/projection/$name').readAsStringSync().trim();
+  return ProjectionIpcDecoder().add([
+    for (var i = 0; i < hex.length; i += 2)
+      int.parse(hex.substring(i, i + 2), radix: 16),
+  ]).single;
+}
+
+void _announcePhone(
+  _FakeTransport transport, {
+  ProjectionSessionState state = ProjectionSessionState.ready,
+}) {
+  transport.emit(
+    ProjectionIpcMessage(
+      ProjectionIpcKind.device,
+      (ProjectionIpcWriter()
+            ..string('device')
+            ..string('Phone')
+            ..uint8(0)
+            ..uint8(0))
+          .takeBytes(),
+    ),
+  );
+  transport.emit(
+    ProjectionIpcMessage(
+      ProjectionIpcKind.session,
+      (ProjectionIpcWriter()
+            ..string('aa-wired:device')
+            ..string('device')
+            ..uint8(state.index)
+            ..string('')
+            ..uint32(0))
+          .takeBytes(),
+    ),
+  );
+}
+
+ProjectionIpcMessage _mediaMetadata({
+  int revision = 3,
+  int commands = 31,
+  bool received = true,
+  String? malformed,
+}) {
+  final writer = ProjectionIpcWriter()
+    ..string('aa-wired:device')
+    ..string('device')
+    ..uint32(revision);
+  void uint64(int value) {
+    writer
+      ..uint32(value >> 32)
+      ..uint32(value & 0xffffffff);
+  }
+
+  uint64(1700000000000);
+  writer.uint8(received ? 1 : 0);
+  void text(String? value) {
+    writer.uint8(value == null ? 0 : 1);
+    if (value != null) writer.string(value);
+  }
+
+  void time(int? value) {
+    writer.uint8(value == null ? 0 : 1);
+    if (value != null) uint64(value);
+  }
+
+  text(received ? 'Track' : null);
+  text(received ? 'Artist' : null);
+  text(received ? 'Album' : null);
+  writer.uint8(received ? 2 : 0);
+  text(received ? 'Player' : null);
+  time(received ? 42000 : null);
+  time(received ? 123000 : null);
+  text('Phone');
+  text(null);
+  text(null);
+  writer
+    ..uint8(255)
+    ..uint8(0);
+  text(null);
+  text(received ? 'Roadtrip' : null);
+  writer
+    ..uint8(
+      malformed == 'shuffle'
+          ? 3
+          : received
+          ? 2
+          : 0,
+    )
+    ..uint8(received ? 1 : 0)
+    ..uint8(received ? 2 : 0)
+    ..uint8(
+      malformed == 'rating'
+          ? 2
+          : received
+          ? 1
+          : 0,
+    );
+  if (received) writer.uint32(0xffffffff);
+  writer.uint8(malformed == 'commands' ? 32 : commands);
+  var bytes = writer.takeBytes();
+  if (malformed == 'truncated') bytes = bytes.sublist(0, bytes.length - 1);
+  return ProjectionIpcMessage(ProjectionIpcKind.metadata, bytes);
 }

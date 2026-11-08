@@ -155,10 +155,11 @@ class Deployment:
 
     def validate(self, bundle):
         manifest = read(bundle / 'argo-release.json')
-        if manifest.get('schema') != 1 or manifest.get('ipc') not in (6, 7) or manifest.get('managed_control') != 1:
-            raise ValueError('Release requires IPC6/IPC7 and managed application control v1')
-        if manifest.get('ipc') == 7 and manifest.get('native_view_contract') != 1:
-            raise ValueError('IPC7 requires the matched ARVW native View Area contract v1')
+        ipc = manifest.get('ipc')
+        if manifest.get('schema') != 1 or type(ipc) is not int or ipc not in (6, 7, 8) or manifest.get('managed_control') != 1:
+            raise ValueError('Release requires IPC6/IPC7/IPC8 and managed application control v1')
+        if ipc >= 7 and manifest.get('native_view_contract') != 1:
+            raise ValueError('IPC7/IPC8 require the matched ARVW native View Area contract v1')
         carplay = [(bundle / f).is_file() for f in ('bin/argo-carplayd', 'bin/argo-carplayctl')]
         if any(carplay) or manifest.get('carplay_control') is not None:
             if not all(carplay) or manifest.get('carplay_control') != 1:

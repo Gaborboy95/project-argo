@@ -19,6 +19,8 @@ pub struct Device {
     pub paired: bool,
     pub connected: bool,
     pub protocols: Vec<&'static str>,
+    /// A2DP source capability belongs to sending phones, not output headsets.
+    pub audio_source: bool,
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Radio {
@@ -470,7 +472,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             encoded,
-            include_str!("../../../../../test/fixtures/projection/ipc_v7_connectivity.hex").trim()
+            include_str!("../../../../../test/fixtures/projection/ipc_v8_connectivity.hex").trim()
         );
         assert!(
             control

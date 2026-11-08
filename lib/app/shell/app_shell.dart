@@ -437,6 +437,25 @@ class _AppShellState extends State<AppShell> {
                             (_panel == null || _panel == 'media'),
                         maintainState: true,
                         child: DashboardFloatingMedia(
+                          onDevices:
+                              services.contains<DeviceConnectionService>()
+                              ? () {
+                                  final settingsModule = widget
+                                      .environment
+                                      .moduleRegistry
+                                      .modules
+                                      .where((m) => m.id == 'settings')
+                                      .firstOrNull;
+                                  if (settingsModule != null) {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (context) => settingsModule
+                                            .builder(context, services),
+                                      ),
+                                    );
+                                  }
+                                }
+                              : null,
                           collapsedHeight: geometry.closedMediaHeight,
                           expandedHeight:
                               (sheetHeight - DashboardGeometry.mediaEdgeGap)

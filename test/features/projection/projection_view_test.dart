@@ -806,7 +806,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Now Playing'), findsOneWidget);
       expect(find.text('Synthetic track'), findsOneWidget);
-      expect(find.text('Artist · Album'), findsOneWidget);
+      expect(find.text('Artist'), findsOneWidget);
+      expect(find.text('Album'), findsOneWidget);
       expect(find.textContaining('Phone battery 70%'), findsOneWidget);
       expect(tester.layers.whereType<PlatformViewLayer>(), isEmpty);
       expect(backend.touches.last.phase, ProjectionTouchPhase.cancel);

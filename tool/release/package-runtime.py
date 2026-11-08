@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,33 @@ INSTALL = Path('/usr/lib/argo/runtime')
 def sha(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+def matched_projection_ipc(source_root, native_root, flutter_bundle, definition=None):
+    """Use the matched application/daemon sources, checking recorded AOT input."""
+    native_source = native_root / 'projection/argo-projectiond/src/ipc.rs'
+    dart_source = source_root / 'lib/integrations/projection/projection_ipc.dart'
+    native = re.search(r'pub\s+const\s+VERSION\s*:\s*u16\s*=\s*(\d+)\s*;', native_source.read_text())
+    dart = re.search(r'static\s+const\s+int\s+version\s*=\s*(\d+)\s*;', dart_source.read_text())
+    if native is None or dart is None:
+        raise ValueError('Missing canonical application or daemon IPC version')
+    version = int(native[1])
+    if not 0 < version <= 65535 or int(dart[1]) != version:
+        raise ValueError('Application and daemon source IPC versions disagree')
+    recorded = flutter_bundle / 'argo-release.json'
+    if recorded.is_file():
+        manifest = json.loads(recorded.read_text())
+        if not isinstance(manifest, dict) or type(manifest.get('ipc')) is not int or manifest['ipc'] != version:
+            raise ValueError('Flutter bundle manifest IPC does not match application and daemon sources')
+    if definition is not None:
+        if not isinstance(definition, dict):
+            raise ValueError('Release definition must be an object')
+        contracts = definition.get('contracts', {})
+        if not isinstance(contracts, dict):
+            raise ValueError('Release definition contracts must be an object')
+        if 'aa_ipc' in contracts and (
+                type(contracts['aa_ipc']) is not int or contracts['aa_ipc'] != version):
+            raise ValueError('Release definition AA IPC does not match application and daemon sources')
+    return version
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -28,8 +56,12 @@ def main():
     args = p.parse_args()
     for name, value in vars(args).items():
         if isinstance(value, Path): setattr(args, name, value.resolve())
+    try:
+        definition = json.loads(args.definition.read_text())
+        ipc_version = matched_projection_ipc(args.source_root, args.native_root, args.flutter_bundle, definition)
+    except (OSError, ValueError) as error:
+        p.error(str(error))
     subprocess.run(['dpkg', '--validate-version', args.version], check=True)
-    definition = json.loads(args.definition.read_text())
     if definition['edition'] != 'standard':
         p.error('This packager accepts the standard edition only')
     engine = ctypes.CDLL(str(args.engine.resolve()))
@@ -143,7 +175,7 @@ exec "$runtime/bin/{binary}" {options}"$@"
                 copyright_text.append('\n--- ' + str(notice.relative_to(args.notices)) + ' ---\n' + notice.read_text(errors='replace'))
         (doc / 'copyright').write_text('\n'.join(copyright_text))
         (doc / 'state-ownership').write_text('Package files are immutable runtime assets only. Install, upgrade, remove and purge do not modify per-user settings, phone identity, pairing, integrations, plugins, calibrations, models or recordings. No services are started or enabled.\n')
-        manifest = {'schema': 1, 'package_runtime': 1, 'edition': 'standard', 'ipc': 7,
+        manifest = {'schema': 1, 'package_runtime': 1, 'edition': 'standard', 'ipc': ipc_version,
                     'native_view_contract': 1, 'managed_control': 1, 'projection_media_contract': 1,
                     'camera_mode': 'basic', 'camera_contract': 1, 'carplay_control': 1, 'carplay_wired': 1,
                     'release_definition': definition, 'version': args.version,

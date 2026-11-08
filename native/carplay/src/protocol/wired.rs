@@ -3,7 +3,7 @@
 //! interface. This does not listen for or implement authenticated AirPlay.
 //! Protocol interoperability research: see `protocol/mod.rs`.
 
-use super::{Error as ProtocolError, csm, iap2};
+use super::{Error as ProtocolError, csm, iap2, now_playing};
 use crate::link::LinkClient;
 use std::time::Duration;
 use tokio::{
@@ -74,12 +74,35 @@ pub async fn run_wireless<S: AsyncRead + AsyncWrite + Unpin>(
     super::wireless::run(stream, link, configuration, controller, cancelled, state).await
 }
 
+pub async fn run_wireless_with_updates<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    link: &LinkClient,
+    configuration: Configuration,
+    controller: [u8; 6],
+    cancelled: watch::Receiver<bool>,
+    state: watch::Sender<State>,
+    updates: watch::Sender<now_playing::Metadata>,
+) -> Result<(), Error> {
+    super::wireless::run_with_updates(
+        stream,
+        link,
+        configuration,
+        controller,
+        cancelled,
+        state,
+        Some(updates),
+    )
+    .await
+}
+
 struct Control<S> {
     stream: S,
     sent: u8,
     received: u8,
     max_frame: usize,
     csm_bytes: Vec<u8>,
+    updates: now_playing::Updates,
+    file_transfer: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
@@ -131,7 +154,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                 id: iap2::CONTROL_SESSION,
                 kind: 0,
                 version: 2,
-            }],
+            }]
+            .into_iter()
+            .chain(self.updates.available().then_some(iap2::Session {
+                id: now_playing::FILE_TRANSFER_SESSION,
+                kind: 1,
+                version: 2,
+            }))
+            .collect(),
         };
         self.stream.write_all(&iap2::DETECT).await?;
         self.write_frame(&iap2::Frame {
@@ -159,6 +189,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                     return Err(ProtocolError::Unsupported.into());
                 }
                 self.max_frame = usize::from(peer.max_frame);
+                self.file_transfer = self.updates.available()
+                    && peer.sessions.iter().any(|s| {
+                        s.id == now_playing::FILE_TRANSFER_SESSION && s.kind == 1 && s.version == 2
+                    });
                 self.received = frame.sequence;
                 got_syn = true;
                 self.write_frame(&iap2::Frame {
@@ -207,6 +241,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                 if self.csm_bytes.len() >= length {
                     let message = csm::Message::decode(&self.csm_bytes[..length])?;
                     self.csm_bytes.drain(..length);
+                    if self.updates.observe(&message) {
+                        continue;
+                    }
                     return Ok(message);
                 }
             }
@@ -217,7 +254,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
             if frame.payload.is_empty() {
                 continue;
             }
-            if frame.session != iap2::CONTROL_SESSION {
+            if frame.session != iap2::CONTROL_SESSION
+                && !(self.file_transfer && frame.session == now_playing::FILE_TRANSFER_SESSION)
+            {
                 return Err(ProtocolError::Unsupported.into());
             }
             if frame.sequence == self.received {
@@ -227,6 +266,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                 return Err(ProtocolError::Sequence.into());
             }
             self.received = frame.sequence;
+            if frame.session == now_playing::FILE_TRANSFER_SESSION {
+                if let Some(payload) = self.updates.artwork(&frame.payload) {
+                    self.sent = self.sent.wrapping_add(1);
+                    self.write_frame(&iap2::Frame {
+                        flags: iap2::ACK,
+                        sequence: self.sent,
+                        acknowledgement: self.received,
+                        session: now_playing::FILE_TRANSFER_SESSION,
+                        payload,
+                    })
+                    .await?;
+                }
+                continue;
+            }
             if self.csm_bytes.len() + frame.payload.len() > 65525 {
                 return Err(ProtocolError::Bounds.into());
             }
@@ -242,8 +295,19 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
     link: &LinkClient,
     configuration: Configuration,
+    cancelled: watch::Receiver<bool>,
+    state: watch::Sender<State>,
+) -> Result<(), Error> {
+    run_with_updates(stream, link, configuration, cancelled, state, None).await
+}
+
+pub async fn run_with_updates<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    link: &LinkClient,
+    configuration: Configuration,
     mut cancelled: watch::Receiver<bool>,
     state: watch::Sender<State>,
+    updates: Option<watch::Sender<now_playing::Metadata>>,
 ) -> Result<(), Error> {
     let mut control = Control {
         stream,
@@ -251,6 +315,8 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         received: 0,
         max_frame: iap2::MAX_FRAME,
         csm_bytes: Vec::new(),
+        updates: now_playing::Updates::new(updates),
+        file_transfer: false,
     };
     let result = tokio::select! {
         biased;
@@ -260,7 +326,6 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
                 .await.map_err(|_| Error::Protocol(ProtocolError::Timeout))??;
             loop {
                 // Maintain link ownership until unplug/EOF or explicit cancellation.
-                // Metadata subscriptions are not advertised by this minimal identity.
                 let message = control.message().await?;
                 if [csm::AUTH_FAILED, csm::IDENTIFICATION_REJECTED].contains(&message.id) {
                     return Err(ProtocolError::Rejected.into());
@@ -299,6 +364,9 @@ async fn bring_up<S: AsyncRead + AsyncWrite + Unpin>(
     let identity = config.identity.wired_message()?;
     let start = config.start_session.message()?;
     authenticate(control, link, identity, state).await?;
+    for subscription in control.updates.subscribe(control.file_transfer)? {
+        control.send(subscription).await?;
+    }
     state.send_replace(State::WaitingForAvailability);
     for _ in 0..16 {
         let message = control.message().await?;
@@ -392,6 +460,8 @@ pub async fn authenticate_only<S: AsyncRead + AsyncWrite + Unpin>(
         received: 0,
         max_frame: iap2::MAX_FRAME,
         csm_bytes: Vec::new(),
+        updates: now_playing::Updates::new(None),
+        file_transfer: false,
     };
     let result = timeout(
         Duration::from_secs(30),

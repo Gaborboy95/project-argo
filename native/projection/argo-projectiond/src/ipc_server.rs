@@ -136,7 +136,7 @@ async fn handle_client(
                 let messages = match decoder.push(&buffer[..count]) {
                     Ok(messages) => messages,
                     Err(error) => {
-                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v7 builds.");
+                        let detail=format!("Incompatible or malformed projection IPC: {error:?}; use matching Argo/daemon IPC v{} builds.",crate::ipc::VERSION);
                         let _=send_error(&mut client,&detail).await;
                         crate::daemon_log!(Warn, "ipc-server", "{detail}");
                         return;
@@ -167,7 +167,7 @@ async fn handle_client(
                         return;
                     }
                     if !message.payload.is_empty() {
-                        let _=send_error(&mut client,"Malformed projection hello; IPC v6 hello has no payload or identity paths").await;return;
+                        let _=send_error(&mut client,"Malformed projection hello; no payload or identity paths permitted").await;return;
                     }
                     if lease.is_none() {
                         match control.client_lease.clone().try_acquire_owned(){
@@ -482,10 +482,7 @@ mod tests {
         assert_eq!(messages[0].kind, IPC_ERROR);
         assert_eq!(
             PayloadReader::new(&messages[0].payload).string(),
-            Some(
-                "Malformed projection hello; IPC v6 hello has no payload or identity paths"
-                    .to_owned()
-            )
+            Some("Malformed projection hello; no payload or identity paths permitted".to_owned())
         );
         tokio::time::timeout(Duration::from_secs(1), task)
             .await

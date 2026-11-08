@@ -33,9 +33,11 @@ final class ConnectivityDevice {
     this.paired,
     this.connected, {
     this.protocols = const {},
+    this.audioSource = false,
   });
   final String id, name;
   final bool paired, connected;
+  final bool audioSource;
   final Set<ProjectionProtocol> protocols;
   String get adapterId =>
       id.contains('/') ? id.substring(0, id.indexOf('/')) : '';
@@ -67,6 +69,7 @@ final class ConnectivityDeviceGroup {
   String get identifier => endpoints.first.address ?? endpoints.first.id;
   bool get paired => endpoints.any((d) => d.paired);
   bool get connected => endpoints.any((d) => d.connected);
+  bool get audioSource => endpoints.any((d) => d.audioSource);
   Set<ProjectionProtocol> get protocols => Set.unmodifiable({
     for (final endpoint in endpoints) ...endpoint.protocols,
   });
@@ -138,6 +141,7 @@ List<ConnectivityDevice> _devices(
       ], address ?? id),
       device.paired || previous?.paired == true,
       device.connected || previous?.connected == true,
+      audioSource: device.audioSource || previous?.audioSource == true,
       protocols: Set.unmodifiable({
         if (previous != null) ...previous.protocols,
         ...device.protocols,
@@ -257,6 +261,7 @@ final class ConnectivitySnapshot {
                 d['name'] as String,
                 d['paired'] as bool,
                 d['connected'] as bool,
+                audioSource: d['audio_source'] == true,
                 protocols: Set.unmodifiable({
                   for (final protocol in d['protocols'] as List? ?? const [])
                     if (protocol == 'android-auto')

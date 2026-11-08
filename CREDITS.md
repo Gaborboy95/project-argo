@@ -10,7 +10,7 @@ and LIVI Link interoperability. Thank you to f-io and the LIVI contributors for
 making this work available to the community.
 
 Upstream project: [f-io/LIVI](https://github.com/f-io/LIVI).
-Current reviewed revision: `bfbea31ee624ddce84bfa96ce49d4663e6cdeca7`
+Vendored Link/iAP2 reference revision: `bfbea31ee624ddce84bfa96ce49d4663e6cdeca7`
 (`10.5.0-dev`, Rust; reviewed 2026-11-07). Original protocol research:
 `a23dc0c5fcdb6d069c679eddfd73298e58f44783` (`9.0.0`).
 LIVI is GPL-3.0-or-later, copyright 2025–2026 Lasse Heitgres, with the attribution
@@ -33,6 +33,13 @@ coprocessor and USB-client admission. Its GPL license, notice and complete
 corresponding source accompany the patched firmware.
 See the
 [architecture and provenance review](docs/carplay-livi-review.md).
+
+Media metadata, consumer-HID playback controls and artwork were additionally
+reviewed against the current Rust LIVI implementation at
+[`34ae05e14df68f12d06cde0589f27d6d5b449ddb`](https://github.com/f-io/LIVI/tree/34ae05e14df68f12d06cde0589f27d6d5b449ddb)
+(2026-11-08). This does not change the pinned vendored Link engine revision above.
+The Android Auto adapter encodes these protocol references independently; the
+CarPlay implementation remains within its existing GPL component.
 
 This acknowledgement does not imply endorsement of Argo by f-io or LIVI.
 

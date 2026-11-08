@@ -19,6 +19,8 @@ DeviceHubDevice phone({
   bool connected = false,
   bool connecting = false,
   bool projecting = false,
+  bool audioSource = false,
+  bool mediaConnected = false,
 }) => DeviceHubDevice(
   id: _id,
   name: name,
@@ -48,6 +50,8 @@ DeviceHubDevice phone({
   paired: paired,
   connected: connected,
   connecting: connecting,
+  audioSource: audioSource,
+  mediaConnected: mediaConnected,
 );
 
 Widget _page(
@@ -82,6 +86,65 @@ Future<void> tap(WidgetTester tester, Finder finder) async {
 }
 
 void main() {
+  testWidgets(
+    'a Bluetooth music phone can complete its audio connection without exposing unsupported headset actions',
+    (tester) async {
+      final hub = _Hub()
+        ..devices = [
+          phone(
+            protocol: null,
+            bluetoothOnly: true,
+            connected: true,
+            audioSource: true,
+          ),
+        ];
+      await tester.pumpWidget(_page(hub));
+      expect(find.text('Bluetooth · Audio not connected'), findsOneWidget);
+      expect(find.text('Connect device'), findsOneWidget);
+      expect(find.text('Disconnect device'), findsOneWidget);
+      await tap(tester, find.byKey(const ValueKey('device-connect:$_id')));
+      expect(hub.actions, [('connect', _id)]);
+      hub.devices = [
+        phone(
+          protocol: null,
+          bluetoothOnly: true,
+          connected: true,
+          audioSource: true,
+          connecting: true,
+        ),
+      ];
+      hub.events.add(null);
+      await tester.pump();
+      expect(find.text('Bluetooth · Connecting…'), findsOneWidget);
+      expect(find.text('Connect device'), findsNothing);
+      expect(find.text('Disconnect device'), findsOneWidget);
+      hub.devices = [
+        phone(
+          protocol: null,
+          bluetoothOnly: true,
+          connected: true,
+          audioSource: true,
+          mediaConnected: true,
+        ),
+      ];
+      hub.events.add(null);
+      await tester.pump();
+      expect(find.text('Bluetooth · Connected'), findsOneWidget);
+      expect(find.text('Connect device'), findsNothing);
+      hub.devices = [
+        phone(protocol: null, bluetoothOnly: true, connected: true),
+      ];
+      hub.events.add(null);
+      await tester.pump();
+      expect(find.text('Bluetooth · Connected'), findsOneWidget);
+      expect(find.text('Connect device'), findsNothing);
+      expect(find.text('Disconnect device'), findsOneWidget);
+      expect(find.text('Connect music'), findsNothing);
+      expect(hub.actions, [('connect', _id)]);
+      await tester.pumpWidget(const SizedBox());
+      await hub.events.close();
+    },
+  );
   testWidgets(
     'one physical phone exposes one device disconnect and build sends no commands',
     (tester) async {

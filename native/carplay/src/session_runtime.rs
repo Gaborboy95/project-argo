@@ -263,13 +263,47 @@ impl Session {
         link: LinkClient,
         device_id: String,
         transport: SessionTransport,
-        mut stop: watch::Receiver<bool>,
+        stop: watch::Receiver<bool>,
         control: C,
         transport_ended: L,
     ) -> Result<bool>
     where
         F: Fn() -> std::io::Result<Options> + Send + 'static,
         C: FnOnce(watch::Receiver<bool>, watch::Sender<wired::State>) -> CFut + Send,
+        CFut: Future<Output = std::result::Result<(), String>> + Send + 'static,
+        L: Future<Output = String>,
+    {
+        self.run_with_metadata(
+            options,
+            link,
+            device_id,
+            transport,
+            stop,
+            move |cancel, state, _| control(cancel, state),
+            transport_ended,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_metadata<F, C, CFut, L>(
+        self,
+        options: F,
+        link: LinkClient,
+        device_id: String,
+        transport: SessionTransport,
+        mut stop: watch::Receiver<bool>,
+        control: C,
+        transport_ended: L,
+    ) -> Result<bool>
+    where
+        F: Fn() -> std::io::Result<Options> + Send + 'static,
+        C: FnOnce(
+                watch::Receiver<bool>,
+                watch::Sender<wired::State>,
+                watch::Sender<crate::protocol::now_playing::Metadata>,
+            ) -> CFut
+            + Send,
         CFut: Future<Output = std::result::Result<(), String>> + Send + 'static,
         L: Future<Output = String>,
     {
@@ -283,8 +317,24 @@ impl Session {
         let (video, mut video_rx) = watch::channel::<Option<Video>>(None);
         let (commands, commands_rx) = mpsc::channel(32);
         let (information, info_rx) = watch::channel(Default::default());
+        let (metadata, mut metadata_rx) =
+            watch::channel(crate::protocol::now_playing::Metadata::default());
         let mut tasks = JoinSet::new();
-        tasks.spawn(control(cancel_rx, state));
+        tasks.spawn(control(cancel_rx, state, metadata));
+        let metadata_information = information.clone();
+        tasks.spawn(async move {
+            while metadata_rx.changed().await.is_ok() {
+                let metadata = metadata_rx.borrow_and_update().clone();
+                metadata_information.send_modify(
+                    |info: &mut crate::protocol::receiver::SessionInfo| {
+                        info.media = metadata.media.clone();
+                        info.battery_percent = metadata.battery_percent;
+                        info.external_power = metadata.external_power;
+                    },
+                );
+            }
+            std::future::pending::<std::result::Result<(), String>>().await
+        });
         let progress = self.progress;
         let mut video_progress = video_rx.clone();
         tasks.spawn(async move {

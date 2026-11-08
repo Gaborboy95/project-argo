@@ -1,7 +1,7 @@
 /// Cached facts only: unknown values are null; times are integer milliseconds.
 enum MediaSourceKind { androidAuto, carPlay, bluetooth, local }
 
-enum MediaPlaybackState { unknown, stopped, playing, paused, error }
+enum MediaPlaybackState { unknown, stopped, playing, paused, error, seeking }
 
 final class MediaDetails {
   const MediaDetails({
@@ -13,10 +13,25 @@ final class MediaDetails {
     this.playback = MediaPlaybackState.unknown,
     this.positionMs,
     this.durationMs,
+    this.playlist,
+    this.shuffle,
+    this.repeat,
+    this.repeatOne,
+    this.rating,
+    this.albumArtist,
+    this.genre,
+    this.applicationId,
+    this.trackId,
   });
   final String? title, artist, album, application, artworkPath;
   final MediaPlaybackState playback;
   final int? positionMs, durationMs;
+  final String? playlist;
+  final bool? shuffle, repeat, repeatOne;
+
+  /// Raw provider value; no rating scale is inferred.
+  final int? rating;
+  final String? albumArtist, genre, applicationId, trackId;
   @override
   bool operator ==(Object other) =>
       other is MediaDetails &&
@@ -27,7 +42,16 @@ final class MediaDetails {
       application == other.application &&
       playback == other.playback &&
       positionMs == other.positionMs &&
-      durationMs == other.durationMs;
+      durationMs == other.durationMs &&
+      playlist == other.playlist &&
+      shuffle == other.shuffle &&
+      repeat == other.repeat &&
+      repeatOne == other.repeatOne &&
+      rating == other.rating &&
+      albumArtist == other.albumArtist &&
+      genre == other.genre &&
+      applicationId == other.applicationId &&
+      trackId == other.trackId;
   @override
   int get hashCode => Object.hash(
     title,
@@ -38,6 +62,15 @@ final class MediaDetails {
     playback,
     positionMs,
     durationMs,
+    playlist,
+    shuffle,
+    repeat,
+    repeatOne,
+    rating,
+    albumArtist,
+    genre,
+    applicationId,
+    trackId,
   );
 }
 
@@ -49,11 +82,14 @@ final class PhoneDetails {
     this.model,
     this.batteryPercent,
     this.criticalBattery,
+    this.charging,
+    this.externalPower,
   });
   final String? displayName, manufacturer, model;
   final int? batteryPercent;
   final bool? criticalBattery;
-  bool? get charging => null;
+  final bool? charging;
+  final bool? externalPower;
   @override
   bool operator ==(Object other) =>
       other is PhoneDetails &&
@@ -61,7 +97,9 @@ final class PhoneDetails {
       manufacturer == other.manufacturer &&
       model == other.model &&
       batteryPercent == other.batteryPercent &&
-      criticalBattery == other.criticalBattery;
+      criticalBattery == other.criticalBattery &&
+      charging == other.charging &&
+      externalPower == other.externalPower;
   @override
   int get hashCode => Object.hash(
     displayName,
@@ -69,6 +107,8 @@ final class PhoneDetails {
     model,
     batteryPercent,
     criticalBattery,
+    charging,
+    externalPower,
   );
 }
 
@@ -80,19 +120,23 @@ final class ProjectionSessionMetadata {
     required this.updatedAtMs,
     this.media,
     this.phone = const PhoneDetails(),
+    this.mediaCommands = const [],
   });
   final int revision, updatedAtMs;
   final MediaDetails? media;
   final PhoneDetails phone;
+  final List<String> mediaCommands;
   @override
   bool operator ==(Object other) =>
       other is ProjectionSessionMetadata &&
       revision == other.revision &&
       updatedAtMs == other.updatedAtMs &&
       media == other.media &&
-      phone == other.phone;
+      phone == other.phone &&
+      mediaCommands.join(',') == other.mediaCommands.join(',');
   @override
-  int get hashCode => Object.hash(revision, updatedAtMs, media, phone);
+  int get hashCode =>
+      Object.hash(revision, updatedAtMs, media, phone, mediaCommands.join(','));
 }
 
 final class MediaSourceState {
@@ -106,9 +150,11 @@ final class MediaSourceState {
     required this.updatedAtMs,
     this.commands = const [],
     this.displayName,
+    this.phone,
   });
   final List<String> commands;
   final String? displayName;
+  final PhoneDetails? phone;
   final String id, deviceId, sessionId;
   final MediaSourceKind kind;
   final MediaDetails details;
@@ -122,6 +168,9 @@ final class MediaSourceState {
       sessionId == other.sessionId &&
       details == other.details &&
       displayName == other.displayName &&
+      phone == other.phone &&
+      revision == other.revision &&
+      updatedAtMs == other.updatedAtMs &&
       commands.join(',') == other.commands.join(',');
   @override
   int get hashCode => Object.hash(
@@ -131,6 +180,9 @@ final class MediaSourceState {
     sessionId,
     details,
     displayName,
+    phone,
+    revision,
+    updatedAtMs,
     commands.join(','),
   );
 }

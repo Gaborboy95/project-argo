@@ -31,6 +31,32 @@ impl From<std::io::Error> for Error {
 type Result<T> = std::result::Result<T, Error>;
 const MAIN_DISPLAY: &str = "20417267-6f00-4000-8000-000000000001";
 const TOUCH: &str = "6172676f";
+const MEDIA: &str = "61726770";
+
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+pub enum MediaButton {
+    #[serde(rename = "play")]
+    Play,
+    #[serde(rename = "pause")]
+    Pause,
+    #[serde(rename = "playPause")]
+    PlayPause,
+    #[serde(rename = "next")]
+    Next,
+    #[serde(rename = "previous")]
+    Previous,
+}
+impl MediaButton {
+    fn report(self) -> u8 {
+        match self {
+            Self::Play => 1,
+            Self::Pause => 2,
+            Self::PlayPause => 3,
+            Self::Next => 4,
+            Self::Previous => 5,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Display {
@@ -153,6 +179,26 @@ pub enum Command {
     Night(bool),
     Siri,
     SiriButton(bool),
+    Media(MediaButton),
+}
+
+/// Consumer-control array usages, as advertised by LIVI 34ae05e14d. The
+/// report is an index into this table, not an Android keycode or touch event.
+fn media_descriptor() -> Vec<u8> {
+    let mut result = vec![0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x15, 0, 0x25, 5];
+    for usage in [0u16, 0xb0, 0xb1, 0xcd, 0xb5, 0xb6] {
+        result.push(0x0a);
+        result.extend_from_slice(&usage.to_le_bytes());
+    }
+    result.extend_from_slice(&[0x75, 8, 0x95, 1, 0x81, 0, 0xc0]);
+    result
+}
+fn media_report(index: u8) -> Value {
+    dict([
+        ("type", string("hidSendReport")),
+        ("uuid", string(MEDIA)),
+        ("hidReport", Value::Data(vec![index])),
+    ])
 }
 
 fn dict(fields: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
@@ -365,15 +411,26 @@ fn info(display: &Display, device_identifier: &str, audio: bool, microphone: boo
         ),
         (
             "hidDevices",
-            Value::Array(vec![dict([
-                ("uuid", string(TOUCH)),
-                ("name", string("Argo Touchscreen")),
-                ("displayUUID", string(MAIN_DISPLAY)),
-                ("hidVendorID", number(2)),
-                ("hidProductID", number(1)),
-                ("hidCountryCode", number(0)),
-                ("hidDescriptor", Value::Data(touch_descriptor(display))),
-            ])]),
+            Value::Array(vec![
+                dict([
+                    ("uuid", string(TOUCH)),
+                    ("name", string("Argo Touchscreen")),
+                    ("displayUUID", string(MAIN_DISPLAY)),
+                    ("hidVendorID", number(2)),
+                    ("hidProductID", number(1)),
+                    ("hidCountryCode", number(0)),
+                    ("hidDescriptor", Value::Data(touch_descriptor(display))),
+                ]),
+                dict([
+                    ("uuid", string(MEDIA)),
+                    ("name", string("Argo Media")),
+                    ("displayUUID", string(MAIN_DISPLAY)),
+                    ("hidVendorID", number(2)),
+                    ("hidProductID", number(1)),
+                    ("hidCountryCode", number(0)),
+                    ("hidDescriptor", Value::Data(media_descriptor())),
+                ]),
+            ]),
         ),
     ]);
     if audio {
@@ -538,6 +595,10 @@ pub struct SessionInfo {
     pub host_return_revision: u64,
     pub audio: Vec<AudioInfo>,
     pub phone_duck: Option<PhoneDuck>,
+    pub media_commands: bool,
+    pub media: Option<super::now_playing::MediaInfo>,
+    pub battery_percent: Option<u8>,
+    pub external_power: Option<bool>,
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PhoneDuck {
@@ -778,7 +839,8 @@ impl Receiver {
                             let event_port = listener.local_addr()?.port();
                             let secret = verified.as_ref().ok_or(Error::State)?.secret.clone();
                             let events = events_rx.take().ok_or(Error::State)?;
-                            tasks.spawn(async move { let result=event_channel(listener, peer, secret, events).await; if let Err(e)=&result {eprintln!("CarPlay events ended: {e}");} result });
+                            let information=self.information.clone();
+                            tasks.spawn(async move { let result=event_channel(listener, peer, secret, events,Some(information)).await; if let Err(e)=&result {eprintln!("CarPlay events ended: {e}");} result });
                             body = binary(&dict([("timingPort", number(timing_bound as u64)), ("eventPort", number(event_port as u64))]))?;
                             session_setup = true;
                         }
@@ -853,6 +915,7 @@ impl Receiver {
         }
         self.information.send_modify(|s| {
             s.recorded = false;
+            s.media_commands = false;
             s.audio.clear();
             s.phone_duck = None;
         });
@@ -1113,8 +1176,21 @@ async fn event_channel(
     peer: SocketAddr,
     secret: Vec<u8>,
     mut commands: mpsc::Receiver<Command>,
+    information: Option<watch::Sender<SessionInfo>>,
 ) -> Result<()> {
     let socket = accept(listener, peer).await?;
+    struct InputLease(Option<watch::Sender<SessionInfo>>);
+    impl Drop for InputLease {
+        fn drop(&mut self) {
+            if let Some(info) = &self.0 {
+                info.send_modify(|s| s.media_commands = false);
+            }
+        }
+    }
+    if let Some(info) = &information {
+        info.send_modify(|s| s.media_commands = true);
+    }
+    let _input = InputLease(information);
     let mut wire = Wire::new(socket);
     wire.input.cipher = Some(ControlCipher::new(pairing::derive_key(
         &secret,
@@ -1137,6 +1213,7 @@ async fn event_channel(
                 command = commands.recv() => {
                     let command = command.ok_or(Error::State)?;
                     let click = matches!(command, Command::Siri);
+                    let media_release = matches!(command, Command::Media(_));
                     let payload = match command {
                         Command::AudioGain { .. } | Command::MicrophoneMute(_) | Command::MicrophoneSource(_) => return Err(Error::State),
                         Command::Touch {slot, down, x, y} => {
@@ -1151,8 +1228,9 @@ async fn event_channel(
                         Command::Night(value) => dict([("type", string("setNightMode")), ("params", dict([("nightMode", Value::Boolean(value))]))]),
                         Command::Siri => siri_button(true),
                         Command::SiriButton(pressed) => siri_button(pressed),
+                        Command::Media(button) => media_report(button.report()),
                     };
-                    let payloads = if click { vec![payload, siri_button(false)] } else { vec![payload] };
+                    let payloads = if click { vec![payload, siri_button(false)] } else if media_release {vec![payload,media_report(0)]} else { vec![payload] };
                     for payload in payloads {
                     let body = binary(&payload)?; sequence = sequence.checked_add(1).ok_or(Error::Bounds)?;
                     let header = format!("POST /command RTSP/1.0\r\nCSeq: {sequence}\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: {}\r\n\r\n", body.len());
@@ -1523,7 +1601,13 @@ mod tests {
             let secret = vec![7; 32];
             let peer = "127.0.0.1:9".parse().unwrap();
             let (commands, commands_rx) = mpsc::channel(4);
-            let task = tokio::spawn(event_channel(listener, peer, secret.clone(), commands_rx));
+            let task = tokio::spawn(event_channel(
+                listener,
+                peer,
+                secret.clone(),
+                commands_rx,
+                None,
+            ));
             let mut phone = TcpStream::connect(address).await.unwrap();
             let mut sender = ControlCipher::new(
                 pairing::derive_key(&secret, "Events-Salt", "Events-Read-Encryption-Key").unwrap(),
@@ -1724,5 +1808,68 @@ mod tests {
         }
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn media_hid_is_advertised_and_encrypted_pulses_release_every_button() {
+        timeout(Duration::from_secs(3), async {
+            let advertised = info(&display(), "fixture", false, false);
+            let devices = advertised.as_dictionary().unwrap()["hidDevices"]
+                .as_array()
+                .unwrap();
+            let media = devices
+                .iter()
+                .find(|d| d.as_dictionary().unwrap()["uuid"].as_string() == Some(MEDIA))
+                .unwrap()
+                .as_dictionary()
+                .unwrap();
+            assert_eq!(
+                media["hidDescriptor"].as_data().unwrap(),
+                media_descriptor()
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let secret = vec![7; 32];
+            let (commands, commands_rx) = mpsc::channel(8);
+            let (information, mut state) = watch::channel(SessionInfo::default());
+            let task = tokio::spawn(event_channel(
+                listener,
+                "127.0.0.1:9".parse().unwrap(),
+                secret.clone(),
+                commands_rx,
+                Some(information),
+            ));
+            let mut phone = TcpStream::connect(address).await.unwrap();
+            state.wait_for(|s| s.media_commands).await.unwrap();
+            let mut receiver = ControlCipher::new(
+                pairing::derive_key(&secret, "Events-Salt", "Events-Write-Encryption-Key").unwrap(),
+            );
+            for button in [
+                MediaButton::Play,
+                MediaButton::Pause,
+                MediaButton::PlayPause,
+                MediaButton::Next,
+                MediaButton::Previous,
+            ] {
+                commands.send(Command::Media(button)).await.unwrap();
+                for expected in [button.report(), 0] {
+                    let mut header = [0; 2];
+                    phone.read_exact(&mut header).await.unwrap();
+                    let mut frame = vec![0; u16::from_le_bytes(header) as usize + 18];
+                    frame[..2].copy_from_slice(&header);
+                    phone.read_exact(&mut frame[2..]).await.unwrap();
+                    let plain = receiver.decrypt(&frame).unwrap();
+                    let boundary = plain.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                    let payload = parse(&plain[boundary..]).unwrap();
+                    assert_eq!(payload["uuid"].as_string(), Some(MEDIA));
+                    assert_eq!(payload["hidReport"].as_data(), Some([expected].as_slice()));
+                }
+            }
+            drop(phone);
+            let _ = task.await;
+            assert!(!state.borrow().media_commands);
+        })
+        .await
+        .unwrap();
     }
 }

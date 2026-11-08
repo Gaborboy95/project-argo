@@ -445,6 +445,25 @@ final class AndroidAutoProjectionBackend
     final name = text(), manufacturer = text(), model = text();
     final battery = r.uint8(), critical = r.uint8();
     final artworkPath = text();
+    final playlist = text();
+    bool? mode() => switch (r.uint8()) {
+      0 => null,
+      1 => false,
+      2 => true,
+      _ => throw const FormatException('Invalid playback mode'),
+    };
+    final shuffle = mode(), repeat = mode(), repeatOne = mode();
+    final ratingPresent = present();
+    final ratingBits = ratingPresent ? r.uint32() : null;
+    final rating = ratingBits == null
+        ? null
+        : ratingBits >= 0x80000000
+        ? ratingBits - 0x100000000
+        : ratingBits;
+    final commands = r.uint8();
+    if (commands & ~31 != 0) {
+      throw const FormatException('Invalid media commands');
+    }
     _requireDone(r);
     if ((battery > 100 && battery != 255) ||
         critical > 2 ||
@@ -465,6 +484,13 @@ final class AndroidAutoProjectionBackend
       metadata: ProjectionSessionMetadata(
         revision: revision,
         updatedAtMs: timestamp,
+        mediaCommands: List.unmodifiable([
+          if (commands & 1 != 0) 'previous',
+          if (commands & 2 != 0) 'play',
+          if (commands & 4 != 0) 'pause',
+          if (commands & 8 != 0) 'next',
+          if (commands & 16 != 0) 'playPause',
+        ]),
         media: received
             ? MediaDetails(
                 title: title,
@@ -475,6 +501,11 @@ final class AndroidAutoProjectionBackend
                 application: application,
                 positionMs: position,
                 durationMs: duration,
+                playlist: playlist,
+                shuffle: shuffle,
+                repeat: repeat,
+                repeatOne: repeatOne,
+                rating: rating,
               )
             : null,
         phone: PhoneDetails(

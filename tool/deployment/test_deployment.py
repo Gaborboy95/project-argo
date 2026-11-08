@@ -238,19 +238,38 @@ class DeploymentTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'API range'):
             self.d.validate(self.source)
 
-    def test_ipc7_requires_view_contract_and_retains_ipc6_rollback(self):
-        m = a.read(self.source / 'argo-release.json')
-        m['ipc'] = 7
-        a.save(self.source / 'argo-release.json', m)
-        with self.assertRaisesRegex(ValueError, 'ARVW'):
-            self.d.validate(self.source)
-        m['native_view_contract'] = 1
-        a.save(self.source / 'argo-release.json', m)
-        updated = self.d.stage(self.source, 'view-area')
-        self.d.select(updated)
+    def test_ipc7_and_ipc8_require_view_contract_and_retain_older_rollback(self):
+        retained = {}
+        for version in (7, 8):
+            with self.subTest(ipc=version):
+                manifest = a.read(self.source / 'argo-release.json')
+                manifest['ipc'] = version
+                manifest.pop('native_view_contract', None)
+                a.save(self.source / 'argo-release.json', manifest)
+                with self.assertRaisesRegex(ValueError, 'ARVW'):
+                    self.d.validate(self.source)
+                manifest['native_view_contract'] = 2
+                a.save(self.source / 'argo-release.json', manifest)
+                with self.assertRaisesRegex(ValueError, 'ARVW'):
+                    self.d.validate(self.source)
+                manifest['native_view_contract'] = 1
+                a.save(self.source / 'argo-release.json', manifest)
+                retained[version] = self.d.stage(self.source, 'ipc-' + str(version))
+                self.d.select(retained[version])
+        self.d.select(retained[7])
         self.d.select(self.first)
         self.assertEqual(self.d.current.resolve(), self.first)
         self.assertFalse(any(op[0] == 'start' for op in self.d.operations))
+
+    def test_unknown_or_non_integer_ipc_release_is_rejected(self):
+        manifest = a.read(self.source / 'argo-release.json')
+        manifest['native_view_contract'] = 1
+        for version in (None, 5, 9, '8', 8.0, True):
+            with self.subTest(ipc=version):
+                manifest['ipc'] = version
+                a.save(self.source / 'argo-release.json', manifest)
+                with self.assertRaisesRegex(ValueError, 'IPC6/IPC7/IPC8'):
+                    self.d.validate(self.source)
 
     def test_guard_boot_recovery_in_managed_daemon_startup(self):
         current = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -541,17 +560,19 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(a.read(self.d.marker('daemon'))['result'], 'clean')
 
     def test_daemon_readiness_uses_selected_ipc_and_accepts_fragmented_reply(self):
-        manifest = a.read(self.first / 'argo-release.json')
-        manifest['ipc'] = 7
-        a.save(self.first / 'argo-release.json', manifest)
-        peer = MagicMock()
-        peer.__enter__.return_value = peer
-        response = struct.pack('>IHHI', 0x4152474f, 7, 6, 2) + b'ok'
-        peer.recv.side_effect = [bytes([value]) for value in response]
-        with patch.object(a.socket, 'socket', return_value=peer), \
-                patch.object(self.d, 'runtime', return_value=self.d.home):
-            self.d.ready('daemon')
-        peer.sendall.assert_called_once_with(struct.pack('>IHHI', 0x4152474f, 7, 65535, 0))
+        for version in (6, 7, 8):
+            with self.subTest(ipc=version):
+                manifest = a.read(self.first / 'argo-release.json')
+                manifest.update(ipc=version, native_view_contract=1)
+                a.save(self.first / 'argo-release.json', manifest)
+                peer = MagicMock()
+                peer.__enter__.return_value = peer
+                response = struct.pack('>IHHI', 0x4152474f, version, 6, 2) + b'ok'
+                peer.recv.side_effect = [bytes([value]) for value in response]
+                with patch.object(a.socket, 'socket', return_value=peer), \
+                        patch.object(self.d, 'runtime', return_value=self.d.home):
+                    self.d.ready('daemon')
+                peer.sendall.assert_called_once_with(struct.pack('>IHHI', 0x4152474f, version, 65535, 0))
 
     def test_daemon_readiness_deadline_bounds_a_dripping_response(self):
         peer = MagicMock()

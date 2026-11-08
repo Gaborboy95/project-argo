@@ -3,7 +3,7 @@
 use argo_carplay::{
     discovery::Discovery,
     link::{LinkClient, LinkConfig},
-    protocol::{csm, iap2, wired},
+    protocol::{csm, iap2, now_playing, wired},
 };
 use std::{net::Ipv4Addr, time::Duration};
 use tokio::{
@@ -109,6 +109,13 @@ async fn send(phone: &mut DuplexStream, sequence: u8, message: csm::Message) {
 
 #[tokio::test]
 async fn real_link_client_drives_authentication_before_start_and_cancels_cleanly() {
+    wired_handshake(false).await;
+}
+#[tokio::test]
+async fn negotiated_metadata_and_file_transfer_publish_without_interrupting_wired_control() {
+    wired_handshake(true).await;
+}
+async fn wired_handshake(metadata: bool) {
     timeout(Duration::from_secs(3), async {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let link = LinkClient::new(LinkConfig {
@@ -131,8 +138,18 @@ async fn real_link_client_drives_authentication_before_start_and_cancels_cleanly
         let (host, mut phone) = duplex(65536);
         let (cancel, cancel_rx) = watch::channel(false);
         let (state, mut state_rx) = watch::channel(wired::State::Synchronizing);
-        let driver =
-            tokio::spawn(async move { wired::run(host, &link, config(), cancel_rx, state).await });
+        let (updates, mut received_metadata) = watch::channel(now_playing::Metadata::default());
+        let driver = tokio::spawn(async move {
+            wired::run_with_updates(
+                host,
+                &link,
+                config(),
+                cancel_rx,
+                state,
+                metadata.then_some(updates),
+            )
+            .await
+        });
         synchronize(&mut phone, false).await;
         send(
             &mut phone,
@@ -169,9 +186,110 @@ async fn real_link_client_drives_authentication_before_start_and_cancels_cleanly
         assert_eq!(signature.id, csm::SIGNATURE);
         assert_eq!(signature.one(0).unwrap(), [9, 9]);
         send(&mut phone, 3, csm::Message::empty(csm::AUTH_SUCCEEDED)).await;
+        let mut next_sequence = 4;
+        if metadata {
+            let subscriptions = [read_frame(&mut phone).await, read_frame(&mut phone).await];
+            assert_eq!(
+                csm::Message::decode(&subscriptions[0].payload).unwrap().id,
+                now_playing::START
+            );
+            assert_eq!(
+                csm::Message::decode(&subscriptions[1].payload).unwrap().id,
+                now_playing::POWER_START
+            );
+            let update = csm::Message {
+                id: now_playing::UPDATE,
+                parameters: vec![
+                    csm::Parameter::group(
+                        0,
+                        &[
+                            csm::Parameter::string(1, "Wired song").unwrap(),
+                            csm::Parameter::new(26, [7]),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+            };
+            send(&mut phone, 4, update).await;
+            send(
+                &mut phone,
+                5,
+                csm::Message {
+                    id: now_playing::POWER_UPDATE,
+                    parameters: vec![csm::Parameter::new(6, 73u16.to_be_bytes())],
+                },
+            )
+            .await;
+            for (seq, payload, expected) in [
+                (6, vec![7, 4], vec![7, 1]),
+                (
+                    7,
+                    {
+                        let mut data = vec![7, 0xc0];
+                        let mut png = vec![0; 33];
+                        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+                        png[12..16].copy_from_slice(b"IHDR");
+                        png[16..20].copy_from_slice(&1u32.to_be_bytes());
+                        png[20..24].copy_from_slice(&1u32.to_be_bytes());
+                        data.extend(png);
+                        data
+                    },
+                    vec![7, 5],
+                ),
+            ] {
+                phone
+                    .write_all(
+                        &iap2::Frame {
+                            flags: iap2::ACK,
+                            sequence: seq,
+                            acknowledgement: 31,
+                            session: now_playing::FILE_TRANSFER_SESSION,
+                            payload,
+                        }
+                        .encode()
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let reply = read_frame(&mut phone).await;
+                assert_eq!(reply.session, now_playing::FILE_TRANSFER_SESSION);
+                assert_eq!(reply.payload, expected);
+            }
+            received_metadata
+                .wait_for(|m| m.media.as_ref().is_some_and(|m| m.artwork_path.is_some()))
+                .await
+                .unwrap();
+            assert_eq!(
+                received_metadata
+                    .borrow()
+                    .media
+                    .as_ref()
+                    .unwrap()
+                    .title
+                    .as_deref(),
+                Some("Wired song")
+            );
+            assert_eq!(received_metadata.borrow().battery_percent, Some(73));
+            send(
+                &mut phone,
+                8,
+                csm::Message {
+                    id: now_playing::UPDATE,
+                    parameters: vec![
+                        csm::Parameter::group(
+                            0,
+                            &[csm::Parameter::new(1, b"unterminated".as_slice())],
+                        )
+                        .unwrap(),
+                    ],
+                },
+            )
+            .await;
+            next_sequence = 9;
+        }
         send(
             &mut phone,
-            4,
+            next_sequence,
             csm::Message {
                 id: csm::AVAILABILITY,
                 parameters: vec![

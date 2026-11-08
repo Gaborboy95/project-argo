@@ -308,6 +308,7 @@ fn discovery_codecs(display: &DisplayConfig, hevc: bool) -> Vec<u8> {
             Proto::default().number(1, 8).nested(
                 4,
                 Proto::default()
+                    .number(1, 85)
                     .number(1, 87)
                     .number(1, 88)
                     .number(1, 126)
@@ -475,13 +476,17 @@ impl Channels {
             if supported {
                 self.open.insert(target as u8);
             }
-            return Ok(vec![reply(
+            let mut effects = vec![reply(
                 channel,
                 8,
                 Proto::default()
                     .number(1, if supported { 0 } else { 1 })
                     .finish(),
-            )]);
+            )];
+            if supported && target == 8 {
+                effects.push(Effect::Metadata(crate::metadata::Update::MediaCommands(31)));
+            }
+            return Ok(effects);
         }
         if channel == 0 {
             return Ok(match id {
@@ -561,11 +566,14 @@ impl Channels {
             ]);
         }
         if channel == 8 && matches!(id, 0x8002 | 0x19) {
-            return Ok(vec![reply(
-                8,
-                if id == 0x19 { 0x1a } else { 0x8003 },
-                Proto::default().number(1, 0).finish(),
-            )]);
+            return Ok(vec![
+                reply(
+                    8,
+                    if id == 0x19 { 0x1a } else { 0x8003 },
+                    Proto::default().number(1, 0).finish(),
+                ),
+                Effect::Metadata(crate::metadata::Update::MediaCommands(31)),
+            ]);
         }
         if channel == 9 {
             return Ok(match id {
@@ -728,32 +736,37 @@ impl Channels {
     /// AA InputEventIndication.button_event; separate press/release reports.
     /// The input service advertises exactly these Android media key codes.
     pub fn media_key(&self, code: u64, timestamp: u64) -> Result<[Reply; 2], String> {
+        Ok([
+            self.button(code, true, timestamp)?,
+            self.button(code, false, timestamp.saturating_add(1))?,
+        ])
+    }
+
+    pub fn button(&self, code: u64, pressed: bool, timestamp: u64) -> Result<Reply, String> {
         if !self.open.contains(&8) {
             return Err("Android Auto input channel is not ready".into());
         }
-        if !matches!(code, 87 | 88 | 126 | 127) {
+        if !matches!(code, 85 | 87 | 88 | 126 | 127) {
             return Err("Unsupported Android Auto media key".into());
         }
-        Ok([true, false].map(|pressed| {
-            Reply::new(
-                8,
-                0x8001,
-                Proto::default()
-                    .number(1, timestamp + u64::from(!pressed))
-                    .nested(
-                        4,
-                        Proto::default().nested(
-                            1,
-                            Proto::default()
-                                .number(1, code)
-                                .number(2, u64::from(pressed))
-                                .number(3, 0)
-                                .number(4, 0),
-                        ),
-                    )
-                    .finish(),
-            )
-        }))
+        Ok(Reply::new(
+            8,
+            0x8001,
+            Proto::default()
+                .number(1, timestamp)
+                .nested(
+                    4,
+                    Proto::default().nested(
+                        1,
+                        Proto::default()
+                            .number(1, code)
+                            .number(2, u64::from(pressed))
+                            .number(3, 0)
+                            .number(4, 0),
+                    ),
+                )
+                .finish(),
+        ))
     }
 
     pub fn touch(
@@ -939,7 +952,7 @@ mod media_key_tests {
         channels.open.insert(8);
         channels.set_video_requested(false);
         assert!(channels.media_key(999, 100).is_err());
-        for code in [87, 88, 126, 127] {
+        for code in [85, 87, 88, 126, 127] {
             let replies = channels.media_key(code, 100).unwrap();
             for (index, reply) in replies.iter().enumerate() {
                 assert_eq!((reply.channel, reply.id), (8, 0x8001));
@@ -968,5 +981,39 @@ mod media_key_tests {
             assert!(!channels.video_requested);
             assert!(channels.pointers.is_empty());
         }
+    }
+
+    #[test]
+    fn media_capabilities_follow_successful_input_negotiation_even_without_a_track() {
+        let mut channels = Channels::new(DisplayConfig::default());
+        let open = Proto::default().number(2, 8).finish();
+        assert!(
+            !channels
+                .handle(8, 7, &open)
+                .unwrap()
+                .iter()
+                .any(|effect| matches!(effect, Effect::Metadata(_)))
+        );
+        channels.handle(0, 5, &[]).unwrap();
+        let effects = channels.handle(8, 7, &open).unwrap();
+        assert!(matches!(effects.first(), Some(Effect::Reply(_))));
+        let mut metadata = crate::metadata::Snapshot::default();
+        for effect in effects {
+            if let Effect::Metadata(update) = effect {
+                metadata.apply(update);
+            }
+        }
+        assert_eq!(metadata.data.media_commands, 31);
+        assert!(!metadata.data.media_received);
+        let revision = metadata.revision;
+        for effect in channels.handle(8, 0x8002, &[]).unwrap() {
+            if let Effect::Metadata(update) = effect {
+                metadata.apply(update);
+            }
+        }
+        assert_eq!(metadata.revision, revision);
+        channels.set_video_requested(false);
+        assert!(channels.button(85, true, 100).is_ok());
+        assert_eq!(metadata.data.media_commands, 31);
     }
 }

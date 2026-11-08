@@ -493,7 +493,9 @@ async fn process_request(
                 _=c.device_revoked(&r.device,r.device_generation)=>return Ok(()),
                 result=tokio::time::timeout(Duration::from_secs(8),device.connect())=>result.map_err(|_|"Bluetooth connection timed out")?.map_err(|e|e.to_string())?,
             }
-            tokio::time::timeout(Duration::from_secs(4),bt.refresh()).await.map_err(|_|"Bluetooth refresh timed out")??;
+            tokio::time::timeout(Duration::from_secs(4), bt.refresh())
+                .await
+                .map_err(|_| "Bluetooth refresh timed out")??;
         }
         "connect" => {
             if !*host.projection_enabled.borrow() {

@@ -11,9 +11,11 @@ abstract interface class MediaSessionService {
 
 /// Each registration is a lease. An obsolete provider cannot update its successor.
 final class MediaProvider {
-  MediaProvider._(this.service, this.name);
+  MediaProvider._(this.service, this.name, {this.select, this.execute});
   final CachedMediaSessionService service;
   final String name;
+  final Future<void> Function(MediaSourceState)? select;
+  final Future<void> Function(MediaSourceState, String)? execute;
   int _revision = -1;
   List<MediaSourceState> _sources = [];
   void publish(int revision, Iterable<MediaSourceState> sources) {
@@ -36,6 +38,7 @@ final class MediaProvider {
       final old = previous[s.id];
       return old != null &&
               old.sessionId == s.sessionId &&
+              old.deviceId == s.deviceId &&
               old.revision > s.revision
           ? old
           : s;
@@ -64,8 +67,17 @@ final class CachedMediaSessionService implements MediaSessionService {
   MediaSessionSnapshot get current => _current;
   @override
   Stream<MediaSessionSnapshot> get changes => _changes.stream;
-  MediaProvider register(String name) {
-    final provider = MediaProvider._(this, name);
+  MediaProvider register(
+    String name, {
+    Future<void> Function(MediaSourceState)? select,
+    Future<void> Function(MediaSourceState, String)? execute,
+  }) {
+    final provider = MediaProvider._(
+      this,
+      name,
+      select: select,
+      execute: execute,
+    );
     _providers[name] = provider;
     _refresh();
     return provider;
@@ -73,7 +85,14 @@ final class CachedMediaSessionService implements MediaSessionService {
 
   void _refresh() {
     final sources = _providers.values.expand((p) => p._sources).toList();
-    var selected = sources.any((s) => s.id == _current.activeSourceId)
+    final previous = _current.activeSource;
+    var selected =
+        sources.any(
+          (s) =>
+              s.id == previous?.id &&
+              s.sessionId == previous?.sessionId &&
+              s.deviceId == previous?.deviceId,
+        )
         ? _current.activeSourceId
         : null;
     if (!_selectedOnce && selected == null) {
@@ -124,26 +143,67 @@ final class CachedMediaSessionService implements MediaSessionService {
   MediaSourceState _source(String id) =>
       _current.sources.where((s) => s.id == id).firstOrNull ??
       (throw StateError('Media source disconnected'));
+  MediaProvider _owner(String id) => _providers.values.firstWhere(
+    (p) => p._sources.any((s) => s.id == id),
+    orElse: () => throw StateError('Media provider disconnected'),
+  );
   @override
-  Future<void> selectSource(String id) => _serialize(() async {
-    final source = _source(id);
-    if (select == null) throw UnsupportedError('Media routing unavailable');
-    await select!(source);
-    if (_source(id).sessionId != source.sessionId) {
-      throw StateError('Media session replaced');
+  Future<void> selectSource(String id) {
+    late final MediaSourceState expected;
+    late final MediaProvider expectedOwner;
+    try {
+      expected = _source(id);
+      expectedOwner = _owner(id);
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
     }
-    reflectSelection(id);
-  });
+    return _serialize(() async {
+      final source = _source(id);
+      final owner = _owner(id);
+      if (source.sessionId != expected.sessionId ||
+          source.deviceId != expected.deviceId ||
+          owner != expectedOwner) {
+        throw StateError('Media session replaced');
+      }
+      final handler = owner.select ?? select;
+      if (handler == null) throw UnsupportedError('Media routing unavailable');
+      await handler(source);
+      if (_source(id).sessionId != source.sessionId ||
+          _source(id).deviceId != source.deviceId ||
+          _owner(id) != owner) {
+        throw StateError('Media session replaced');
+      }
+      reflectSelection(id);
+    });
+  }
+
   @override
-  Future<void> command(String id, String command) => _serialize(() async {
-    final source = _source(id);
-    if (_current.activeSourceId != id ||
-        !source.commands.contains(command) ||
-        execute == null) {
-      throw UnsupportedError('Playback command unavailable for this source');
+  Future<void> command(String id, String command) {
+    late final MediaSourceState expected;
+    late final MediaProvider owner;
+    try {
+      expected = _source(id);
+      owner = _owner(id);
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
     }
-    await execute!(source, command);
-  });
+    return _serialize(() async {
+      final source = _source(id);
+      if (source.sessionId != expected.sessionId ||
+          source.deviceId != expected.deviceId ||
+          _owner(id) != owner) {
+        throw StateError('Media session replaced');
+      }
+      final handler = _owner(id).execute ?? execute;
+      if (_current.activeSourceId != id ||
+          !source.commands.contains(command) ||
+          handler == null) {
+        throw UnsupportedError('Playback command unavailable for this source');
+      }
+      await handler(source, command);
+    });
+  }
+
   Future<void> close() async {
     _closed = true;
     if (_tail != null) await _tail;

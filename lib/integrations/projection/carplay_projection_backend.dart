@@ -9,6 +9,7 @@ import '../../core/projection/projection_backend.dart';
 import 'projection_endpoints.dart';
 import '../../core/projection/projection_models.dart';
 import '../../core/projection/projection_types.dart';
+import '../../core/media/media_state.dart';
 
 /// Metadata and input only. The native daemon owns USB, authentication and AV.
 final class CarPlayProjectionBackend implements ProjectionBackend {
@@ -40,6 +41,179 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
   bool _started = false, _closed = false;
   Future<void>? _polling;
   int? _nativeSession;
+  (String, String)? _metadataEpoch;
+  int? _nativeMediaRevision;
+
+  static const _mediaControls = {
+    'previous',
+    'play',
+    'pause',
+    'playPause',
+    'next',
+  };
+  static int _integer(
+    Object? value,
+    String field, {
+    int max = 0x7fffffffffffffff,
+  }) {
+    if (value is! int || value < 0 || value > max) {
+      throw FormatException('Invalid CarPlay $field');
+    }
+    return value;
+  }
+
+  static int? _optionalInteger(
+    Map<String, dynamic> data,
+    String key, {
+    int max = 0xffffffff,
+  }) => data[key] == null ? null : _integer(data[key], key, max: max);
+  static String? _text(Map<String, dynamic> data, String key) {
+    final value = data[key];
+    if (value == null) return null;
+    if (value is! String ||
+        value.length > 1024 ||
+        RegExp(r'[\x00-\x1f]').hasMatch(value)) {
+      throw FormatException('Invalid CarPlay $key');
+    }
+    return value.isEmpty ? null : value;
+  }
+
+  static bool? _boolean(Map<String, dynamic> data, String key) {
+    final value = data[key];
+    if (value == null || value is bool) return value as bool?;
+    throw FormatException('Invalid CarPlay $key');
+  }
+
+  static String? _artwork(Map<String, dynamic> data) {
+    final value = _text(data, 'artwork_path');
+    final root = Platform.environment['XDG_RUNTIME_DIR'];
+    if (value == null || root == null) return null;
+    return RegExp(
+          '^${RegExp.escape(root)}/argo-artwork-[0-9]+-[a-f0-9]{32}/[a-f0-9]{32}\\.img\$',
+        ).hasMatch(value)
+        ? value
+        : null;
+  }
+
+  List<String> _commands(Map<String, dynamic> data) {
+    final commands = data['media_commands'];
+    if (data['recorded'] != true ||
+        commands is! List ||
+        commands.length > 5 ||
+        commands.any((c) => c is! String || !_mediaControls.contains(c)) ||
+        commands.toSet().length != commands.length) {
+      return const [];
+    }
+    return List.unmodifiable(commands.cast<String>());
+  }
+
+  /// Optional Now Playing data cannot invalidate an authenticated video stream.
+  /// Native revisions are checked within this exact phone/session epoch; the
+  /// public revision also includes phone/capability updates and explicit clears.
+  ProjectionSessionMetadata _metadata(
+    Map<String, dynamic> data,
+    String sessionId,
+    ProjectionDevice device,
+  ) {
+    final epoch = (sessionId, device.id);
+    final previous = epoch == _metadataEpoch
+        ? _current.sessions
+              .where((s) => s.id == sessionId && s.device.id == device.id)
+              .firstOrNull
+              ?.metadata
+        : null;
+    if (epoch != _metadataEpoch) {
+      _metadataEpoch = epoch;
+      _nativeMediaRevision = null;
+    }
+    var media = previous?.media;
+    var received = previous?.updatedAtMs ?? 0;
+    if (data.containsKey('media')) {
+      if (data['media'] == null) {
+        media = null;
+        _nativeMediaRevision = null;
+      } else {
+        try {
+          final block = data['media'];
+          if (block is! Map<String, dynamic>) {
+            throw const FormatException('Invalid CarPlay media');
+          }
+          final revision = _integer(block['revision'], 'media revision');
+          final timestamp = _integer(block['updated_at_ms'], 'media timestamp');
+          final parsed = MediaDetails(
+            title: _text(block, 'title'),
+            artist: _text(block, 'artist'),
+            album: _text(block, 'album'),
+            albumArtist: _text(block, 'album_artist'),
+            genre: _text(block, 'genre'),
+            application: _text(block, 'application'),
+            applicationId: _text(block, 'application_id'),
+            trackId: _text(block, 'track_id'),
+            artworkPath: _artwork(block),
+            playback: switch (block['playback']) {
+              'playing' => MediaPlaybackState.playing,
+              'paused' => MediaPlaybackState.paused,
+              'stopped' => MediaPlaybackState.stopped,
+              'seeking' => MediaPlaybackState.seeking,
+              _ => MediaPlaybackState.unknown,
+            },
+            positionMs: _optionalInteger(block, 'position_ms'),
+            durationMs: _optionalInteger(block, 'duration_ms'),
+          );
+          if (_nativeMediaRevision == null ||
+              revision >= _nativeMediaRevision!) {
+            media = parsed;
+            received = timestamp;
+            _nativeMediaRevision = revision;
+          }
+        } on Object {
+          // Retain the preceding valid facts only for the same session/phone.
+        }
+      }
+    }
+    var phone =
+        previous?.phone ?? PhoneDetails(displayName: device.displayName);
+    if (data.containsKey('phone')) {
+      try {
+        final block = data['phone'];
+        if (block == null) {
+          phone = PhoneDetails(displayName: device.displayName);
+        } else {
+          if (block is! Map<String, dynamic>) {
+            throw const FormatException('Invalid CarPlay phone');
+          }
+          phone = PhoneDetails(
+            displayName: device.displayName,
+            batteryPercent: _optionalInteger(
+              block,
+              'battery_percent',
+              max: 100,
+            ),
+            charging: _boolean(block, 'charging'),
+            externalPower: _boolean(block, 'external_power'),
+          );
+        }
+      } on Object {
+        /* Optional phone state cannot retire a valid stream. */
+      }
+    }
+    final commands = _commands(data);
+    final candidate = ProjectionSessionMetadata(
+      revision: previous?.revision ?? 0,
+      updatedAtMs: received,
+      media: media,
+      phone: phone,
+      mediaCommands: commands,
+    );
+    if (candidate == previous) return previous!;
+    return ProjectionSessionMetadata(
+      revision: (previous?.revision ?? 0) + 1,
+      updatedAtMs: received,
+      media: media,
+      phone: phone,
+      mediaCommands: commands,
+    );
+  }
 
   @override
   ProjectionProtocol get protocol => ProjectionProtocol.carPlay;
@@ -304,6 +478,7 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
                       data['phone_duck']['ramp_ms'] as int,
                     )
                   : null,
+              metadata: _metadata(data, sessionId, device),
             ),
           ],
           activeSessionId: data['selected'] == true ? sessionId : null,
@@ -311,6 +486,8 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
       );
     } on Object catch (error) {
       _nativeSession = null;
+      _metadataEpoch = null;
+      _nativeMediaRevision = null;
       final failure = error is ServiceFailure
           ? error
           : ServiceFailure(
@@ -403,6 +580,26 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
   }) async {
     if (button == ProjectionInputButton.voiceAssistant) {
       await _command(sessionId, {'action': 'siri', 'pressed': pressed});
+      return;
+    }
+    final command = switch (button) {
+      ProjectionInputButton.playPause => 'playPause',
+      ProjectionInputButton.next => 'next',
+      ProjectionInputButton.previous => 'previous',
+      ProjectionInputButton.play => 'play',
+      ProjectionInputButton.pause => 'pause',
+      _ => null,
+    };
+    if (command != null) {
+      _session(sessionId);
+      if (!pressed) return;
+      final session = _current.sessions
+          .where((s) => s.id == sessionId)
+          .firstOrNull;
+      if (session?.metadata?.mediaCommands.contains(command) != true) {
+        throw UnsupportedError('CarPlay playback control is unavailable.');
+      }
+      await _command(sessionId, {'action': 'media', 'command': command});
       return;
     }
     throw UnsupportedError('CarPlay does not support ${button.name} input.');

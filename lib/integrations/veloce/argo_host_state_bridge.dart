@@ -186,7 +186,8 @@ final class ArgoHostStateBridge {
             'deviceId': s.device.id,
             'batteryPercent': s.metadata?.phone.batteryPercent,
             'criticalBattery': s.metadata?.phone.criticalBattery,
-            'charging': null,
+            'charging': s.metadata?.phone.charging,
+            'externalPower': s.metadata?.phone.externalPower,
             'revision': s.metadata?.revision,
             'updatedAtMs': (s.metadata?.updatedAtMs ?? 0) == 0
                 ? null
@@ -215,6 +216,15 @@ final class ArgoHostStateBridge {
     'playbackState': d.playback.name,
     'positionMs': d.positionMs,
     'durationMs': d.durationMs,
+    'playlist': d.playlist,
+    'shuffle': d.shuffle,
+    'repeat': d.repeat,
+    'repeatOne': d.repeatOne,
+    'rating': d.rating,
+    'albumArtist': d.albumArtist,
+    'genre': d.genre,
+    'applicationId': d.applicationId,
+    'trackId': d.trackId,
   };
   Future<void> close() async {
     if (_closed) return;

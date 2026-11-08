@@ -1,6 +1,6 @@
 //! Private metadata/input IPC. No phone protocol, credentials or media bytes cross this socket.
 use crate::protocol::{
-    receiver::{Command, SessionInfo, Video},
+    receiver::{Command, MediaButton, SessionInfo, Video},
     wired,
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,10 @@ enum Request {
     },
     Disconnect {
         session: u64,
+    },
+    Media {
+        session: u64,
+        command: MediaButton,
     },
     MicrophoneSource {
         session: u64,
@@ -172,7 +176,8 @@ impl Control {
             | Request::Disconnect { session }
             | Request::MicrophoneSource { session, .. }
             | Request::MicrophoneMute { session, .. }
-            | Request::Siri { session, .. } => *session,
+            | Request::Siri { session, .. }
+            | Request::Media { session, .. } => *session,
         };
         if session != self.session {
             return Err(io::Error::other("stale session"));
@@ -190,7 +195,7 @@ impl Control {
                     json!({"id":"main","width":d.width,"height":d.height,"fps":d.fps_num/d.fps_den,"codec":if d.codec==crate::media::Codec::H264{"h264"}else{"hevc"},"first_frame":*video.first_frame.borrow(),"presentation_revision":presentation.revision,"native_parameters":d.view_parameters(video.crop).ok().map(|b|b.to_vec())})
                 });
                 return Ok(
-                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"transport":self.transport,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck}),
+                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"transport":self.transport,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck,"media":information.media,"phone":{"battery_percent":information.battery_percent,"external_power":information.external_power},"media_commands":if information.recorded && information.media_commands {vec!["previous","play","pause","playPause","next"]} else {vec![]}}),
                 );
             }
             Request::Activate { .. } => {
@@ -319,6 +324,15 @@ impl Control {
             }
             Request::MicrophoneMute { muted, .. } => {
                 self.command(Command::MicrophoneMute(muted))?
+            }
+            Request::Media { command, .. } => {
+                let information = self.information.borrow();
+                if !information.recorded || !information.media_commands {
+                    return Err(io::Error::other("unsupported media controls"));
+                }
+                // Media source selection owns these controls; video visibility
+                // is independent and must not prevent native Now Playing use.
+                self.command(Command::Media(command))?;
             }
             Request::Siri { pressed, .. } => {
                 if !presentation.active {
@@ -657,5 +671,82 @@ mod tests {
                 .is_err()
         );
         assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn media_controls_require_real_event_capability_and_session_but_not_video_visibility() {
+        let (mut control, mut commands) = fixture(4);
+        let status = control.request(Request::Status).await.unwrap();
+        assert_eq!(status["media_commands"], json!([]));
+        assert!(
+            control
+                .request(Request::Media {
+                    session: 7,
+                    command: MediaButton::PlayPause
+                })
+                .await
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
+        let (information, _) = watch::channel(SessionInfo {
+            recorded: true,
+            media_commands: true,
+            battery_percent: Some(61),
+            external_power: Some(true),
+            ..Default::default()
+        });
+        control.information = information.subscribe();
+        assert!(
+            control
+                .request(Request::Media {
+                    session: 6,
+                    command: MediaButton::Next
+                })
+                .await
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
+        let status = control.request(Request::Status).await.unwrap();
+        assert_eq!(
+            status["media_commands"],
+            json!(["previous", "play", "pause", "playPause", "next"])
+        );
+        assert_eq!(status["phone"]["battery_percent"], 61);
+        assert!(status["phone"].get("charging").is_none());
+        // The native Media page intentionally hides the projection layer.
+        assert!(!control.presentation.lock().await.visible);
+        for button in [
+            MediaButton::Play,
+            MediaButton::Pause,
+            MediaButton::PlayPause,
+            MediaButton::Next,
+            MediaButton::Previous,
+        ] {
+            control
+                .request(Request::Media {
+                    session: 7,
+                    command: button,
+                })
+                .await
+                .unwrap();
+            assert!(matches!(commands.recv().await, Some(Command::Media(_))));
+        }
+        information.send_modify(|s| s.media_commands = false);
+        assert!(
+            control
+                .request(Request::Media {
+                    session: 7,
+                    command: MediaButton::Pause
+                })
+                .await
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
+        assert!(
+            serde_json::from_value::<Request>(
+                json!({"action":"media","session":7,"command":"seek"})
+            )
+            .is_err()
+        );
     }
 }

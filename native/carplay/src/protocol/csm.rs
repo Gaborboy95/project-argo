@@ -166,17 +166,26 @@ impl AccessoryIdentity {
         {
             fields.push(Parameter::string(index as u16, value)?);
         }
-        // Only claim messages implemented here. No metadata/vehicle subscriptions.
+        // Only implemented metadata is subscribed; no vehicle/navigation claims.
         // Core authentication/identification messages are implicit in iAP2;
         // these lists describe the optional application messages only.
-        let sent: Vec<u8> = [START_SESSION]
-            .iter()
-            .flat_map(|v| v.to_be_bytes())
-            .collect();
-        let received: Vec<u8> = [AVAILABILITY, 0x4e0e]
-            .iter()
-            .flat_map(|v| v.to_be_bytes())
-            .collect();
+        let sent: Vec<u8> = [
+            START_SESSION,
+            super::now_playing::START,
+            super::now_playing::POWER_START,
+        ]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
+        let received: Vec<u8> = [
+            AVAILABILITY,
+            0x4e0e,
+            super::now_playing::UPDATE,
+            super::now_playing::POWER_UPDATE,
+        ]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
         fields.extend([
             Parameter::new(6, sent),
             Parameter::new(7, received),
@@ -212,17 +221,29 @@ impl AccessoryIdentity {
         identity.parameters.extend([
             Parameter::new(
                 6,
-                [WIFI_CONFIGURATION, START_SESSION]
-                    .into_iter()
-                    .flat_map(u16::to_be_bytes)
-                    .collect::<Vec<_>>(),
+                [
+                    WIFI_CONFIGURATION,
+                    START_SESSION,
+                    super::now_playing::START,
+                    super::now_playing::POWER_START,
+                ]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>(),
             ),
             Parameter::new(
                 7,
-                [AVAILABILITY, 0x4e0d, 0x4e0e, REQUEST_WIFI_CONFIGURATION]
-                    .into_iter()
-                    .flat_map(u16::to_be_bytes)
-                    .collect::<Vec<_>>(),
+                [
+                    AVAILABILITY,
+                    0x4e0d,
+                    0x4e0e,
+                    REQUEST_WIFI_CONFIGURATION,
+                    super::now_playing::UPDATE,
+                    super::now_playing::POWER_UPDATE,
+                ]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>(),
             ),
             Parameter::group(
                 17,
@@ -660,7 +681,7 @@ mod tests {
         let wifi = decode_parameters(wire.one(24).unwrap()).unwrap();
         assert_eq!(wifi.iter().find(|p| p.id == 0).unwrap().value, [0, 1]);
         assert!(wifi.iter().any(|p| p.id == 4 && p.value.is_empty()));
-        assert_eq!(wire.one(6).unwrap(), [0x57, 3, 0x43, 1]);
+        assert_eq!(wire.one(6).unwrap(), [0x57, 3, 0x43, 1, 0x50, 0, 0xae, 0]);
         assert!(identity.wireless_message([0; 6], "Argo").is_err());
     }
 

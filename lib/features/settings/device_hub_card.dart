@@ -182,6 +182,12 @@ class _DeviceHubCardState extends State<DeviceHubCard> {
         device.connecting || device.liveSessions.isNotEmpty;
     final partialProjection =
         device.connected && !projectionActive && device.protocol != null;
+    final partialMedia =
+        device.connected &&
+        !device.connecting &&
+        device.bluetoothOnly &&
+        device.audioSource &&
+        !device.mediaConnected;
     final usbProjection =
         device.id.startsWith('projection:') &&
         device.bluetoothAddress == null &&
@@ -207,7 +213,9 @@ class _DeviceHubCardState extends State<DeviceHubCard> {
     final status = device.connecting
         ? 'Connecting…'
         : device.connected
-        ? partialProjection
+        ? partialMedia
+              ? 'Audio not connected'
+              : partialProjection
               ? 'Bluetooth connected'
               : 'Connected'
         : device.paired
@@ -268,7 +276,7 @@ class _DeviceHubCardState extends State<DeviceHubCard> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                if (!active && connectable || partialProjection)
+                if (!active && connectable || partialProjection || partialMedia)
                   FilledButton.icon(
                     key: ValueKey('device-connect:${device.id}'),
                     onPressed: ready && identified

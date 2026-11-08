@@ -1,10 +1,10 @@
 //! Bluetooth iAP2 bring-up using LIVI's reliable link engine. The RFCOMM
 //! descriptor and AirPlay/AP resources belong to the caller, not this module.
 //! Wire research and vendored engine: f-io/LIVI bfbea31e; see vendor notices.
-use super::{Error as ProtocolError, csm, wired};
+use super::{Error as ProtocolError, csm, now_playing, wired};
 use crate::link::LinkClient;
 use iap2_link::{CONTROL_SESSION_ID, Event, LinkConfig, LinkEngine, LinkState};
-use std::{io, time::Duration};
+use std::{collections::VecDeque, io, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::watch,
@@ -17,17 +17,23 @@ struct Control<S> {
     started: Instant,
     bytes: Vec<u8>,
     negotiated: bool,
+    ready: VecDeque<csm::Message>,
+    updates: now_playing::Updates,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
-    fn new(stream: S) -> Self {
+    fn new_with_updates(stream: S, updates: Option<watch::Sender<now_playing::Metadata>>) -> Self {
+        let updates = now_playing::Updates::new(updates);
         let mut engine = LinkEngine::new(LinkConfig {
             max_outgoing: 4,
             control_version: 2,
             ..LinkConfig::default()
         });
-        // Argo advertises neither EA nor file-transfer/artwork support here.
-        engine.lsp.sessions.retain(|s| s.id == CONTROL_SESSION_ID);
+        // Only implemented sessions are advertised. Artwork remains optional.
+        engine.lsp.sessions.retain(|s| {
+            s.id == CONTROL_SESSION_ID
+                || updates.available() && s.id == now_playing::FILE_TRANSFER_SESSION
+        });
         engine.start(false, 0);
         Self {
             stream,
@@ -35,6 +41,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
             started: Instant::now(),
             bytes: Vec::new(),
             negotiated: false,
+            ready: VecDeque::new(),
+            updates,
         }
     }
 
@@ -66,6 +74,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
         loop {
             // Also drain ACK/retransmission output before returning buffered CSM.
             self.flush().await?;
+            if let Some(message) = self.ready.pop_front() {
+                if self.updates.observe(&message) {
+                    continue;
+                }
+                return Ok(message);
+            }
             if self.bytes.len() >= 6 {
                 if self.bytes[..2] != [0x40, 0x40] {
                     return Err(ProtocolError::Malformed.into());
@@ -77,6 +91,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                 if self.bytes.len() >= size {
                     let message = csm::Message::decode(&self.bytes[..size])?;
                     self.bytes.drain(..size);
+                    if self.updates.observe(&message) {
+                        continue;
+                    }
                     return Ok(message);
                 }
             }
@@ -131,6 +148,42 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Control<S> {
                             return Err(ProtocolError::Bounds.into());
                         }
                         self.bytes.extend(bytes);
+                        // Consume metadata in wire order before FT events from
+                        // the same read; FTID and track identity must be known.
+                        while self.bytes.len() >= 6 {
+                            if self.bytes[..2] != [0x40, 0x40] {
+                                return Err(ProtocolError::Malformed.into());
+                            }
+                            let size =
+                                usize::from(u16::from_be_bytes([self.bytes[2], self.bytes[3]]));
+                            if !(6..=65525).contains(&size) {
+                                return Err(ProtocolError::Bounds.into());
+                            }
+                            if self.bytes.len() < size {
+                                break;
+                            }
+                            let message = csm::Message::decode(&self.bytes[..size])?;
+                            self.bytes.drain(..size);
+                            if !self.updates.observe(&message) {
+                                if self.ready.len() >= 64 {
+                                    return Err(ProtocolError::Bounds.into());
+                                }
+                                self.ready.push_back(message);
+                            }
+                        }
+                    }
+                    Event::FileTransfer(bytes)
+                        if self
+                            .engine
+                            .lsp
+                            .sessions
+                            .iter()
+                            .any(|s| s.id == now_playing::FILE_TRANSFER_SESSION && s.kind == 1) =>
+                    {
+                        if let Some(reply) = self.updates.artwork(&bytes) {
+                            self.engine
+                                .send(now_playing::FILE_TRANSFER_SESSION, reply, self.now());
+                        }
                     }
                     Event::Dead { .. } => return Err(ProtocolError::Rejected.into()),
                     _ => {}
@@ -212,6 +265,15 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
     let start = config.start_session.message()?;
     let wifi = config.start_session.wifi_configuration()?;
     authenticate(control, link, identity, state).await?;
+    let artwork = control
+        .engine
+        .lsp
+        .sessions
+        .iter()
+        .any(|s| s.id == now_playing::FILE_TRANSFER_SESSION && s.kind == 1 && s.version == 2);
+    for subscription in control.updates.subscribe(artwork)? {
+        control.send(subscription).await?;
+    }
     state.send_replace(wired::State::WaitingForAvailability);
     // Human approval on iPhone happens after MFi authentication. Keep this
     // separate from silent negotiation/authentication deadlines.
@@ -273,10 +335,22 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     link: &LinkClient,
     configuration: wired::Configuration,
     controller: [u8; 6],
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     state: watch::Sender<wired::State>,
 ) -> Result<(), wired::Error> {
-    let mut control = Control::new(stream);
+    run_with_updates(stream, link, configuration, controller, stop, state, None).await
+}
+
+pub async fn run_with_updates<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    link: &LinkClient,
+    configuration: wired::Configuration,
+    controller: [u8; 6],
+    mut stop: watch::Receiver<bool>,
+    state: watch::Sender<wired::State>,
+    updates: Option<watch::Sender<now_playing::Metadata>>,
+) -> Result<(), wired::Error> {
+    let mut control = Control::new_with_updates(stream, updates);
     let result = tokio::select! {
         biased;
         _ = async { let _ = stop.wait_for(|v| *v).await; } => Err(wired::Error::Cancelled),

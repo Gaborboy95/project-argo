@@ -736,7 +736,7 @@ impl Music {
                     self.snapshot.selected = "bluetooth".into();
                 }
             }
-            "musicPlay" | "musicPause" | "musicPrevious" | "musicNext" => {
+            "musicPlay" | "musicPause" | "musicPlayPause" | "musicPrevious" | "musicNext" => {
                 let action = r.action.trim_start_matches("music").to_ascii_lowercase();
                 if r.target.starts_with("projection:") {
                     if self.snapshot.selected != "projection" {
@@ -744,6 +744,11 @@ impl Music {
                     }
                     return projection_command(&self.host, &self.projection, &r.target, &action)
                         .await;
+                }
+                if r.action == "musicPlayPause" {
+                    return Err(
+                        "Bluetooth playback requires an explicit Play or Pause command".into(),
+                    );
                 }
                 if self.snapshot.selected != "bluetooth" {
                     return Err("Select Bluetooth music before playback control".into());
@@ -781,6 +786,7 @@ async fn projection_command(
         "previous" => 88,
         "play" => 126,
         "pause" => 127,
+        "playpause" => 85,
         _ => return Err("Unsupported Android Auto playback command".into()),
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -952,6 +958,7 @@ mod tests {
             ("previous", 88),
             ("play", 126),
             ("pause", 127),
+            ("playpause", 85),
         ] {
             let request = projection_command(&host, &state, target, action);
             let peer = async {

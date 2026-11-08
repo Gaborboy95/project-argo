@@ -144,6 +144,8 @@ final class DeviceHubDevice {
     required this.connecting,
     this.address,
     this.bluetoothOnly = false,
+    this.audioSource = false,
+    this.mediaConnected = false,
   }) : endpoints = List.unmodifiable(endpoints),
        sessions = List.unmodifiable(sessions),
        protocols = Set.unmodifiable(protocols);
@@ -157,6 +159,7 @@ final class DeviceHubDevice {
   final ProjectionProtocol? protocol;
   final bool selected, paired, connected, connecting;
   final bool bluetoothOnly;
+  final bool audioSource, mediaConnected;
 
   ConnectivityDevice? forAdapter(String adapter) =>
       endpoints.where((endpoint) => endpoint.adapterId == adapter).firstOrNull;
@@ -365,6 +368,22 @@ List<DeviceHubDevice> buildDeviceInventory(
       (session) => session.state != ProjectionSessionState.connecting,
     );
     final activeProtocols = active.map((s) => s.device.protocol).toSet();
+    final musicDevice = connectivity.music?['device'] as String? ?? '';
+    final musicBelongs =
+        current.endpoints.any((e) => e.id == musicDevice) ||
+        (current.address != null &&
+            current.address == _addressOfReference(musicDevice));
+    final musicConnecting =
+        current.bluetoothOnly &&
+        musicBelongs &&
+        const {
+          'preparing',
+          'connecting',
+          'waiting',
+          'waiting-audio',
+          'retrying',
+          'backoff',
+        }.contains(connectivity.music?['phase']);
     return DeviceHubDevice(
       id: current.id,
       name: current.name,
@@ -382,12 +401,18 @@ List<DeviceHubDevice> buildDeviceInventory(
                     ? current.protocols.single
                     : null),
       bluetoothOnly: activeProtocols.isEmpty && current.bluetoothOnly,
+      audioSource: current.endpoints.any((e) => e.audioSource),
+      mediaConnected:
+          musicBelongs &&
+          connectivity.music?['phase'] == 'connected' &&
+          connectivity.music?['source'] is Map,
       selected: current.id == normalizedSelection,
       paired: current.remembered || current.endpoints.any((e) => e.paired),
       connected: established || current.endpoints.any((e) => e.connected),
       connecting:
           !established &&
           (current.connecting ||
+              musicConnecting ||
               active.any((s) => s.state == ProjectionSessionState.connecting)),
     );
   }).toList()..sort((a, b) => a.id.compareTo(b.id));

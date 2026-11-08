@@ -422,7 +422,22 @@ final class MultiplexProjectionBackend
     required bool pressed,
   }) async {
     final (backend, session) = _session(sessionId);
-    if (pressed) _requireInputOwner(sessionId);
+    const mediaButtons = {
+      ProjectionInputButton.previous: 'previous',
+      ProjectionInputButton.next: 'next',
+      ProjectionInputButton.playPause: 'playPause',
+      ProjectionInputButton.play: 'play',
+      ProjectionInputButton.pause: 'pause',
+    };
+    if (pressed) {
+      final mediaCommand = mediaButtons[button];
+      if (mediaCommand == null) {
+        _requireInputOwner(sessionId);
+      } else if (session.metadata?.mediaCommands.contains(mediaCommand) !=
+          true) {
+        throw StateError('This phone does not offer that media control.');
+      }
+    }
     await backend.sendButton(session.id, button, pressed: pressed);
   }
 

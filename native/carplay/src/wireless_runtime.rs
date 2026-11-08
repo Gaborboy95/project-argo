@@ -411,20 +411,21 @@ where
         let controller = &mut self.controller;
         let advertisement = self.advertisement;
         let result = session
-            .run_with_options(
+            .run_with_metadata(
                 move || options(),
                 self.link.clone(),
                 device_id,
                 SessionTransport::Wireless,
                 self.stop.clone(),
-                move |cancel, state| async move {
-                    wired::run_wireless(
+                move |cancel, state, metadata| async move {
+                    wired::run_wireless_with_updates(
                         phone.stream,
                         &control_link,
                         configuration,
                         controller_address,
                         cancel,
                         state,
+                        metadata,
                     )
                     .await
                     .map_err(|error| error.to_string())

@@ -145,7 +145,7 @@ You can also switch back to GRUB with:
 sudo efibootmgr -o <value from EFI_BOOTORDER_BEFORE>
 ```
 
-Select an existing **managed-compatible IPC7 bundle** with `argo-release.json`:
+Select an existing **managed-compatible IPC8 bundle** with `argo-release.json`:
 
 ```bash
 export ARGO_WIRELESS_BUNDLE="/absolute/path/to/the/matched/bundle"
@@ -389,7 +389,7 @@ camera mode/assets.
 
 ### View Area release compatibility
 
-View/Safe Area uses IPC7 and native view creation contract ARVW v1. Stage all three matched components (application, daemon, native view); Engine and IHS are unchanged. The deployment utility accepts retained IPC6 releases for rollback and requires native_view_contract 1 for IPC7. Daemon-only replacement must match the bundle IPC version. Update the installed utility using the existing idempotent installation command before selecting IPC7. Keys and preferences stay outside releases.
+View/Safe Area uses IPC8 and native view creation contract ARVW v1. Stage all three matched components (application, daemon, native view); Engine and IHS are unchanged. The deployment utility accepts retained IPC6/IPC7 releases for rollback and requires native_view_contract 1 for IPC7/IPC8. Daemon-only replacement must match the bundle IPC version. Update the installed utility using the existing idempotent installation command before selecting IPC8. Keys and preferences stay outside releases.
 
 ### Camera-capable releases
 

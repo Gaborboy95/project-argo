@@ -87,6 +87,10 @@ final class DefaultProjectionService
   Future<void>? _audioWork;
   bool _audioPending = false;
   bool _gainsRunning = false;
+  Future<void>? _gainOperation;
+  bool _entertainmentSelected = false;
+  String? _entertainmentSession;
+  int _entertainmentDecision = 0;
   bool _gainsPending = false;
   Timer? _gainDeadline;
   Timer? _retry;
@@ -293,12 +297,51 @@ final class DefaultProjectionService
     _gainsPending = true;
     if (_gainsRunning) return;
     _gainsRunning = true;
-    unawaited(
-      _reconcileGains().whenComplete(() {
-        _gainsRunning = false;
-        if (_gainsPending && !_closed) _scheduleGains();
-      }),
-    );
+    _gainOperation = _reconcileGains().whenComplete(() {
+      _gainsRunning = false;
+      _gainOperation = null;
+      if (_gainsPending && !_closed) _scheduleGains();
+    });
+  }
+
+  /// Entertainment selection affects only media gain, never video focus or
+  /// navigation, calls and system prompts. Null selects an external provider.
+  Future<void> selectEntertainment(String? sessionId) async {
+    if (_closed) throw StateError('Projection service is closed.');
+    final target = current.sessions
+        .where(
+          (s) =>
+              s.id == sessionId &&
+              s.state != ProjectionSessionState.failed &&
+              s.state != ProjectionSessionState.disconnected,
+        )
+        .firstOrNull;
+    if (sessionId != null && target == null) {
+      throw StateError('Projection media session disappeared.');
+    }
+    final decision = ++_entertainmentDecision;
+    _entertainmentSelected = true;
+    _entertainmentSession = sessionId;
+    _scheduleGains();
+    while (_gainOperation != null) {
+      final work = _gainOperation!;
+      await work.timeout(const Duration(seconds: 3));
+    }
+    if (_closed ||
+        decision != _entertainmentDecision ||
+        (sessionId != null &&
+            !current.sessions.any(
+              (s) =>
+                  s.id == sessionId &&
+                  s.device.id == target!.device.id &&
+                  s.state != ProjectionSessionState.failed &&
+                  s.state != ProjectionSessionState.disconnected,
+            ))) {
+      throw StateError('Projection media selection changed.');
+    }
+    if (_gainFailure != null) {
+      throw StateError('Phone media gain could not be applied.');
+    }
   }
 
   Future<void> _reconcileGains() async {
@@ -451,7 +494,13 @@ final class DefaultProjectionService
           continue;
         }
         present.add(id);
-        final gain = audio.current.effectiveSourceGains[id] ?? 0;
+        final allowed =
+            !_entertainmentSelected ||
+            stream.role != ProjectionAudioRole.media ||
+            session.id == _entertainmentSession;
+        final gain = allowed
+            ? (audio.current.effectiveSourceGains[id] ?? 0)
+            : 0.0;
         if (_sentAudioGains[id] == gain) continue;
         // A deadline reports degradation without abandoning the underlying call:
         // abandoning and retrying would accumulate unbounded native requests.

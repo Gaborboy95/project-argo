@@ -31,6 +31,8 @@ enum ProjectionInputButton {
   phoneAccept,
   phoneReject,
   voiceAssistant,
+  play,
+  pause,
 }
 
 enum ProjectionTouchPhase { down, move, up, cancel }

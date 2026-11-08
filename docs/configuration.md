@@ -224,7 +224,7 @@ settings document or plugin storage. There is no completed provisioning UI.
 
 ## IPC compatibility and ownership
 
-IPC v7 is incompatible with v1–v6: rebuild/restart both client and daemon together.
+IPC v8 is incompatible with v1–v7: rebuild/restart both client and daemon together.
 Session/video messages include session-scoped presentation revisions; AV stops
 are distinct from explicit host-return intent. Hello has no configuration or identity payload. One client owns control for the
 lifetime of its connection; a second receives an explicit ownership error and
@@ -301,7 +301,7 @@ See [security, permissions, launch and rollback](wireless.md).
 
 ## Bluetooth music and media ownership
 
-Bluetooth music uses the same IPC v7 connectivity envelope with an optional `music`
+Bluetooth music uses the same IPC v8 connectivity envelope with an optional `music`
 capability/state object, generation-scoped requests and operation acknowledgements.
 Use a matched release: an older daemon without this object has no music controller.
 There is no new media payload channel or Lua write permission.

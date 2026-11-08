@@ -16,6 +16,85 @@ import 'package:argo/core/settings/settings_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('entertainment selection gates only media and preserves video, navigation, calls and system audio', () async {
+    final gains = _ControlledGains();
+    final fixture = await _Fixture.start(gains: gains);
+    final projection = fixture.projection as DefaultProjectionService;
+    final snapshot = _entertainmentSnapshot();
+    fixture.backend.emit(snapshot);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    final master = fixture.audio.current.masterVolume;
+    final beforeView = projection.current.sessions.first.videoStreams.single;
+    await projection.selectEntertainment(null);
+    for (final session in ['session-a', 'session-b']) {
+      expect(gains.values['$session/media'], 0);
+      for (final role in ['speech', 'communication', 'system']) {
+        expect(gains.values['$session/$role'], 1, reason: '$session/$role');
+      }
+    }
+    expect(projection.current.activeSessionId, 'session-a');
+    expect(
+      projection.current.sessions.first.videoStreams.single,
+      same(beforeView),
+    );
+    expect(gains.controls, isEmpty);
+    expect(fixture.audio.current.masterVolume, master);
+    await projection.selectEntertainment('session-a');
+    expect(gains.values['session-a/media'], 1);
+    expect(gains.values['session-b/media'], 0);
+    for (final session in ['session-a', 'session-b']) {
+      for (final role in ['speech', 'communication', 'system']) {
+        expect(gains.values['$session/$role'], 1);
+      }
+    }
+    final values = Map.of(gains.values);
+    await expectLater(
+      projection.selectEntertainment('missing-session'),
+      throwsStateError,
+    );
+    expect(gains.values, values);
+    expect(
+      projection.current.sessions.first.videoStreams.single,
+      same(beforeView),
+    );
+    expect(gains.controls, isEmpty);
+    await fixture.close();
+  });
+
+  test('a media selection cannot confirm a session replaced during native gain delivery', () async {
+    final gains = _ControlledGains();
+    final fixture = await _Fixture.start(gains: gains);
+    final projection = fixture.projection as DefaultProjectionService;
+    fixture.backend.emit(_entertainmentSnapshot());
+    await Future<void>.delayed(Duration.zero);
+    await projection.selectEntertainment(null);
+    gains.pending = Completer<void>();
+    final selecting = projection.selectEntertainment('session-a');
+    final rejected = expectLater(selecting, throwsStateError);
+    await Future<void>.delayed(Duration.zero);
+    expect(gains.calls.last, 'session-a/media');
+    final old = _entertainmentSnapshot();
+    fixture.backend.emit(
+      ProjectionSnapshot(
+        backendAvailable: true,
+        devices: [old.sessions.last.device],
+        sessions: [old.sessions.last],
+        activeSessionId: 'session-b',
+      ),
+    );
+    gains.pending!.complete();
+    await rejected;
+    expect(gains.values['session-b/media'], 0);
+    expect(gains.controls, isEmpty);
+    expect(projection.current.activeSessionId, 'session-b');
+    await expectLater(
+      projection.selectEntertainment('session-a'),
+      throwsStateError,
+    );
+    await fixture.close();
+  });
+
   test('projection audio roles map to generic Argo audio roles', () {
     expect(
       audioRoleForProjection(ProjectionAudioRole.media),
@@ -366,6 +445,8 @@ class _ControlledGains extends Fake implements ProjectionBackend {
   Completer<void>? pending;
   Object? failure;
   final calls = <String>[];
+  final values = <String, double>{};
+  final controls = <String>[];
   @override
   ProjectionSnapshot get current => delegate.current;
   @override
@@ -383,6 +464,17 @@ class _ControlledGains extends Fake implements ProjectionBackend {
     calls.add('$sessionId/$streamId');
     if (failure case final error?) throw error;
     await pending?.future;
+    values['$sessionId/$streamId'] = gain;
+  }
+
+  @override
+  Future<void> activate(String sessionId) async {
+    controls.add('activate:$sessionId');
+  }
+
+  @override
+  Future<void> setVideoVisibility(String streamId, bool visible) async {
+    controls.add('video:$streamId:$visible');
   }
 }
 
@@ -425,4 +517,52 @@ class _ControlledHandle implements AudioFocusHandle {
     if (fail()) throw StateError('release failed');
     await delegate.release();
   }
+}
+
+ProjectionSnapshot _entertainmentSnapshot() {
+  final sessions = <ProjectionSession>[];
+  for (final id in ['session-a', 'session-b']) {
+    final device = ProjectionDevice(
+      id: 'phone-$id',
+      displayName: 'Phone',
+      protocol: id == 'session-a'
+          ? ProjectionProtocol.androidAuto
+          : ProjectionProtocol.carPlay,
+      transport: ProjectionTransport.usb,
+    );
+    sessions.add(
+      ProjectionSession(
+        id: id,
+        device: device,
+        state: ProjectionSessionState.streaming,
+        videoStreams: [
+          ProjectionVideoStream(
+            id: '$id:main',
+            sessionId: id,
+            role: ProjectionVideoRole.main,
+            codec: ProjectionVideoCodec.h264,
+            width: 1280,
+            height: 720,
+            framesPerSecond: 30,
+          ),
+        ],
+        audioStreams: [
+          for (final role in ProjectionAudioRole.values)
+            ProjectionAudioStream(
+              id: role.name,
+              sessionId: id,
+              role: role,
+              active: true,
+              hasFocus: false,
+            ),
+        ],
+      ),
+    );
+  }
+  return ProjectionSnapshot(
+    backendAvailable: true,
+    devices: sessions.map((s) => s.device),
+    sessions: sessions,
+    activeSessionId: 'session-a',
+  );
 }

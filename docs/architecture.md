@@ -182,7 +182,7 @@ power/audio adapters: select disabled explicitly.
 
 CarPlay development is isolated in `native/carplay` and `argo-carplayd`. The
 process defaults to Link diagnostics and can opt into supervised wired phone
-sessions. Diagnostic and session sockets are separate; AA IPC7 remains unchanged.
+sessions. Diagnostic and session sockets are separate; AA uses the matched IPC8 metadata/control protocol.
 `ARGO_CARPLAY_ENABLED=1` composes the CarPlay adapter through the shared
 `MultiplexProjectionBackend`. Pairing persists outside the runtime directory,
 while per-session sockets, USB handles and network resources are released on exit.
@@ -202,7 +202,7 @@ Flutter features → ProjectionService → backend → bounded Unix control IPC
                                   C++ GStreamer → BGRx appsink → IHS submit
 ```
 
-Control IPC v7 carries View/Safe Area in configuration and has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
+Control IPC v8 carries View/Safe Area in configuration and has a 12-byte header, 64 KiB maximum payload and a 256 KiB Dart
 receive-buffer bound. Device/session descriptors, commands, readiness/capabilities, revisioned
 preferences and gains use it; encoded video and decoded frame bytes do not.
 Identity paths and material never travel in client IPC; the daemon exclusively
@@ -372,7 +372,7 @@ Allow/Reject target the exact prompt ID; withdrawal, daemon loss and replacement
 clear pending decisions. A five-second unconfirmed response becomes retryable,
 and an old completion cannot affect a replacement request.
 
-## Projection configuration ownership (IPC v7)
+## Projection configuration ownership (IPC v8)
 
 Argo's ProjectionSettingsService persists the existing typed preferences; its
 optional ProjectionConfigurationBackend exposes daemon metadata independently
@@ -434,8 +434,8 @@ Bluetooth pairing database is introduced. See [Media sources](media.md) for rout
 installation, bounded connection intent and extension contracts.
 
 The daemon's bounded metadata parser handles track replacement separately from
-status/battery patches. A bounded artwork owner stores the encoded image in a private runtime file. IPC v7
-appends an optional cache reference to kind 11; no media bytes enter control IPC. Semantic duplicates
+status/battery patches. A bounded artwork owner stores the encoded image in a private runtime file. IPC v8
+carries a private cache reference plus playlist/modes/rating and negotiated media commands in kind 11; no media bytes enter control IPC. Semantic duplicates
 produce no revision or notification. Each live session has its own revision and
 receive timestamp; the existing unique session ID supplies its epoch. Replacement,
 failure and disconnect discard metadata; session-ID checks reject late updates.
@@ -499,7 +499,7 @@ updates preserve PlatformViewLayer IDs, input ownership and focus/session state.
 System-mode resolution uses Flutter's host brightness only; a future normalized
 vehicle day/night source would require a separate explicit policy.
 
-## Shared connectivity and wireless admission (IPC v7)
+## Shared connectivity and wireless admission (IPC v8)
 
 The existing daemon contains the protocol-neutral BlueZ device/pairing adapter
 and NetworkManager AP adapter in `connectivity/`. Its shared default BlueZ agent
@@ -579,7 +579,7 @@ are sent by the existing AA engine with bounded acknowledgement credit. The
 capture reader retains partial bytes across select cancellation and is polled
 alongside buffered packet draining, so video cannot starve input. No PCM, keys or
 identity material enters JSON IPC. Optional `calls`, `voice` and `stopped` fields
-and the new connectivity actions extend IPC v7 without altering its framing.
+and the new connectivity actions extend IPC v8 without altering its framing.
 Always stage and launch matching app/daemon builds.
 
 Settings → Application → Quit Argo requests `stopAll` with an operation ID.
@@ -598,7 +598,7 @@ The target is part of KDE's graphical session. Daemon IPC readiness precedes app
 startup; app readiness requires the existing IPC handshake and its first rendered
 frame. A private, bounded same-account administration socket supplies readiness
 and invokes `ApplicationExitService`; it carries neither media nor identity and
-does not compete for the projection IPC client lease. Projection IPC remains v7.
+does not compete for the projection IPC client lease. Projection IPC remains v8.
 
 The app orders after and is part of the daemon service, so daemon stop/restart
 stops the app first. Quit acknowledges native `stopAll`, runs the application

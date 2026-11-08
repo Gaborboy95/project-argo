@@ -13,16 +13,20 @@ final class ProjectionMediaSource {
     ProjectionService projection,
     this.media, {
     this.connectivity,
+    this.selectSource,
   }) {
-    _connectivitySubscription = connectivity?.connectivityChanges.listen(
-      (_) => _replace(projection.current),
+    _projection = projection;
+    _provider = media.register(
+      'projection',
+      select: selectSource,
+      execute: _execute,
     );
-    _provider = media.register('projection');
     _subscription = projection.changes.listen(_replace);
     _replace(projection.current);
   }
   final ConnectivityService? connectivity;
-  StreamSubscription<ConnectivitySnapshot>? _connectivitySubscription;
+  final Future<void> Function(MediaSourceState)? selectSource;
+  late final ProjectionService _projection;
   final CachedMediaSessionService media;
   late final MediaProvider _provider;
   int _revision = 0;
@@ -32,8 +36,7 @@ final class ProjectionMediaSource {
     if (snapshot.backendAvailable) {
       for (final session in snapshot.sessions) {
         final metadata = session.metadata;
-        if (metadata?.media == null ||
-            session.state == ProjectionSessionState.failed ||
+        if (session.state == ProjectionSessionState.failed ||
             session.state == ProjectionSessionState.disconnected) {
           continue;
         }
@@ -45,17 +48,15 @@ final class ProjectionMediaSource {
                 : MediaSourceKind.carPlay,
             deviceId: session.device.id,
             sessionId: session.id,
-            details: metadata!.media!,
-            commands:
-                session.device.protocol == ProjectionProtocol.androidAuto &&
-                    connectivity?.connectivity.music?['projection_commands'] ==
-                        true &&
-                    (session.state == ProjectionSessionState.streaming ||
-                        session.state == ProjectionSessionState.suspended)
-                ? const ['previous', 'play', 'pause', 'next']
-                : const [],
-            revision: metadata.revision,
-            updatedAtMs: metadata.updatedAtMs,
+            details: metadata?.media ?? const MediaDetails(),
+            displayName:
+                metadata?.phone.displayName ?? session.device.displayName,
+            phone: metadata?.phone,
+            commands: session.state == ProjectionSessionState.connecting
+                ? const []
+                : metadata?.mediaCommands ?? const [],
+            revision: metadata?.revision ?? 0,
+            updatedAtMs: metadata?.updatedAtMs ?? 0,
           ),
         );
       }
@@ -63,9 +64,34 @@ final class ProjectionMediaSource {
     _provider.publish(++_revision, sources);
   }
 
+  Future<void> _execute(MediaSourceState source, String command) async {
+    final session = _projection.current.sessions
+        .where(
+          (s) =>
+              s.id == source.sessionId &&
+              s.device.id == source.deviceId &&
+              s.state != ProjectionSessionState.failed &&
+              s.state != ProjectionSessionState.disconnected,
+        )
+        .firstOrNull;
+    if (session == null ||
+        session.metadata?.mediaCommands.contains(command) != true) {
+      throw StateError('The phone media session changed.');
+    }
+    final button = switch (command) {
+      'previous' => ProjectionInputButton.previous,
+      'next' => ProjectionInputButton.next,
+      'playPause' => ProjectionInputButton.playPause,
+      'play' => ProjectionInputButton.play,
+      'pause' => ProjectionInputButton.pause,
+      _ => throw UnsupportedError('Unsupported phone media command'),
+    };
+    await _projection.sendButton(session.id, button, pressed: true);
+    await _projection.sendButton(session.id, button, pressed: false);
+  }
+
   Future<void> close() async {
     await _subscription.cancel();
-    await _connectivitySubscription?.cancel();
     _provider.close();
   }
 }

@@ -95,6 +95,7 @@ class DeviceConnectionService {
   bool _closed = false, _startupConsumed = false, _reconciling = false;
   bool _exiting = false;
   int _intent = 0;
+  int _musicOperation = DateTime.now().microsecondsSinceEpoch;
   Timer? _startupTimer;
   Future<void> _tail = Future.value();
   Future<void>? _persisting;
@@ -546,7 +547,12 @@ class DeviceConnectionService {
     _check(intent);
     for (final other
         in _devices
-            .where((d) => d.id != id && d.protocol != null && d.connected)
+            .where(
+              (d) =>
+                  d.id != id &&
+                  (d.protocol != null || d.bluetoothOnly && d.audioSource) &&
+                  d.connected,
+            )
             .toList()) {
       for (final endpoint in other.endpoints) {
         await backend.connectivityCommand(
@@ -621,10 +627,53 @@ class DeviceConnectionService {
           'Choose this phone’s connection type in Devices first.',
         );
       }
-      final endpoint = device.endpoints.where((d) => d.paired).firstOrNull;
+      final endpoint =
+          device.endpoints
+              .where(
+                (d) =>
+                    d.paired &&
+                    d.audioSource &&
+                    d.adapterId == connectivity.adapter,
+              )
+              .firstOrNull ??
+          device.endpoints
+              .where((d) => d.paired && d.audioSource)
+              .firstOrNull ??
+          device.endpoints
+              .where((d) => d.paired && d.adapterId == connectivity.adapter)
+              .firstOrNull ??
+          device.endpoints.where((d) => d.paired).firstOrNull;
       if (endpoint == null) throw StateError('Pair this device first.');
+      if (endpoint.adapterId != connectivity.adapter) {
+        await backend.connectivityCommand(
+          'adapter',
+          target: endpoint.adapterId,
+        );
+        await _wait(
+          () => connectivity.adapter == endpoint.adapterId,
+          intent: intent,
+        );
+      }
       await backend.connectivityCommand('deviceConnect', target: endpoint.id);
       await _wait(() => _device(id).connected, intent: intent);
+      final musicPhone = _device(id).endpoints
+          .where((d) => d.paired && d.audioSource)
+          .firstOrNull;
+      if (musicPhone != null && connectivity.music != null) {
+        _check(intent);
+        final operation = ++_musicOperation;
+        await backend.connectivityCommand(
+          'musicConnect',
+          target: musicPhone.id,
+          prompt: operation,
+        );
+        await _wait(
+          () => connectivity.music?['operation'] == operation,
+          intent: intent,
+        );
+        final failure = connectivity.music?['error'];
+        if (failure is String && failure.isNotEmpty) throw StateError(failure);
+      }
     }
   }
 

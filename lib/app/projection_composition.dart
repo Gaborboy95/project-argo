@@ -145,6 +145,7 @@ Future<ProjectionService> registerProjectionServices({
     shutdown: projectionSettings.close,
   );
   final media = CachedMediaSessionService();
+  BluetoothMediaSource? bluetoothMedia;
   services.register<MediaSessionService>(media);
   lifecycle.registerShutdown(name: 'media.sessions', shutdown: media.close);
   if (connectivity != null) {
@@ -157,7 +158,7 @@ Future<ProjectionService> registerProjectionServices({
       phase: AppShutdownPhase.stopActivity,
       shutdown: callAudio.close,
     );
-    final bluetoothMedia = BluetoothMediaSource(
+    bluetoothMedia = BluetoothMediaSource(
       connectivity,
       media,
       audio: services.get<AudioService>(),
@@ -235,7 +236,15 @@ Future<ProjectionService> registerProjectionServices({
     connectivity: services.contains<ConnectivityService>()
         ? services.get<ConnectivityService>()
         : null,
+    selectSource: (source) async {
+      if (bluetoothMedia != null && connectivity?.connectivity.music != null) {
+        await bluetoothMedia.request('musicSelect', target: 'projection');
+      }
+      await projection.selectEntertainment(source.sessionId);
+    },
   );
+  bluetoothMedia?.beforeBluetoothSelection = () =>
+      projection.selectEntertainment(null);
   lifecycle.registerShutdown(
     name: 'projection.mediaSource',
     phase: AppShutdownPhase.stopActivity,

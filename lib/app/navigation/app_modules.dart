@@ -73,7 +73,16 @@ void registerBuiltInAppModules(AppModuleRegistry registry) {
         id: 'media',
         label: 'Media',
         icon: Icons.music_note_outlined,
-        builder: (_, services) => MediaPage(
+        builder: (context, services) => MediaPage(
+          onDevices: services.contains<DeviceConnectionService>()
+              ? () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) => registry.modules
+                        .firstWhere((module) => module.id == 'settings')
+                        .builder(context, services),
+                  ),
+                )
+              : null,
           connectivity: services.contains<ConnectivityService>()
               ? services.get<ConnectivityService>()
               : null,
