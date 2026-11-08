@@ -32,6 +32,22 @@ Fresh USB authorization, wireless sessions, metadata, cluster and long-running
 physical coexistence acceptance remain separate limitations. Unsupported features
 must not be described as usable based on the reference implementation.
 
+### Shared audio selection and wireless codecs
+
+Before connecting a phone, CarPlay synchronizes the confirmed shared output from
+Sound settings. Polling updates preferences for the next connection without
+restarting an existing session. A fresh microphone inventory confirms the selected
+input; an unplugged input is removed from CarPlay's advertised capabilities while
+its remembered application selection is retained for reconnection. Unknown or
+failed inventory never selects another input or a speaker monitor.
+
+The native receiver supports PCM and AAC-LC music, plus mono Opus speech, calls
+and alerts at negotiated 16, 24 or 48 kHz. Opus RTP timestamps and feedback use a
+48 kHz clock. Microphone Opus encoding shares the existing echo-processing and
+capture-ownership path. Synthetic GStreamer tests cover decoding, encrypted
+uplink packets, frame bounds, timing and cleanup; wireless audio still requires
+physical acceptance on the target phone and output.
+
 ## Topology and ownership
 
 For wired CarPlay, the iPhone belongs on a host USB port. Its usbmux/lockdown carkit stream

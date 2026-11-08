@@ -187,6 +187,15 @@ pub struct AudioFormat {
 }
 
 impl AudioFormat {
+    /// Opus RTP uses a 48 kHz clock regardless of the encoded speech bandwidth.
+    /// RFC 7587 section 4.1; the selected rate still configures microphone input.
+    pub fn clock_rate(self) -> u32 {
+        if self.codec == AudioCodec::Opus {
+            48000
+        } else {
+            self.sample_rate
+        }
+    }
     /// A SETUP must select exactly one supported format, not a capabilities mask.
     /// Format validation does not claim that a decoder/capture path is available.
     pub fn selected(bit: u64) -> Result<Self, Error> {

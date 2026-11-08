@@ -454,11 +454,11 @@ fn info(
             (100, "compatibility", 0xc3fc),
             (101, "compatibility", 0xc3fc),
             (100, "media", 0xcc00),
-            (100, "default", 0xc3fc),
-            (100, "telephony", 0x4154),
-            (100, "speechRecognition", 0x4154),
-            (100, "alert", 0xc3fc),
-            (101, "default", 0xc3fc),
+            (100, "default", 0x7000_c3fc),
+            (100, "telephony", 0x7000_4154),
+            (100, "speechRecognition", 0x7000_4154),
+            (100, "alert", 0x7000_c3fc),
+            (101, "default", 0x7000_c3fc),
             (102, "media", 0xc00000),
         ] {
             let mut format = dict([
@@ -471,10 +471,14 @@ fn info(
                 && ["compatibility", "default", "telephony", "speechRecognition"]
                     .contains(&category)
             {
-                format
-                    .as_dictionary_mut()
-                    .unwrap()
-                    .insert("audioInputFormats".into(), number(0x10));
+                format.as_dictionary_mut().unwrap().insert(
+                    "audioInputFormats".into(),
+                    number(if category == "compatibility" {
+                        0x10
+                    } else {
+                        0x7000_0010
+                    }),
+                );
             }
             formats.push(format);
             latencies.push(dict([
@@ -680,6 +684,21 @@ pub struct Receiver {
     pub peers: Arc<Mutex<Peers>>,
     pub link: LinkClient,
 }
+// Log only fixed protocol labels, once per type/session. Never print parameters.
+fn command_label(kind: Option<&str>) -> (u16, &'static str) {
+    let (index, label) = match kind {
+        Some("disableBluetooth") => (0, "disableBluetooth"),
+        Some("iAPSendMessage") => (1, "iAPSendMessage"),
+        Some("setUpStreams") => (2, "setUpStreams"),
+        Some("tearDownStreams") => (3, "tearDownStreams"),
+        Some("modesChanged") => (4, "modesChanged"),
+        Some("duckAudio") => (5, "duckAudio"),
+        Some("unduckAudio") => (6, "unduckAudio"),
+        Some("requestUI") => (7, "requestUI"),
+        _ => (8, "other"),
+    };
+    (1 << index, label)
+}
 impl Receiver {
     pub async fn run(
         &self,
@@ -730,6 +749,7 @@ impl Receiver {
         let mut events_rx = Some(events_rx);
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut active = false;
+        let mut logged_command_types = 0u16;
         let result = async {
             loop {
                 let request = {
@@ -821,7 +841,12 @@ impl Receiver {
                                         if !["media","default","compatibility","alert","telephony","speechRecognition"].contains(&category) { return Err(Error::Unsupported); }
                                         let microphone_port=fields.get("dataPort").and_then(Value::as_unsigned_integer).unwrap_or(0);
                                         let capture=if microphone_port != 0 {
-                                            if kind!=100 || format.codec!=super::airplay::AudioCodec::SignedPcm16 || format.sample_rate!=16000 || format.channels!=1 {return Err(Error::Unsupported);}
+                                            let supported_input = match format.codec {
+                                                super::airplay::AudioCodec::SignedPcm16 => format.sample_rate==16000,
+                                                super::airplay::AudioCodec::Opus => [16000,24000,48000].contains(&format.sample_rate),
+                                                _ => false,
+                                            };
+                                            if kind!=100 || !supported_input || format.channels!=1 {return Err(Error::Unsupported);}
                                             Some(super::audio::CaptureOptions {
                                                 source:microphone_source.clone().ok_or(Error::Unsupported)?,
                                                 key:pairing::derive_key(&verified.as_ref().ok_or(Error::State)?.secret,&format!("DataStream-Salt{connection}"),"DataStream-Input-Encryption-Key")?,
@@ -865,10 +890,10 @@ impl Receiver {
                             let mut streams = Vec::new();
                             for stream in &audio {
                                 if !stream.healthy() { return Err(Error::Rejected); }
-                                let mut fields = dict([("type", number(stream.kind as u64)),("sampleRate", number(stream.format.sample_rate as u64)),("streamConnectionID",number(stream.connection))]);
+                                let mut fields = dict([("type", number(stream.kind as u64)),("sampleRate", number(stream.format.clock_rate() as u64)),("streamConnectionID",number(stream.connection))]);
                                 if let Some(anchor) = *stream.anchor.lock().unwrap() {
                                     let elapsed = anchor.started.elapsed().saturating_sub(Duration::from_millis(stream.latency_ms as u64));
-                                    let sample = anchor.sample.wrapping_add((elapsed.as_secs_f64()*stream.format.sample_rate as f64) as u32);
+                                    let sample = anchor.sample.wrapping_add((elapsed.as_secs_f64()*stream.format.clock_rate() as f64) as u32);
                                     let fields = fields.as_dictionary_mut().unwrap(); fields.insert("sampleTime".into(),number(sample as u64)); fields.insert("timestamp".into(),number(clock.lock().unwrap().now()));
                                 }
                                 streams.push(fields);
@@ -878,6 +903,11 @@ impl Receiver {
                     }
                     ("POST", "/command") if authenticated => {
                         let command = parse(&request.body)?;
+                        let (flag,label) = command_label(command.get("type").and_then(Value::as_string));
+                        if logged_command_types & flag == 0 {
+                            logged_command_types |= flag;
+                            eprintln!("CarPlay command type: {label}");
+                        }
                         match command.get("type").and_then(Value::as_string) {
                             Some("modesChanged") => {
                                 if let Some(resources) = command.get("params").and_then(Value::as_dictionary).and_then(|p|p.get("resources")).and_then(Value::as_array) {
@@ -912,7 +942,7 @@ impl Receiver {
                     _ => return Err(Error::Unsupported),
                 }
                 #[cfg(feature = "linux-audio")]
-                self.information.send_modify(|state| state.audio = audio.iter().map(|stream| AudioInfo {connection:stream.connection.to_string(),category:stream.category.clone(),rate:stream.format.sample_rate,channels:stream.format.channels,active:stream.anchor.lock().unwrap().is_some(),metrics:*stream.metrics.lock().unwrap()}).collect());
+                self.information.send_modify(|state| state.audio = audio.iter().map(|stream| AudioInfo {connection:stream.connection.to_string(),category:stream.category.clone(),rate:stream.format.clock_rate(),channels:stream.format.channels,active:stream.anchor.lock().unwrap().is_some(),metrics:*stream.metrics.lock().unwrap()}).collect());
                 wire.respond(&request, &body, kind).await?;
                 if activate_cipher { let keys = verified.as_ref().unwrap(); wire.input.cipher = Some(ControlCipher::new(keys.read)); wire.output.cipher = Some(ControlCipher::new(keys.write)); }
             }
@@ -1551,7 +1581,18 @@ mod tests {
                 let value = 1u64 << bit;
                 if mask & value != 0 {
                     let selected = super::super::airplay::AudioFormat::selected(value).unwrap();
-                    assert_ne!(selected.codec, super::super::airplay::AudioCodec::Opus);
+                    if selected.codec == super::super::airplay::AudioCodec::Opus {
+                        assert_eq!(selected.channels, 1);
+                        assert_eq!(selected.clock_rate(), 48000);
+                        assert_ne!(
+                            format.get("audioType").and_then(Value::as_string),
+                            Some("media")
+                        );
+                        assert_ne!(
+                            format.get("audioType").and_then(Value::as_string),
+                            Some("compatibility")
+                        );
+                    }
                 }
             }
         }
@@ -1564,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_capability_is_limited_to_explicit_pcm_voice_support() {
+    fn capture_capability_advertises_only_supported_mono_pcm_and_opus() {
         let identity = Identity::generate("fixture".into()).unwrap();
         let enabled = info(
             &display(),
@@ -1582,18 +1623,55 @@ mod tests {
             if format.contains_key("audioInputFormats") {
                 inputs += 1;
                 assert_eq!(uint(format, "type").unwrap(), 100);
-                let selected = super::super::airplay::AudioFormat::selected(
-                    uint(format, "audioInputFormats").unwrap(),
-                )
-                .unwrap();
+                let mask = uint(format, "audioInputFormats").unwrap();
                 assert_eq!(
-                    selected.codec,
-                    super::super::airplay::AudioCodec::SignedPcm16
+                    mask,
+                    if format.get("audioType").and_then(Value::as_string) == Some("compatibility") {
+                        0x10
+                    } else {
+                        0x7000_0010
+                    }
                 );
-                assert_eq!((selected.sample_rate, selected.channels), (16000, 1));
+                for bit in 0..64 {
+                    if mask & (1u64 << bit) != 0 {
+                        let selected =
+                            super::super::airplay::AudioFormat::selected(1u64 << bit).unwrap();
+                        assert_eq!(selected.channels, 1);
+                        assert!(
+                            selected.codec == super::super::airplay::AudioCodec::Opus
+                                || selected.sample_rate == 16000
+                        );
+                    }
+                }
             }
         }
         assert_eq!(inputs, 4);
+    }
+
+    #[test]
+    fn command_diagnostics_expose_only_fixed_bounded_labels() {
+        let mut flags = 0u16;
+        for value in [
+            "disableBluetooth",
+            "iAPSendMessage",
+            "setUpStreams",
+            "tearDownStreams",
+            "modesChanged",
+            "duckAudio",
+            "unduckAudio",
+            "requestUI",
+            "private-identifier-or-unknown-command",
+        ] {
+            let (flag, label) = command_label(Some(value));
+            assert_eq!(flags & flag, 0);
+            flags |= flag;
+            assert!(label.len() <= 16);
+            if value.starts_with("private-") {
+                assert_eq!(label, "other");
+            }
+        }
+        assert_eq!(flags.count_ones(), 9);
+        assert_eq!(command_label(None), command_label(Some("anything else")));
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
 //! Native CarPlay RTP authentication and bounded GStreamer playback.
 //! PCM is S16BE on the wire. Audio never crosses Flutter IPC.
+//! Opus interoperability based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI),
+//! revision 34ae05e14df68f12d06cde0589f27d6d5b449ddb, GPL-3.0-or-later (see NOTICE).
 use super::{
     Error,
     airplay::{AudioCodec, AudioFormat},
@@ -30,6 +32,8 @@ pub fn available() -> Result<()> {
         "rtpmp4gdepay",
         "aacparse",
         "avdec_aac",
+        "rtpopusdepay",
+        "opusdec",
         "audioconvert",
         "audioresample",
         "volume",
@@ -55,7 +59,13 @@ pub fn capture_available(source: &str) -> Result<()> {
         return Err(Error::Bounds);
     }
     gst::init().map_err(failure)?;
-    for name in ["pulsesrc", "appsink", "webrtcdsp", "webrtcechoprobe"] {
+    for name in [
+        "pulsesrc",
+        "appsink",
+        "webrtcdsp",
+        "webrtcechoprobe",
+        "opusenc",
+    ] {
         if gst::ElementFactory::find(name).is_none() {
             return Err(Error::Unsupported);
         }
@@ -158,6 +168,11 @@ impl Playback {
         duplex: bool,
     ) -> Result<Self> {
         gst::init().map_err(failure)?;
+        if format.codec == AudioCodec::Opus
+            && (format.channels != 1 || ![16000, 24000, 48000].contains(&format.sample_rate))
+        {
+            return Err(Error::Unsupported);
+        }
         let prefix = match format.codec {
             AudioCodec::SignedPcm16 => {
                 "appsrc name=input is-live=true format=time block=false max-bytes=262144 ! "
@@ -167,7 +182,10 @@ impl Playback {
                 "appsrc name=input is-live=true format=time do-timestamp=true block=false max-bytes=262144 ! rtpjitterbuffer latency={} drop-on-latency=true ! rtpmp4gdepay ! aacparse ! avdec_aac ! ",
                 latency.max(50)
             ),
-            AudioCodec::Opus => return Err(Error::Unsupported),
+            AudioCodec::Opus => format!(
+                "appsrc name=input is-live=true format=time do-timestamp=true block=false max-bytes=262144 ! rtpjitterbuffer latency={} drop-on-latency=true ! rtpopusdepay ! opusdec ! ",
+                latency.max(20)
+            ),
         };
         static NEXT_PROBE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let echo_probe = duplex.then(|| {
@@ -215,7 +233,12 @@ impl Playback {
                     .field("indexdeltalength", "3")
                     .build()
             }
-            _ => return Err(Error::Unsupported),
+            AudioCodec::Opus => gst::Caps::builder("application/x-rtp")
+                .field("media", "audio")
+                .field("encoding-name", "OPUS")
+                .field("clock-rate", 48000i32)
+                .field("payload", payload_type as i32)
+                .build(),
         };
         source.set_caps(Some(&caps));
         let volume = pipeline.0.by_name("gain").ok_or(Error::State)?;
@@ -243,6 +266,9 @@ impl Playback {
         Ok(())
     }
     fn push(&mut self, rtp: &[u8], sample: u32) -> Result<()> {
+        if rtp.len() < 12 {
+            return Err(Error::Malformed);
+        }
         if self.source.current_level_bytes() > 262144 {
             return Err(Error::Bounds);
         }
@@ -268,7 +294,14 @@ impl Playback {
                 framed[1] = 0x80 | self.payload_type;
                 framed
             }
-            _ => return Err(Error::Unsupported),
+            AudioCodec::Opus => {
+                if !(1..=1275).contains(&(rtp.len() - 12)) {
+                    return Err(Error::Bounds);
+                }
+                let mut packet = rtp.to_vec();
+                packet[1] = (packet[1] & 0x80) | self.payload_type;
+                packet
+            }
         };
         let mut buffer = gst::Buffer::from_mut_slice(bytes);
         if self.format.codec == AudioCodec::SignedPcm16 {
@@ -301,7 +334,7 @@ impl Playback {
         Ok(())
     }
 }
-/// Capture is opened only for a negotiated bidirectional PCM stream.
+/// Capture is opened only for an explicitly negotiated PCM or Opus stream.
 pub struct CaptureOptions {
     pub source: String,
     pub key: [u8; 32],
@@ -322,6 +355,7 @@ struct Microphone {
     sequence: u16,
     timestamp: u32,
     running: bool,
+    opus: bool,
 }
 impl Microphone {
     fn open(format: AudioFormat, options: CaptureOptions, playback: &Playback) -> Result<Self> {
@@ -340,8 +374,9 @@ impl Microphone {
         source: &'static str,
         device: bool,
     ) -> Result<Self> {
-        if format.codec != AudioCodec::SignedPcm16
+        if ![AudioCodec::SignedPcm16, AudioCodec::Opus].contains(&format.codec)
             || format.channels != 1
+            || ![8000, 16000, 24000, 32000, 44100, 48000].contains(&format.sample_rate)
             || options.peer.port() == 0
             || options.source.is_empty()
             || options.source.len() > 256
@@ -353,14 +388,42 @@ impl Microphone {
         } else {
             options.frames_per_packet
         };
+        let opus = format.codec == AudioCodec::Opus;
+        if opus && ![16000, 24000, 48000].contains(&format.sample_rate) {
+            return Err(Error::Unsupported);
+        }
         let packet_bytes = frames as usize * 2;
-        if frames == 0 || packet_bytes > 4000 {
+        if frames == 0 || (!opus && packet_bytes > 4000) {
             return Err(Error::Bounds);
         }
+        let ticks = (frames as u64 * format.clock_rate() as u64) / format.sample_rate as u64;
+        let encoder = if opus {
+            if !(frames as u64 * 48000).is_multiple_of(format.sample_rate as u64) {
+                return Err(Error::Bounds);
+            }
+            let frame = match ticks {
+                120 => "2.5",
+                240 => "5",
+                480 => "10",
+                960 => "20",
+                1920 => "40",
+                2880 => "60",
+                _ => return Err(Error::Unsupported),
+            };
+            format!(
+                "audio/x-raw,format=S16LE,rate={},channels=1,layout=interleaved ! opusenc audio-type=voice bitrate=48000 frame-size={frame} max-payload-size=1275 ! ",
+                format.sample_rate
+            )
+        } else {
+            format!(
+                "audio/x-raw,format=S16BE,rate={},channels=1,layout=interleaved ! ",
+                format.sample_rate
+            )
+        };
         let probe = playback.echo_probe.as_ref().ok_or(Error::State)?;
         // WebRTC's reference and capture must share a top-level pipeline and rate.
         // Keep the capture bin locked in NULL until its explicit microphone lease.
-        let bin = gst::parse::bin_from_description(&format!("{source} ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! webrtcdsp probe={probe} echo-cancel=true gain-control=false ! audioconvert ! audioresample ! audio/x-raw,format=S16BE,rate={},channels=1,layout=interleaved ! appsink name=packets sync=false async=false max-buffers=4 drop=true wait-on-eos=false", format.sample_rate), false).map_err(failure)?;
+        let bin = gst::parse::bin_from_description(&format!("{source} ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! webrtcdsp probe={probe} echo-cancel=true gain-control=false ! audioconvert ! audioresample ! {encoder}appsink name=packets sync=false async=false max-buffers=4 drop=true wait-on-eos=false"), false).map_err(failure)?;
         bin.set_locked_state(true);
         if device {
             bin.by_name("capture")
@@ -379,7 +442,9 @@ impl Microphone {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let bytes = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    if bytes.len() > 4096 || !bytes.len().is_multiple_of(2) {
+                    if (opus && !(1..=1275).contains(&bytes.len()))
+                        || (!opus && (bytes.len() > 4096 || !bytes.len().is_multiple_of(2)))
+                    {
                         return Err(gst::FlowError::Error);
                     }
                     let _ = send.try_send(bytes.to_vec());
@@ -395,13 +460,14 @@ impl Microphone {
             pending: Vec::new(),
             packet_bytes,
             lease: None,
-            frames,
+            frames: u32::try_from(ticks).map_err(|_| Error::Bounds)?,
             key: options.key,
             peer: options.peer,
             counter: 0,
             sequence: 0,
             timestamp: 0,
             running: false,
+            opus,
         })
     }
     fn select_source(&mut self, source: &str) -> Result<()> {
@@ -452,6 +518,20 @@ impl Microphone {
         Ok(())
     }
     async fn send(&mut self, bytes: &[u8], socket: &UdpSocket) -> Result<()> {
+        if self.opus {
+            let packet = seal_opus(
+                &self.key,
+                self.counter,
+                self.sequence,
+                self.timestamp,
+                bytes,
+            )?;
+            self.counter = self.counter.checked_add(1).ok_or(Error::Bounds)?;
+            self.sequence = self.sequence.wrapping_add(1);
+            self.timestamp = self.timestamp.wrapping_add(self.frames);
+            socket.send_to(&packet, self.peer).await.map_err(failure)?;
+            return Ok(());
+        }
         if self.pending.len() + bytes.len() > 8192 {
             return Err(Error::Bounds);
         }
@@ -494,6 +574,27 @@ fn seal_pcm(
     if payload.is_empty() || payload.len() > 4000 || !payload.len().is_multiple_of(2) {
         return Err(Error::Bounds);
     }
+    seal_audio(key, counter, sequence, timestamp, payload)
+}
+fn seal_opus(
+    key: &[u8; 32],
+    counter: u64,
+    sequence: u16,
+    timestamp: u32,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    if !(1..=1275).contains(&payload.len()) {
+        return Err(Error::Bounds);
+    }
+    seal_audio(key, counter, sequence, timestamp, payload)
+}
+fn seal_audio(
+    key: &[u8; 32],
+    counter: u64,
+    sequence: u16,
+    timestamp: u32,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
     let mut header = [0u8; 12];
     header[0] = 0x80;
     header[1] = 100;
@@ -644,6 +745,204 @@ impl Drop for Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn encoded_opus(rate: u32) -> Vec<Vec<u8>> {
+        gst::init().unwrap();
+        let pipeline = gst::parse::launch(&format!(
+            "audiotestsrc num-buffers=4 samplesperbuffer={} wave=sine ! audio/x-raw,rate={rate},channels=1 ! audioconvert ! opusenc frame-size=20 max-payload-size=1275 ! appsink name=encoded sync=false max-buffers=8",
+            rate/50
+        )).unwrap().downcast::<gst::Pipeline>().unwrap();
+        let pipeline = Pipeline(pipeline);
+        let sink = pipeline
+            .0
+            .by_name("encoded")
+            .unwrap()
+            .downcast::<app::AppSink>()
+            .unwrap();
+        pipeline.0.set_state(gst::State::Playing).unwrap();
+        (0..3)
+            .map(|_| {
+                let sample = sink
+                    .try_pull_sample(gst::ClockTime::from_seconds(2))
+                    .unwrap();
+                let bytes = sample.buffer().unwrap().map_readable().unwrap().to_vec();
+                assert!((1..=1275).contains(&bytes.len()));
+                bytes
+            })
+            .collect()
+    }
+    fn synthetic_start(microphone: &Microphone, playback: &Playback) {
+        microphone
+            .bin
+            .set_clock(playback.pipeline.0.clock().as_ref())
+            .unwrap();
+        microphone
+            .bin
+            .set_base_time(playback.pipeline.0.base_time().unwrap());
+        microphone.bin.set_start_time(gst::ClockTime::NONE);
+        microphone.bin.set_state(gst::State::Playing).unwrap();
+    }
+    #[test]
+    fn encrypted_opus_decodes_real_samples_at_48k_for_every_speech_bandwidth() {
+        for bit in [0x1000_0000, 0x2000_0000, 0x4000_0000] {
+            let format = AudioFormat::selected(bit).unwrap();
+            let mut playback=Playback::open_with_output(format,100,20,None,
+                "audio/x-raw,format=S16LE,rate=48000,channels=1 ! appsink name=output sync=false async=false max-buffers=8",false).unwrap();
+            let caps = playback.source.caps().unwrap();
+            assert_eq!(
+                caps.structure(0).unwrap().get::<i32>("clock-rate").unwrap(),
+                48000
+            );
+            playback.gain(1.0).unwrap();
+            let output = playback
+                .pipeline
+                .0
+                .by_name("output")
+                .unwrap()
+                .downcast::<app::AppSink>()
+                .unwrap();
+            let mut decoder = Decoder {
+                key: [9; 32],
+                replay: Replay::default(),
+            };
+            for (i, payload) in encoded_opus(format.sample_rate).iter().enumerate() {
+                let sealed =
+                    seal_opus(&[9; 32], i as u64, i as u16, i as u32 * 960, payload).unwrap();
+                let (rtp, sample) = decoder.packet(&sealed).unwrap();
+                playback.push(&rtp, sample).unwrap();
+            }
+            let first = output
+                .try_pull_sample(gst::ClockTime::from_seconds(2))
+                .expect("Opus must decode to PCM");
+            let second = output
+                .try_pull_sample(gst::ClockTime::from_seconds(2))
+                .expect("second Opus frame");
+            assert_eq!(
+                first
+                    .caps()
+                    .unwrap()
+                    .structure(0)
+                    .unwrap()
+                    .get::<i32>("rate")
+                    .unwrap(),
+                48000
+            );
+            let a = first.buffer().unwrap();
+            let b = second.buffer().unwrap();
+            assert_eq!(a.duration(), Some(gst::ClockTime::from_mseconds(20)));
+            // The jitterbuffer steers timestamps slightly against the host clock.
+            assert!(
+                (b.pts().unwrap() - a.pts().unwrap())
+                    .nseconds()
+                    .abs_diff(20_000_000)
+                    < 1_000_000
+            );
+            assert!(a.map_readable().unwrap().iter().any(|byte| *byte != 0));
+            for size in [0, 1276] {
+                let mut rtp = vec![0; 12 + size];
+                rtp[0] = 0x80;
+                assert!(playback.push(&rtp, 0).is_err());
+            }
+            playback.pipeline.0.set_state(gst::State::Null).unwrap();
+            assert_eq!(playback.pipeline.0.current_state(), gst::State::Null);
+        }
+    }
+    #[tokio::test]
+    async fn opus_microphone_encodes_synthetic_audio_and_sends_authenticated_48k_timestamps() {
+        for bit in [0x1000_0000, 0x2000_0000, 0x4000_0000] {
+            let format = AudioFormat::selected(bit).unwrap();
+            let mut playback = Playback::open_with_output(
+                format,
+                100,
+                20,
+                None,
+                "fakesink name=output sync=false async=false",
+                true,
+            )
+            .unwrap();
+            let receiving = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let sending = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut microphone = Microphone::open_with_source(
+                format,
+                CaptureOptions {
+                    source: "synthetic".into(),
+                    key: [9; 32],
+                    peer: receiving.local_addr().unwrap(),
+                    frames_per_packet: format.sample_rate / 50,
+                },
+                &playback,
+                "audiotestsrc name=capture is-live=true samplesperbuffer=480 wave=sine",
+                false,
+            )
+            .unwrap();
+            assert_eq!(microphone.frames, 960);
+            assert_eq!(microphone.bin.current_state(), gst::State::Null);
+            assert!(microphone.lease.is_none());
+            assert!(
+                Microphone::open_with_source(
+                    format,
+                    CaptureOptions {
+                        source: "synthetic".into(),
+                        key: [9; 32],
+                        peer: receiving.local_addr().unwrap(),
+                        frames_per_packet: 1
+                    },
+                    &playback,
+                    "audiotestsrc name=capture is-live=true",
+                    false
+                )
+                .is_err()
+            );
+            synthetic_start(&microphone, &playback);
+            let mut decoder = Decoder {
+                key: [9; 32],
+                replay: Replay::default(),
+            };
+            for (i, reference) in encoded_opus(format.sample_rate).iter().take(2).enumerate() {
+                let sealed =
+                    seal_opus(&[8; 32], i as u64, i as u16, i as u32 * 960, reference).unwrap();
+                let (rtp, sample) = Decoder {
+                    key: [8; 32],
+                    replay: Replay::default(),
+                }
+                .packet(&sealed)
+                .unwrap();
+                playback.push(&rtp, sample).unwrap();
+                let encoded = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    microphone.samples.recv(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!((1..=1275).contains(&encoded.len()));
+                microphone.send(&encoded, &sending).await.unwrap();
+                let mut packet = [0; 1400];
+                let size = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    receiving.recv(&mut packet),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let (plain, timestamp) = decoder.packet(&packet[..size]).unwrap();
+                assert_eq!(timestamp, i as u32 * 960);
+                assert_eq!(&plain[12..], encoded);
+                assert_eq!(
+                    u16::from_be_bytes(plain[2..4].try_into().unwrap()),
+                    i as u16
+                );
+            }
+            assert!(
+                microphone.lease.is_none(),
+                "synthetic checks never claim a physical microphone"
+            );
+            microphone.bin.set_state(gst::State::Null).unwrap();
+            assert_eq!(microphone.bin.current_state(), gst::State::Null);
+            for size in [0, 1276] {
+                assert!(seal_opus(&[9; 32], 0, 0, 0, &vec![0; size]).is_err());
+            }
+        }
+    }
     fn packet(counter: u64) -> Vec<u8> {
         let mut header = [0u8; 12];
         header[0] = 0x80;

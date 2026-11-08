@@ -34,7 +34,7 @@ corresponding source accompany the patched firmware.
 See the
 [architecture and provenance review](docs/carplay-livi-review.md).
 
-Media metadata, consumer-HID playback controls and artwork were additionally
+Media metadata, consumer-HID playback controls, artwork and native Opus audio were additionally
 reviewed against the current Rust LIVI implementation at
 [`34ae05e14df68f12d06cde0589f27d6d5b449ddb`](https://github.com/f-io/LIVI/tree/34ae05e14df68f12d06cde0589f27d6d5b449ddb)
 (2026-11-08). This does not change the pinned vendored Link engine revision above.
