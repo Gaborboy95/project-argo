@@ -209,6 +209,7 @@ impl Endpoint {
             control_listener,
             session,
             progress: None,
+            handover: None,
             _paths: [video_path, control_path],
             endpoint: self.clone(),
         })
@@ -227,11 +228,16 @@ pub struct Session {
     control_listener: UnixListener,
     session: u64,
     progress: Option<watch::Sender<Progress>>,
+    handover: Option<([u8; 6], [u8; 6])>,
     // Drop endpoints before releasing the lock, including pre-session failures.
     _paths: [SocketFile; 2],
     endpoint: Endpoint,
 }
 impl Session {
+    pub fn with_bluetooth_handover(mut self, peer: [u8; 6], controller: [u8; 6]) -> Self {
+        self.handover = Some((peer, controller));
+        self
+    }
     pub fn with_progress(mut self, progress: watch::Sender<Progress>) -> Self {
         self.progress = Some(progress);
         self
@@ -292,6 +298,40 @@ impl Session {
         link: LinkClient,
         device_id: String,
         transport: SessionTransport,
+        stop: watch::Receiver<bool>,
+        control: C,
+        transport_ended: L,
+    ) -> Result<bool>
+    where
+        F: Fn() -> std::io::Result<Options> + Send + 'static,
+        C: FnOnce(
+                watch::Receiver<bool>,
+                watch::Sender<wired::State>,
+                watch::Sender<crate::protocol::now_playing::Metadata>,
+            ) -> CFut
+            + Send,
+        CFut: Future<Output = std::result::Result<(), String>> + Send + 'static,
+        L: Future<Output = String>,
+    {
+        self.run_with_handover(
+            options,
+            link,
+            device_id,
+            transport,
+            stop,
+            move |cancel, state, metadata, _| control(cancel, state, metadata),
+            transport_ended,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_handover<F, C, CFut, L>(
+        self,
+        options: F,
+        link: LinkClient,
+        device_id: String,
+        transport: SessionTransport,
         mut stop: watch::Receiver<bool>,
         control: C,
         transport_ended: L,
@@ -302,6 +342,7 @@ impl Session {
                 watch::Receiver<bool>,
                 watch::Sender<wired::State>,
                 watch::Sender<crate::protocol::now_playing::Metadata>,
+                Option<crate::protocol::handover::ControlSide>,
             ) -> CFut
             + Send,
         CFut: Future<Output = std::result::Result<(), String>> + Send + 'static,
@@ -320,7 +361,14 @@ impl Session {
         let (metadata, mut metadata_rx) =
             watch::channel(crate::protocol::now_playing::Metadata::default());
         let mut tasks = JoinSet::new();
-        tasks.spawn(control(cancel_rx, state, metadata));
+        let (receiver_handover, control_handover) = match self.handover {
+            Some((peer, controller)) => {
+                let (receiver, control) = crate::protocol::handover::channel(peer, controller);
+                (Some(receiver), Some(control))
+            }
+            None => (None, None),
+        };
+        tasks.spawn(control(cancel_rx, state, metadata, control_handover));
         let metadata_information = information.clone();
         tasks.spawn(async move {
             while metadata_rx.changed().await.is_ok() {
@@ -385,7 +433,7 @@ impl Session {
                 link,
             };
             receiver
-                .run(socket, session, video, commands_rx)
+                .run_with_handover(socket, session, video, commands_rx, receiver_handover)
                 .await
                 .map_err(|e| e.to_string())
         });

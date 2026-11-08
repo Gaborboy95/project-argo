@@ -6,6 +6,7 @@ use super::{
     Error,
     airplay::{AudioCodec, AudioFormat},
     pairing,
+    receiver::CaptureSource,
 };
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as app;
@@ -49,23 +50,28 @@ pub fn available() -> Result<()> {
 }
 
 /// Validate an explicitly selected capture source before advertising input.
-pub fn capture_available(source: &str) -> Result<()> {
-    if source.is_empty()
-        || source.len() > 256
-        || !source
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+pub fn capture_available(source: &CaptureSource) -> Result<()> {
+    if let Some(source) = source.device()
+        && (source.is_empty()
+            || source.len() > 256
+            || !source
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
     {
         return Err(Error::Bounds);
     }
     gst::init().map_err(failure)?;
-    for name in [
-        "pulsesrc",
-        "appsink",
-        "webrtcdsp",
-        "webrtcechoprobe",
-        "opusenc",
-    ] {
+    let elements: &[&str] = match source {
+        CaptureSource::Device(_) => &[
+            "pulsesrc",
+            "appsink",
+            "webrtcdsp",
+            "webrtcechoprobe",
+            "opusenc",
+        ],
+        CaptureSource::Silence => &["audiotestsrc", "appsink", "opusenc"],
+    };
+    for name in elements {
         if gst::ElementFactory::find(name).is_none() {
             return Err(Error::Unsupported);
         }
@@ -336,7 +342,7 @@ impl Playback {
 }
 /// Capture is opened only for an explicitly negotiated PCM or Opus stream.
 pub struct CaptureOptions {
-    pub source: String,
+    pub source: CaptureSource,
     pub key: [u8; 32],
     pub peer: SocketAddr,
     pub frames_per_packet: u32,
@@ -356,15 +362,21 @@ struct Microphone {
     timestamp: u32,
     running: bool,
     opus: bool,
+    silent: bool,
 }
 impl Microphone {
     fn open(format: AudioFormat, options: CaptureOptions, playback: &Playback) -> Result<Self> {
+        let silent = matches!(options.source, CaptureSource::Silence);
         Self::open_with_source(
             format,
             options,
             playback,
-            "pulsesrc name=capture buffer-time=40000 latency-time=10000",
-            true,
+            if silent {
+                "audiotestsrc name=capture is-live=true wave=silence samplesperbuffer=480"
+            } else {
+                "pulsesrc name=capture buffer-time=40000 latency-time=10000"
+            },
+            !silent,
         )
     }
     fn open_with_source(
@@ -378,8 +390,10 @@ impl Microphone {
             || format.channels != 1
             || ![8000, 16000, 24000, 32000, 44100, 48000].contains(&format.sample_rate)
             || options.peer.port() == 0
-            || options.source.is_empty()
-            || options.source.len() > 256
+            || options
+                .source
+                .device()
+                .is_some_and(|source| source.is_empty() || source.len() > 256)
         {
             return Err(Error::Unsupported);
         }
@@ -389,6 +403,7 @@ impl Microphone {
             options.frames_per_packet
         };
         let opus = format.codec == AudioCodec::Opus;
+        let silent = matches!(options.source, CaptureSource::Silence);
         if opus && ![16000, 24000, 48000].contains(&format.sample_rate) {
             return Err(Error::Unsupported);
         }
@@ -410,8 +425,11 @@ impl Microphone {
                 2880 => "60",
                 _ => return Err(Error::Unsupported),
             };
+            // Speech mode can synthesize comfort noise from silent samples.
+            // The diagnostic must encode silence without that voice processing.
+            let audio_type = if silent { "generic" } else { "voice" };
             format!(
-                "audio/x-raw,format=S16LE,rate={},channels=1,layout=interleaved ! opusenc audio-type=voice bitrate=48000 frame-size={frame} max-payload-size=1275 ! ",
+                "audio/x-raw,format=S16LE,rate={},channels=1,layout=interleaved ! opusenc audio-type={audio_type} bitrate=48000 frame-size={frame} max-payload-size=1275 ! ",
                 format.sample_rate
             )
         } else {
@@ -420,15 +438,34 @@ impl Microphone {
                 format.sample_rate
             )
         };
-        let probe = playback.echo_probe.as_ref().ok_or(Error::State)?;
         // WebRTC's reference and capture must share a top-level pipeline and rate.
         // Keep the capture bin locked in NULL until its explicit microphone lease.
-        let bin = gst::parse::bin_from_description(&format!("{source} ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! webrtcdsp probe={probe} echo-cancel=true gain-control=false ! audioconvert ! audioresample ! {encoder}appsink name=packets sync=false async=false max-buffers=4 drop=true wait-on-eos=false"), false).map_err(failure)?;
+        let echo = if silent {
+            // Generated silence must never use the playback reference or a
+            // capture device. There is no acoustic echo to cancel.
+            String::new()
+        } else {
+            let probe = playback.echo_probe.as_ref().ok_or(Error::State)?;
+            format!("webrtcdsp probe={probe} echo-cancel=true gain-control=false ! ")
+        };
+        let chain = if silent {
+            // Generate directly in the negotiated PCM format, avoiding sample
+            // conversion dither as well as any reference/capture audio path.
+            format!("{source} ! {encoder}")
+        } else {
+            format!(
+                "{source} ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! {echo}audioconvert ! audioresample ! {encoder}"
+            )
+        };
+        let bin = gst::parse::bin_from_description(
+            &(chain + "appsink name=packets sync=false async=false max-buffers=4 drop=true wait-on-eos=false"),
+            false,
+        ).map_err(failure)?;
         bin.set_locked_state(true);
         if device {
             bin.by_name("capture")
                 .ok_or(Error::State)?
-                .set_property("device", &options.source);
+                .set_property("device", options.source.device().ok_or(Error::State)?);
         }
         let sink = bin
             .by_name("packets")
@@ -468,9 +505,13 @@ impl Microphone {
             timestamp: 0,
             running: false,
             opus,
+            silent,
         })
     }
     fn select_source(&mut self, source: &str) -> Result<()> {
+        if self.silent {
+            return Err(Error::State);
+        }
         let capture = self.bin.by_name("capture").ok_or(Error::State)?;
         if capture.property::<Option<String>>("device").as_deref() == Some(source) {
             return Ok(());
@@ -483,7 +524,7 @@ impl Microphone {
         if active == self.running {
             return Ok(());
         }
-        if active {
+        if active && !self.silent {
             self.lease = Some(
                 argo_audio_ownership::MicrophoneLease::acquire_for(
                     argo_audio_ownership::Owner::CarPlay,
@@ -652,7 +693,29 @@ impl Stream {
         if ![100, 101, 102].contains(&kind) || latency_ms > 2000 {
             return Err(Error::Bounds);
         }
-        let mut playback = Playback::open(format, kind as u8, latency_ms, sink, capture.is_some())?;
+        let duplex = capture
+            .as_ref()
+            .is_some_and(|input| matches!(input.source, CaptureSource::Device(_)));
+        let playback = Playback::open(format, kind as u8, latency_ms, sink, duplex)?;
+        Self::start_with_playback(
+            local, peer, key, connection, kind, format, category, latency_ms, capture, playback,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_playback(
+        local: SocketAddr,
+        peer: SocketAddr,
+        key: [u8; 32],
+        connection: u64,
+        kind: u16,
+        format: AudioFormat,
+        category: String,
+        latency_ms: u32,
+        capture: Option<CaptureOptions>,
+        mut playback: Playback,
+    ) -> Result<Self> {
         let mut microphone = capture
             .map(|options| Microphone::open(format, options, &playback))
             .transpose()?;
@@ -660,6 +723,13 @@ impl Stream {
         let control = UdpSocket::bind(local).await.map_err(failure)?;
         let data_port = data.local_addr().map_err(failure)?.port();
         let control_port = control.local_addr().map_err(failure)?.port();
+        if let Some(microphone) = &mut microphone
+            && microphone.silent
+        {
+            // A negotiated muted input serves silence even before the phone
+            // sends downlink audio or the host selects an output media source.
+            microphone.active(true)?;
+        }
         let (gain, mut gain_rx) = watch::channel((0.0, false, None::<String>));
         let anchor = Arc::new(Mutex::new(None));
         let stored = anchor.clone();
@@ -674,8 +744,8 @@ impl Stream {
             let mut control_bytes = [0; 512];
             loop {
                 tokio::select! {
-                    result=gain_rx.changed()=>{result.map_err(failure)?;let (gain, muted, source)=gain_rx.borrow_and_update().clone();if let (Some(mic),Some(source))=(&mut microphone,source) {mic.select_source(&source)?;}playback.gain(gain)?;measured.lock().unwrap().gain=gain;if let Some(mic)=&mut microphone {mic.active(gain>0.0 && !muted && stored.lock().unwrap().is_some())?;measured.lock().unwrap().microphone_active=mic.running;}},
-                    bytes=async {match &mut microphone {Some(mic)=>mic.samples.recv().await,None=>std::future::pending().await}}=>{let bytes=bytes.ok_or(Error::State)?;if let Some(mic)=&mut microphone && mic.running && !gain_rx.borrow().1 {mic.send(&bytes,&data).await?;measured.lock().unwrap().microphone_packets=mic.counter;}},
+                    result=gain_rx.changed()=>{result.map_err(failure)?;let (gain, muted, source)=gain_rx.borrow_and_update().clone();if let (Some(mic),Some(source))=(&mut microphone,source) {mic.select_source(&source)?;}playback.gain(gain)?;measured.lock().unwrap().gain=gain;if let Some(mic)=&mut microphone {mic.active(mic.silent || (gain>0.0 && !muted && stored.lock().unwrap().is_some()))?;measured.lock().unwrap().microphone_active=mic.running;}},
+                    bytes=async {match &mut microphone {Some(mic)=>mic.samples.recv().await,None=>std::future::pending().await}}=>{let bytes=bytes.ok_or(Error::State)?;if let Some(mic)=&mut microphone && mic.running && (!gain_rx.borrow().1 || mic.silent) {mic.send(&bytes,&data).await?;measured.lock().unwrap().microphone_packets=mic.counter;}},
                     result=control.recv_from(&mut control_bytes)=>{let _=result.map_err(failure)?;},
                     result=data.recv_from(&mut bytes)=>{
                         let (size,remote)=result.map_err(failure)?;if remote.ip()!=peer.ip() || size>4096 {continue;}
@@ -691,7 +761,7 @@ impl Stream {
                             metrics.queued_bytes = playback.source.current_level_bytes();
                             metrics.playback_lag_ms = playback.pipeline.0.current_running_time().unwrap_or(gst::ClockTime::ZERO).mseconds() as i64 - playback.scheduled.mseconds() as i64;
                         }
-                        if let Some(mic)=&mut microphone {let (gain, muted, _)=gain_rx.borrow().clone();mic.active(gain>0.0 && !muted)?;measured.lock().unwrap().microphone_active=mic.running;}
+                        if let Some(mic)=&mut microphone {let (gain, muted, _)=gain_rx.borrow().clone();mic.active(mic.silent || (gain>0.0 && !muted))?;measured.lock().unwrap().microphone_active=mic.running;}
                     }
                 }
             }
@@ -745,6 +815,192 @@ impl Drop for Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn negotiated_silence_sends_rtp_while_muted_without_output_or_downlink_and_joins_teardown()
+     {
+        for bit in [0x10, 0x1000_0000] {
+            let format = AudioFormat::selected(bit).unwrap();
+            let receiving = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let playback = Playback::open_with_output(
+                format,
+                100,
+                20,
+                None,
+                "fakesink name=output sync=false async=false",
+                false,
+            )
+            .unwrap();
+            let stream = Stream::start_with_playback(
+                "127.0.0.1:0".parse().unwrap(),
+                receiving.local_addr().unwrap(),
+                [29; 32],
+                81,
+                100,
+                format,
+                "default".into(),
+                20,
+                Some(CaptureOptions {
+                    source: CaptureSource::Silence,
+                    key: [31; 32],
+                    peer: receiving.local_addr().unwrap(),
+                    frames_per_packet: 0,
+                }),
+                playback,
+            )
+            .await
+            .unwrap();
+            let mut decoder = Decoder {
+                key: [31; 32],
+                replay: Replay::default(),
+            };
+            for muted in [true, false, true] {
+                stream.set_microphone_muted(muted);
+                let mut packet = [0; 4096];
+                let size = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    receiving.recv(&mut packet),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let (rtp, _) = decoder.packet(&packet[..size]).unwrap();
+                if format.codec == AudioCodec::SignedPcm16 {
+                    assert!(rtp[12..].iter().all(|byte| *byte == 0));
+                } else {
+                    assert!((1..=1275).contains(&(rtp.len() - 12)));
+                }
+                assert!(stream.anchor.lock().unwrap().is_none());
+                let metrics = *stream.metrics.lock().unwrap();
+                assert_eq!(metrics.packets, 0);
+                assert_eq!(metrics.gain, 0.0);
+            }
+            let task = stream.task.abort_handle();
+            stream.close().await;
+            assert!(task.is_finished());
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_silent_input_serves_zero_pcm_and_opus_without_a_microphone_lease() {
+        for bit in [0x10, 0x1000_0000, 0x2000_0000, 0x4000_0000] {
+            let format = AudioFormat::selected(bit).unwrap();
+            capture_available(&CaptureSource::Silence).unwrap();
+            let playback = Playback::open_with_output(
+                format,
+                100,
+                20,
+                None,
+                "fakesink name=output sync=false async=false",
+                false,
+            )
+            .unwrap();
+            let receiving = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let sending = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut microphone = Microphone::open(
+                format,
+                CaptureOptions {
+                    source: CaptureSource::Silence,
+                    key: [19; 32],
+                    peer: receiving.local_addr().unwrap(),
+                    frames_per_packet: 0,
+                },
+                &playback,
+            )
+            .unwrap();
+            assert!(microphone.silent);
+            assert_eq!(
+                microphone
+                    .bin
+                    .by_name("capture")
+                    .unwrap()
+                    .factory()
+                    .unwrap()
+                    .name(),
+                "audiotestsrc"
+            );
+            microphone.active(true).unwrap();
+            assert!(microphone.running);
+            assert!(microphone.lease.is_none());
+            assert!(microphone.select_source("real.microphone").is_err());
+            assert_eq!(microphone.counter, 0);
+            // Repeated activation/unmute cannot change the typed silent source.
+            microphone.active(true).unwrap();
+            let mut decoded = Playback::open_with_output(
+                format,
+                100,
+                20,
+                None,
+                "audio/x-raw,format=F32LE,rate=48000,channels=1 ! appsink name=output sync=false async=false max-buffers=8",
+                false,
+            )
+            .unwrap();
+            decoded.gain(1.0).unwrap();
+            let output = decoded
+                .pipeline
+                .0
+                .by_name("output")
+                .unwrap()
+                .downcast::<app::AppSink>()
+                .unwrap();
+            let mut decoder = Decoder {
+                key: [19; 32],
+                replay: Replay::default(),
+            };
+            while microphone.counter < 3 {
+                let payload = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    microphone.samples.recv(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                if format.codec == AudioCodec::SignedPcm16 {
+                    assert!(payload.iter().all(|byte| *byte == 0));
+                } else {
+                    assert!((1..=1275).contains(&payload.len()));
+                }
+                let previous = microphone.counter;
+                microphone.send(&payload, &sending).await.unwrap();
+                for _ in previous..microphone.counter {
+                    let mut packet = [0; 4096];
+                    let size = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        receiving.recv(&mut packet),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    let (rtp, sample) = decoder.packet(&packet[..size]).unwrap();
+                    decoded.push(&rtp, sample).unwrap();
+                }
+            }
+            let sample = output
+                .try_pull_sample(gst::ClockTime::from_seconds(2))
+                .expect("silent input must decode as valid audio");
+            assert!(
+                sample
+                    .buffer()
+                    .unwrap()
+                    .map_readable()
+                    .unwrap()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|sample| f32::from_le_bytes(*sample) == 0.0),
+                "decoded silent input must contain only zero PCM: {format:?}"
+            );
+            let bin = microphone.bin.clone();
+            microphone.active(false).unwrap();
+            assert_eq!(bin.current_state(), gst::State::Null);
+            assert!(microphone.lease.is_none());
+            assert!(microphone.pending.is_empty());
+            assert!(microphone.samples.try_recv().is_err());
+            drop(microphone);
+            assert!(bin.parent().is_none());
+        }
+    }
+
     fn encoded_opus(rate: u32) -> Vec<Vec<u8>> {
         gst::init().unwrap();
         let pipeline = gst::parse::launch(&format!(
@@ -864,7 +1120,7 @@ mod tests {
             let mut microphone = Microphone::open_with_source(
                 format,
                 CaptureOptions {
-                    source: "synthetic".into(),
+                    source: CaptureSource::Device("synthetic".into()),
                     key: [9; 32],
                     peer: receiving.local_addr().unwrap(),
                     frames_per_packet: format.sample_rate / 50,
@@ -881,7 +1137,7 @@ mod tests {
                 Microphone::open_with_source(
                     format,
                     CaptureOptions {
-                        source: "synthetic".into(),
+                        source: CaptureSource::Device("synthetic".into()),
                         key: [9; 32],
                         peer: receiving.local_addr().unwrap(),
                         frames_per_packet: 1
@@ -968,7 +1224,7 @@ mod tests {
         let mut microphone = Microphone::open_with_source(
             format,
             CaptureOptions {
-                source: "synthetic".into(),
+                source: CaptureSource::Device("synthetic".into()),
                 key: [0; 32],
                 peer: "127.0.0.1:1234".parse().unwrap(),
                 frames_per_packet: 320,

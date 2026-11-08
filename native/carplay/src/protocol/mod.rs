@@ -10,7 +10,11 @@ pub mod airplay;
 #[cfg(feature = "linux-audio")]
 pub mod audio;
 pub mod csm;
+#[cfg(feature = "airplay")]
+pub mod handover;
 pub mod iap2;
+#[cfg(feature = "airplay")]
+pub mod iap_tunnel;
 #[cfg(all(feature = "linux-usb", target_os = "linux"))]
 pub mod ncm;
 pub mod now_playing;

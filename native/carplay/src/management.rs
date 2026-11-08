@@ -1,6 +1,6 @@
 //! Persistent local controls, independent of the lifetime of a phone session.
 use crate::{
-    protocol::receiver::{AudioOptions, Display},
+    protocol::receiver::{AudioOptions, CaptureSource, Display},
     runtime_control::SessionTransport,
     wired_runtime::Options,
 };
@@ -38,6 +38,11 @@ pub struct Settings {
     pub safe_insets: [u16; 4],
     pub audio_sink: Option<String>,
     pub audio_source: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub silent_input: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 fn zero_insets(insets: &[u16; 4]) -> bool {
     *insets == [0; 4]
@@ -56,7 +61,16 @@ impl Settings {
             view_insets: options.display.view_insets,
             safe_insets: options.display.safe_insets,
             audio_sink: options.audio.as_ref().and_then(|a| a.sink.clone()),
-            audio_source: options.audio.as_ref().and_then(|a| a.input.clone()),
+            audio_source: options
+                .audio
+                .as_ref()
+                .and_then(|a| a.input.as_ref())
+                .and_then(CaptureSource::device)
+                .map(str::to_owned),
+            silent_input: options
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.input == Some(CaptureSource::Silence)),
         }
     }
     pub fn options(&self) -> io::Result<Options> {
@@ -82,14 +96,18 @@ impl Settings {
                 return Err(io::Error::other("Invalid audio device"));
             }
         }
-        if self.audio_source.is_some() && self.audio_sink.is_none() {
+        if (self.audio_source.is_some() || self.silent_input) && self.audio_sink.is_none() {
             return Err(io::Error::other("Microphone requires audio output"));
         }
         Ok(Options {
             display,
             audio: self.audio_sink.as_ref().map(|sink| AudioOptions {
                 sink: Some(sink.clone()),
-                input: self.audio_source.clone(),
+                input: self
+                    .audio_source
+                    .clone()
+                    .map(CaptureSource::Device)
+                    .or_else(|| self.silent_input.then_some(CaptureSource::Silence)),
             }),
         })
     }
@@ -215,7 +233,11 @@ impl Manager {
         }))
     }
     fn persist(&self, settings: &Settings) -> io::Result<()> {
-        self.persist_json(&self.path, &serde_json::to_vec(settings)?)
+        let mut legacy = serde_json::to_value(settings)?;
+        // This opt-in diagnostic is runtime-only. Legacy releases reject
+        // unknown settings keys, so even true must never reach settings.json.
+        legacy.as_object_mut().unwrap().remove("silent_input");
+        self.persist_json(&self.path, &serde_json::to_vec(&legacy)?)
     }
 
     fn persist_json(&self, path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
@@ -244,8 +266,9 @@ impl Manager {
             Some("status") => {
                 let mut settings = serde_json::to_value(&state.settings)?;
                 settings["transport"] = serde_json::to_value(state.transport)?;
+                settings["silent_input"] = Value::Bool(state.settings.silent_input);
                 return Ok(
-                    json!({"ok":true,"contract":1,"settings":settings,"running":state.running,"target":state.target.map(|address| address.iter().map(|byte|format!("{byte:02X}")).collect::<Vec<_>>().join(":" )).unwrap_or_default(),"phase":*self.phase.lock().await,"wireless":cfg!(target_os="linux"),"microphone_ownership":microphone_ownership(),"viewport_supported":true,"viewport":state.viewport,"next_view_insets":state.options()?.display.view_insets,"next_safe_insets":state.options()?.display.safe_insets}),
+                    json!({"ok":true,"contract":1,"settings":settings,"running":state.running,"target":state.target.map(|address| address.iter().map(|byte|format!("{byte:02X}")).collect::<Vec<_>>().join(":" )).unwrap_or_default(),"phase":*self.phase.lock().await,"wireless":cfg!(target_os="linux"),"microphone_ownership":microphone_ownership(),"silent_input_supported":true,"viewport_supported":true,"viewport":state.viewport,"next_view_insets":state.options()?.display.view_insets,"next_safe_insets":state.options()?.display.safe_insets}),
                 );
             }
             Some("viewport") => {
@@ -412,6 +435,117 @@ fn microphone_ownership() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn silent_input_never_enters_legacy_settings_and_resets_after_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "argo-management-silent-input-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let options =
+            crate::wired_runtime::parse_options(&["1280", "720", "200", "112"].map(String::from))
+                .unwrap();
+        let manager = Manager::load(&path, &options).unwrap();
+        manager
+            .request(json!({"action":"configure","settings":{
+                "audio_sink":"chosen.output", "silent_input":true
+            }}))
+            .await
+            .unwrap();
+        assert!(manager.state.borrow().settings.silent_input);
+        assert_eq!(
+            manager.request(json!({"action":"status"})).await.unwrap()["settings"]["silent_input"],
+            true
+        );
+        manager
+            .request(json!({"action":"configure","settings":{"fps":60}}))
+            .await
+            .unwrap();
+        assert!(manager.state.borrow().settings.silent_input);
+        let persisted: Value =
+            serde_json::from_slice(&std::fs::read(path.join("settings.json")).unwrap()).unwrap();
+        assert!(persisted.get("silent_input").is_none());
+        // The on-disk contract contains only the original legacy keys.
+        let legacy_keys = [
+            "enabled",
+            "auto_connect",
+            "width",
+            "height",
+            "width_mm",
+            "height_mm",
+            "fps",
+            "right_hand_drive",
+            "audio_sink",
+            "audio_source",
+        ];
+        assert!(
+            persisted
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| legacy_keys.contains(&key.as_str()))
+        );
+        let reloaded = Manager::load(&path, &options).unwrap();
+        assert!(!reloaded.state.borrow().settings.silent_input);
+        assert!(
+            reloaded
+                .state
+                .borrow()
+                .options()
+                .unwrap()
+                .audio
+                .unwrap()
+                .input
+                .is_none()
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn silent_input_is_explicit_default_off_and_never_replaces_a_device() {
+        let options =
+            crate::wired_runtime::parse_options(&["1280", "720", "200", "112"].map(String::from))
+                .unwrap();
+        let mut settings = Settings::from_options(&options);
+        assert!(!settings.silent_input);
+        let legacy = serde_json::to_value(&settings).unwrap();
+        assert!(legacy.get("silent_input").is_none());
+        assert!(
+            !serde_json::from_value::<Settings>(legacy.clone())
+                .unwrap()
+                .silent_input
+        );
+        for value in [json!("true"), json!(1), Value::Null] {
+            let mut malformed = legacy.clone();
+            malformed["silent_input"] = value;
+            assert!(serde_json::from_value::<Settings>(malformed).is_err());
+        }
+        settings.silent_input = true;
+        assert!(
+            settings.options().is_err(),
+            "silent input requires an output"
+        );
+        settings.audio_sink = Some("chosen.output".into());
+        assert_eq!(
+            settings.options().unwrap().audio.unwrap().input,
+            Some(CaptureSource::Silence)
+        );
+        settings.audio_source = Some("chosen.microphone".into());
+        assert_eq!(
+            settings.options().unwrap().audio.unwrap().input,
+            Some(CaptureSource::Device("chosen.microphone".into()))
+        );
+        settings.audio_source = Some("invalid microphone".into());
+        assert!(
+            settings.options().is_err(),
+            "invalid devices cannot fall back to silence"
+        );
+        settings.audio_source = None;
+        settings.silent_input = false;
+        assert!(settings.options().unwrap().audio.unwrap().input.is_none());
+    }
+
     #[tokio::test]
     async fn connection_method_survives_restart_without_breaking_legacy_preferences() {
         let path =

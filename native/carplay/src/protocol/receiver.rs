@@ -161,6 +161,7 @@ pub struct Video {
 }
 #[derive(Clone, Debug)]
 pub enum Command {
+    Iap(Vec<u8>),
     AudioGain {
         connection: u64,
         gain: f64,
@@ -601,7 +602,30 @@ impl Outgoing {
 #[derive(Clone, Default)]
 pub struct AudioOptions {
     pub sink: Option<String>,
-    pub input: Option<String>,
+    pub input: Option<CaptureSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureSource {
+    Device(String),
+    Silence,
+}
+impl CaptureSource {
+    pub fn device(&self) -> Option<&str> {
+        match self {
+            Self::Device(device) => Some(device),
+            Self::Silence => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MicrophoneMode {
+    #[default]
+    Disabled,
+    Device,
+    Silence,
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -609,6 +633,9 @@ pub struct SessionInfo {
     pub name: String,
     pub recorded: bool,
     pub audio_available: bool,
+    pub microphone_mode: MicrophoneMode,
+    pub microphone_available: bool,
+    pub microphone_muted: bool,
     pub host_return_revision: u64,
     pub audio: Vec<AudioInfo>,
     pub phone_duck: Option<PhoneDuck>,
@@ -705,7 +732,18 @@ impl Receiver {
         socket: TcpStream,
         session: u64,
         video: watch::Sender<Option<Video>>,
+        commands: mpsc::Receiver<Command>,
+    ) -> Result<()> {
+        self.run_with_handover(socket, session, video, commands, None)
+            .await
+    }
+    pub async fn run_with_handover(
+        &self,
+        socket: TcpStream,
+        session: u64,
+        video: watch::Sender<Option<Video>>,
         mut commands: mpsc::Receiver<Command>,
+        mut handover: Option<super::handover::ReceiverSide>,
     ) -> Result<()> {
         self.display.validate()?;
         let device_identifier = self.device_identity.identifier(&self.identity)?;
@@ -715,14 +753,24 @@ impl Receiver {
         #[cfg(feature = "linux-audio")]
         if self.audio.is_some() {
             super::audio::available()?;
-            if let Some(source) = self.audio.as_ref().and_then(|a| a.input.as_deref()) {
+            if let Some(source) = self.audio.as_ref().and_then(|a| a.input.as_ref()) {
                 super::audio::capture_available(source)?;
             }
         }
         #[cfg(feature = "linux-audio")]
         let mut audio: Vec<super::audio::Stream> = Vec::new();
-        self.information
-            .send_modify(|s| s.audio_available = self.audio.is_some());
+        let microphone_source = self.audio.as_ref().and_then(|a| a.input.clone());
+        let microphone_mode = match &microphone_source {
+            Some(CaptureSource::Device(_)) => MicrophoneMode::Device,
+            Some(CaptureSource::Silence) => MicrophoneMode::Silence,
+            None => MicrophoneMode::Disabled,
+        };
+        self.information.send_modify(|s| {
+            s.audio_available = self.audio.is_some();
+            s.microphone_mode = microphone_mode;
+            s.microphone_available = microphone_mode == MicrophoneMode::Device;
+            s.microphone_muted = microphone_mode != MicrophoneMode::Device;
+        });
         let clock = Arc::new(std::sync::Mutex::new(SessionClock::new()));
         #[cfg_attr(
             not(feature = "linux-audio"),
@@ -733,8 +781,9 @@ impl Receiver {
             not(feature = "linux-audio"),
             allow(unused_variables, unused_assignments)
         )]
-        let mut microphone_source = self.audio.as_ref().and_then(|a| a.input.clone());
+        let mut microphone_source = microphone_source;
         let mut screen_started = false;
+        let mut iap_stream_started = false;
         let local = socket.local_addr()?;
         let peer = socket.peer_addr()?;
         let mut wire = Wire::new(socket);
@@ -767,18 +816,26 @@ impl Receiver {
                                         let _ = (connection, gain);
                                     }
                                     Command::MicrophoneSource(source) => {
-                                        microphone_source=Some(source.clone());
+                                        // A silent diagnostic can only become a physical
+                                        // capture source after a new phone negotiation.
+                                        if microphone_mode == MicrophoneMode::Silence { continue; }
+                                        microphone_source=Some(CaptureSource::Device(source.clone()));
                                         #[cfg(feature = "linux-audio")]
                                         for stream in &audio {stream.set_microphone_source(source.clone());}
                                     }
                                     Command::MicrophoneMute(muted) => {
                                         microphone_muted = muted;
+                                        self.information.send_modify(|s| s.microphone_muted = muted || microphone_mode != MicrophoneMode::Device);
                                         #[cfg(feature = "linux-audio")]
                                         for stream in &audio { stream.set_microphone_muted(muted); }
                                     }
                                     command if active => { events_tx.try_send(command).map_err(|_| Error::Bounds)?; }
                                     _ => {}
                                 }
+                            }
+                            Some(bytes)=async {match &mut handover {Some(relay)=>relay.outgoing.recv().await,None=>std::future::pending().await}} => {
+                                if let Some(relay)=&handover && !relay.is_failed()
+                                    && (!(1..=super::handover::MAX_CHUNK).contains(&bytes.len()) || !active || events_tx.try_send(Command::Iap(bytes)).is_err()) && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled");}
                             }
                             Some(result) = tasks.join_next(), if !tasks.is_empty() => { result.map_err(|_| Error::Rejected)??; return Err(Error::Rejected); },
                         }
@@ -821,6 +878,23 @@ impl Receiver {
                                 let fields = stream.as_dictionary().ok_or(Error::Malformed)?;
                                 let kind = uint(fields, "type")?;
                                 eprintln!("CarPlay stream SETUP: type={kind}, format={:?}", fields.get("audioFormat").and_then(Value::as_unsigned_integer));
+                                if kind==130 {
+                                    let Some(relay)=handover.as_ref().filter(|relay|!relay.is_failed()) else{continue;};
+                                    if iap_stream_started || !fields.get("uuid").and_then(Value::as_string).is_some_and(|uuid|uuid.eq_ignore_ascii_case(super::handover::IAP_UUID)) {continue;}
+                                    let seed=fields.get("seed").and_then(Value::as_string).map(str::to_owned)
+                                        .or_else(||fields.get("seed").and_then(Value::as_signed_integer).map(|n|n.to_string()))
+                                        .or_else(||fields.get("seed").and_then(Value::as_unsigned_integer).map(|n|n.to_string()));
+                                    let Some(seed)=seed.filter(|seed|!seed.is_empty() && seed.len()<=128 && seed.bytes().all(|b|b.is_ascii_graphic())) else{relay.fail();continue;};
+                                    let Ok(key)=pairing::derive_key(&verified.as_ref().ok_or(Error::State)?.secret,&format!("DataStream-Salt{seed}"),"DataStream-Output-Encryption-Key") else{relay.fail();continue;};
+                                    let Ok(listener)=TcpListener::bind(with_port(local,0)).await else{relay.fail();continue;};
+                                    let port=listener.local_addr()?.port();
+                                    let incoming=relay.incoming.clone();
+                                    let failure=relay.failure.clone();
+                                    tasks.spawn(async move {let result=super::iap_tunnel::run(listener,peer,key,incoming).await;if result.is_err(){failure.send_replace(true);}std::future::pending::<Result<()>>().await});
+                                    iap_stream_started=true;
+                                    replies.push(dict([("type",number(130)),("streamID",number(1)),("dataPort",number(port as u64))]));
+                                    continue;
+                                }
                                 let connection = connection_id(fields)?;
                                 let key = pairing::derive_key(&verified.as_ref().ok_or(Error::State)?.secret, &format!("DataStream-Salt{connection}"), "DataStream-Output-Encryption-Key")?;
                                 if kind == 110 {
@@ -879,11 +953,13 @@ impl Receiver {
                             let events = events_rx.take().ok_or(Error::State)?;
                             let information=self.information.clone();
                             tasks.spawn(async move { let result=event_channel(listener, peer, secret, events,Some(information)).await; if let Err(e)=&result {eprintln!("CarPlay events ended: {e}");} result });
-                            body = binary(&dict([("timingPort", number(timing_bound as u64)), ("eventPort", number(event_port as u64))]))?;
+                            let mut reply=dict([("timingPort", number(timing_bound as u64)), ("eventPort", number(event_port as u64))]);
+                            if handover.is_some(){reply.as_dictionary_mut().unwrap().insert("enabledFeatures".into(),Value::Array(vec![string("iAPChannel")]));}
+                            body = binary(&reply)?;
                             session_setup = true;
                         }
                     }
-                    ("RECORD", _) if authenticated && session_setup => { active = true; self.information.send_modify(|s|s.recorded=true); }
+                    ("RECORD", _) if authenticated && session_setup => { active = true; self.information.send_modify(|s|s.recorded=true);if let Some(relay)=&handover {relay.recorded.send_replace(true);} }
                     ("POST", "/feedback") if authenticated => {
                         #[cfg(feature = "linux-audio")]
                         {
@@ -909,6 +985,18 @@ impl Receiver {
                             eprintln!("CarPlay command type: {label}");
                         }
                         match command.get("type").and_then(Value::as_string) {
+                            Some("disableBluetooth")=>{
+                                if let Some(relay)=&handover {
+                                    let target=command.get("params").and_then(Value::as_dictionary).and_then(|p|p.get("deviceID")).and_then(Value::as_string).unwrap_or("");
+                                    eprintln!("CarPlay Bluetooth handover target accepted={}",relay.request_disable(target));
+                                }
+                            }
+                            Some("iAPSendMessage")=>{
+                                if let Some(relay)=&handover {
+                                    let data=command.get("params").and_then(Value::as_dictionary).and_then(|p|p.get("data")).and_then(Value::as_data);
+                                    if data.is_none_or(|data|relay.deliver(data).is_err()) && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled");}
+                                }
+                            }
                             Some("modesChanged") => {
                                 if let Some(resources) = command.get("params").and_then(Value::as_dictionary).and_then(|p|p.get("resources")).and_then(Value::as_array) {
                                     for resource in resources.iter().take(4) {
@@ -1258,6 +1346,7 @@ async fn event_channel(
                     let click = matches!(command, Command::Siri);
                     let media_release = matches!(command, Command::Media(_));
                     let payload = match command {
+                        Command::Iap(data) => dict([("type",string("iAPSendMessage")),("params",dict([("data",Value::Data(data))]))]),
                         Command::AudioGain { .. } | Command::MicrophoneMute(_) | Command::MicrophoneSource(_) => return Err(Error::State),
                         Command::Touch {slot, down, x, y} => {
                             if slot > 1 { return Err(Error::Bounds); }

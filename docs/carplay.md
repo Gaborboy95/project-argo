@@ -48,6 +48,14 @@ capture-ownership path. Synthetic GStreamer tests cover decoding, encrypted
 uplink packets, frame bounds, timing and cleanup; wireless audio still requires
 physical acceptance on the target phone and output.
 
+The private development setting `silent_input` explicitly enables a virtual,
+muted input for compatibility tests. It defaults off and is not persisted across
+daemon restarts. The status reports `microphone_mode: "silence"`,
+`microphone_available: false` and `microphone_muted: true`. It generates silence
+through the negotiated PCM/Opus encoder without selecting a default source,
+opening a speaker monitor or acquiring a hardware microphone lease. Reconnecting
+is required before changing an active silent session to a physical input.
+
 ## Topology and ownership
 
 For wired CarPlay, the iPhone belongs on a host USB port. Its usbmux/lockdown carkit stream
@@ -70,6 +78,15 @@ Bluetooth and never open HCI/handoff transport ports, which can acquire ownershi
 An already-running dongle AP is reported without being claimed by diagnostics.
 Explicit wireless mode owns the Link radio lifecycle and releases its controller
 after session cleanup; it does not take over the host's internal AA controller.
+
+After authenticated AirPlay RECORD, wireless sessions start a fresh zero-ACK iAP2
+link over encrypted `iAPSendMessage` events and the negotiated type-130 iAP
+channel. That link performs identification, MFi authentication and metadata
+subscriptions without starting a second CarPlay session. A validated
+`disableBluetooth` request disconnects only the captured iPhone peer; the Link
+controller, access point and AirPlay receiver stay owned. Optional iAP relay
+failure disables that relay without ending video. Explicit disconnect and real
+Link/AP/AirPlay loss still release the whole session.
 
 Wireless discovery uses the native `mdns_advertisement::Advertisement` owner and
 the installed Avahi daemon's system D-Bus API. Host policy must allow the desktop

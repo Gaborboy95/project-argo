@@ -42,6 +42,28 @@ pub struct Phone {
     pub peer: [u8; 6],
 }
 
+/// Scoped disconnect for the accepted peer; never powers down the adapter/AP.
+pub struct PeerDisconnector {
+    connection: Connection,
+    device: String,
+}
+impl PeerDisconnector {
+    pub async fn disconnect(self) -> Result<()> {
+        timeout(
+            Duration::from_secs(3),
+            self.connection.call_method(
+                Some("org.bluez"),
+                self.device.as_str(),
+                Some("org.bluez.Device1"),
+                "Disconnect",
+                &(),
+            ),
+        )
+        .await??;
+        Ok(())
+    }
+}
+
 async fn selected_phone(
     incoming: &mut mpsc::Receiver<Phone>,
     target: Option<[u8; 6]>,
@@ -188,6 +210,28 @@ pub struct Controller {
 }
 
 impl Controller {
+    pub fn peer_disconnector(&self, peer: [u8; 6]) -> Result<PeerDisconnector> {
+        if peer == [0; 6] || peer == [255; 6] {
+            return Err("Invalid selected Bluetooth peer".into());
+        }
+        let address = peer
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join("_");
+        let device = format!("/org/bluez/{}/dev_{address}", self.adapter);
+        if peer_on_adapter(&device, &self.adapter)? != peer {
+            return Err("Invalid selected Bluetooth path".into());
+        }
+        Ok(PeerDisconnector {
+            connection: self
+                .connection
+                .as_ref()
+                .ok_or("BlueZ controller closed")?
+                .clone(),
+            device,
+        })
+    }
     pub async fn acquire(
         link: &LinkClient,
         alias: &str,

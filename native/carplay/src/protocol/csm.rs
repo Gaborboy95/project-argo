@@ -158,6 +158,7 @@ pub fn identification_accepted(message: &Message) -> Result<(), Error> {
 }
 
 /// Minimal wired identity. Optional vehicle/navigation capabilities are omitted.
+#[derive(Clone)]
 pub struct AccessoryIdentity {
     pub name: String,
     pub model: String,
@@ -303,6 +304,7 @@ pub enum WirelessSecurity {
 }
 
 /// Addresses are supplied by host interface inventory, never by the phone.
+#[derive(Clone)]
 pub enum SessionTransport {
     Wired {
         address: IpAddr,
@@ -316,6 +318,7 @@ pub enum SessionTransport {
     },
 }
 
+#[derive(Clone)]
 pub struct StartSession {
     pub transport: SessionTransport,
     pub port: u16,

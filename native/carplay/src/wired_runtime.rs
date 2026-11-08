@@ -4,7 +4,7 @@ use crate::{
     link::LinkClient,
     protocol::{
         self, csm, ncm,
-        receiver::{AudioOptions, Display},
+        receiver::{AudioOptions, CaptureSource, Display},
         usb_mux, usbmux, wired,
     },
     runtime_control::SessionTransport,
@@ -43,12 +43,16 @@ pub fn parse_options(args: &[String]) -> Result<Options> {
                 Some(args[7].clone())
             } else {
                 std::env::var("ARGO_CARPLAY_MICROPHONE").ok()
-            },
+            }
+            .map(CaptureSource::Device),
         })
     } else {
         None
     };
-    if let Some(source) = audio.as_ref().and_then(|audio| audio.input.as_deref())
+    if let Some(source) = audio
+        .as_ref()
+        .and_then(|audio| audio.input.as_ref())
+        .and_then(CaptureSource::device)
         && (source.is_empty()
             || source.len() > 256
             || !source
@@ -301,7 +305,8 @@ mod tests {
                 .audio
                 .unwrap()
                 .input
-                .as_deref(),
+                .as_ref()
+                .and_then(CaptureSource::device),
             Some("source")
         );
         let mut invalid = args.clone();

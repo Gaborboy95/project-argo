@@ -377,7 +377,8 @@ where
         let session = self
             .endpoint
             .session()?
-            .with_progress(self.progress.clone());
+            .with_progress(self.progress.clone())
+            .with_bluetooth_handover(phone.peer, self.controller.address);
         let controller_address = self.controller.address;
         let configuration = wired::Configuration {
             identity: csm::AccessoryIdentity {
@@ -409,16 +410,17 @@ where
         let control_link = self.link.clone();
         let options = self.options.clone();
         let controller = &mut self.controller;
+        let disconnector = controller.peer_disconnector(phone.peer)?;
         let advertisement = self.advertisement;
         let result = session
-            .run_with_metadata(
+            .run_with_handover(
                 move || options(),
                 self.link.clone(),
                 device_id,
                 SessionTransport::Wireless,
                 self.stop.clone(),
-                move |cancel, state, metadata| async move {
-                    wired::run_wireless_with_updates(
+                move |cancel, state, metadata, handover| async move {
+                    crate::protocol::wireless::run_with_handover(
                         phone.stream,
                         &control_link,
                         configuration,
@@ -426,6 +428,13 @@ where
                         cancel,
                         state,
                         metadata,
+                        handover.ok_or("Wireless handover bridge unavailable")?,
+                        async move {
+                            disconnector
+                                .disconnect()
+                                .await
+                                .map_err(|error| error.to_string())
+                        },
                     )
                     .await
                     .map_err(|error| error.to_string())

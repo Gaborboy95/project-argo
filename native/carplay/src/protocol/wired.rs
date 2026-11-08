@@ -55,6 +55,7 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+#[derive(Clone)]
 pub struct Configuration {
     pub identity: csm::AccessoryIdentity,
     /// Supply only after a real authenticated AirPlay listener and host network

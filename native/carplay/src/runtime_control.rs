@@ -1,6 +1,6 @@
 //! Private metadata/input IPC. No phone protocol, credentials or media bytes cross this socket.
 use crate::protocol::{
-    receiver::{Command, MediaButton, SessionInfo, Video},
+    receiver::{Command, MediaButton, MicrophoneMode, SessionInfo, Video},
     wired,
 };
 use serde::{Deserialize, Serialize};
@@ -195,7 +195,7 @@ impl Control {
                     json!({"id":"main","width":d.width,"height":d.height,"fps":d.fps_num/d.fps_den,"codec":if d.codec==crate::media::Codec::H264{"h264"}else{"hevc"},"first_frame":*video.first_frame.borrow(),"presentation_revision":presentation.revision,"native_parameters":d.view_parameters(video.crop).ok().map(|b|b.to_vec())})
                 });
                 return Ok(
-                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":true,"session":self.session,"device":self.device_id,"transport":self.transport,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck,"media":information.media,"phone":{"battery_percent":information.battery_percent,"external_power":information.external_power},"media_commands":if information.recorded && information.media_commands {vec!["previous","play","pause","playPause","next"]} else {vec![]}}),
+                    json!({"contract":1,"available":true,"microphone_policy":true,"microphone_source":information.microphone_mode != MicrophoneMode::Silence,"microphone_mode":information.microphone_mode,"microphone_available":information.microphone_available,"microphone_muted":information.microphone_muted,"session":self.session,"device":self.device_id,"transport":self.transport,"name":if information.name.is_empty(){"iPhone"}else{&information.name},"recorded":information.recorded,"stage":format!("{:?}",*self.wired.borrow()),"selected":presentation.active,"visible":presentation.visible,"video":video,"audio":information.audio,"host_return_revision":information.host_return_revision,"phone_duck":information.phone_duck,"media":information.media,"phone":{"battery_percent":information.battery_percent,"external_power":information.external_power},"media_commands":if information.recorded && information.media_commands {vec!["previous","play","pause","playPause","next"]} else {vec![]}}),
                 );
             }
             Request::Activate { .. } => {
@@ -323,6 +323,11 @@ impl Control {
                 let _ = self.command(Command::ReleaseTouches);
             }
             Request::MicrophoneSource { source, .. } => {
+                if self.information.borrow().microphone_mode == MicrophoneMode::Silence {
+                    return Err(io::Error::other(
+                        "Silent input cannot become a microphone; reconnect required",
+                    ));
+                }
                 if source.is_empty()
                     || source.len() > 256
                     || !source
@@ -334,7 +339,8 @@ impl Control {
                 self.command(Command::MicrophoneSource(source))?;
             }
             Request::MicrophoneMute { muted, .. } => {
-                self.command(Command::MicrophoneMute(muted))?
+                let silent = self.information.borrow().microphone_mode == MicrophoneMode::Silence;
+                self.command(Command::MicrophoneMute(muted || silent))?
             }
             Request::Media { command, .. } => {
                 let information = self.information.borrow();
@@ -469,6 +475,48 @@ mod tests {
             connection: connection.into(),
             gain,
         }
+    }
+
+    #[tokio::test]
+    async fn silent_input_status_is_truthful_and_rejects_a_live_device_switch() {
+        let (mut control, mut commands) = fixture(2);
+        control.information = watch::channel(SessionInfo {
+            microphone_mode: MicrophoneMode::Silence,
+            microphone_available: false,
+            microphone_muted: true,
+            ..Default::default()
+        })
+        .1;
+        let status = control.request(Request::Status).await.unwrap();
+        assert_eq!(status["microphone_mode"], "silence");
+        assert_eq!(status["microphone_available"], false);
+        assert_eq!(status["microphone_muted"], true);
+        assert_eq!(status["microphone_source"], false);
+        let error = control
+            .request(Request::MicrophoneSource {
+                session: 7,
+                source: "real.microphone".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("reconnect required"));
+        assert!(commands.try_recv().is_err());
+        control
+            .request(Request::MicrophoneMute {
+                session: 7,
+                muted: false,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            commands.recv().await,
+            Some(Command::MicrophoneMute(true))
+        ));
+        assert_eq!(
+            control.request(Request::Status).await.unwrap()["microphone_muted"],
+            true
+        );
+        assert!(!*control.disconnect.borrow());
     }
 
     #[tokio::test]
