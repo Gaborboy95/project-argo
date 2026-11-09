@@ -726,6 +726,58 @@ fn command_label(kind: Option<&str>) -> (u16, &'static str) {
     };
     (1 << index, label)
 }
+
+fn iap_request(fields: &Dictionary) -> Option<String> {
+    if !fields
+        .get("clientTypeUUID")
+        .and_then(Value::as_string)
+        .is_some_and(|uuid| uuid.eq_ignore_ascii_case(super::handover::IAP_UUID))
+    {
+        return None;
+    }
+    let seed = match fields.get("seed")? {
+        Value::String(value) => value.clone(),
+        Value::Integer(value) => value
+            .as_signed()
+            .map(|n| n.to_string())
+            .or_else(|| value.as_unsigned().map(|n| n.to_string()))?,
+        Value::Real(value) if value.is_finite() && value.abs() < 1e21 => value.to_string(),
+        _ => return None,
+    };
+    (!seed.is_empty() && seed.len() <= 128 && seed.bytes().all(|b| b.is_ascii_graphic()))
+        .then_some(seed)
+}
+
+fn iap_shape(fields: &Dictionary) -> Vec<(&'static str, &'static str)> {
+    [
+        "type",
+        "clientTypeUUID",
+        "clientUUID",
+        "seed",
+        "streamConnectionID",
+        "uuid",
+        "dataStreamUUID",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        fields.get(key).map(|value| {
+            (
+                key,
+                match value {
+                    Value::String(_) => "string",
+                    Value::Integer(_) => "integer",
+                    Value::Real(_) => "real",
+                    Value::Boolean(_) => "boolean",
+                    Value::Data(_) => "data",
+                    Value::Array(_) => "array",
+                    Value::Dictionary(_) => "dictionary",
+                    _ => "other",
+                },
+            )
+        })
+    })
+    .collect()
+}
 impl Receiver {
     pub async fn run(
         &self,
@@ -784,6 +836,7 @@ impl Receiver {
         let mut microphone_source = microphone_source;
         let mut screen_started = false;
         let mut iap_stream_started = false;
+        let mut logged_iap_shape = false;
         let local = socket.local_addr()?;
         let peer = socket.peer_addr()?;
         let mut wire = Wire::new(socket);
@@ -879,12 +932,13 @@ impl Receiver {
                                 let kind = uint(fields, "type")?;
                                 eprintln!("CarPlay stream SETUP: type={kind}, format={:?}", fields.get("audioFormat").and_then(Value::as_unsigned_integer));
                                 if kind==130 {
+                                    if !logged_iap_shape {
+                                        logged_iap_shape=true;
+                                        eprintln!("CarPlay iAP DataStream shape: fields={:?}, client_type_iap={}, legacy_uuid_iap={}, seed_valid={}, already_started={}",iap_shape(fields),fields.get("clientTypeUUID").and_then(Value::as_string).is_some_and(|uuid|uuid.eq_ignore_ascii_case(super::handover::IAP_UUID)),fields.get("uuid").and_then(Value::as_string).is_some_and(|uuid|uuid.eq_ignore_ascii_case(super::handover::IAP_UUID)),iap_request(fields).is_some(),iap_stream_started);
+                                    }
                                     let Some(relay)=handover.as_ref().filter(|relay|!relay.is_failed()) else{continue;};
-                                    if iap_stream_started || !fields.get("uuid").and_then(Value::as_string).is_some_and(|uuid|uuid.eq_ignore_ascii_case(super::handover::IAP_UUID)) {continue;}
-                                    let seed=fields.get("seed").and_then(Value::as_string).map(str::to_owned)
-                                        .or_else(||fields.get("seed").and_then(Value::as_signed_integer).map(|n|n.to_string()))
-                                        .or_else(||fields.get("seed").and_then(Value::as_unsigned_integer).map(|n|n.to_string()));
-                                    let Some(seed)=seed.filter(|seed|!seed.is_empty() && seed.len()<=128 && seed.bytes().all(|b|b.is_ascii_graphic())) else{relay.fail();continue;};
+                                    if iap_stream_started || !fields.get("clientTypeUUID").and_then(Value::as_string).is_some_and(|uuid|uuid.eq_ignore_ascii_case(super::handover::IAP_UUID)) {continue;}
+                                    let Some(seed)=iap_request(fields) else{relay.fail();continue;};
                                     let Ok(key)=pairing::derive_key(&verified.as_ref().ok_or(Error::State)?.secret,&format!("DataStream-Salt{seed}"),"DataStream-Output-Encryption-Key") else{relay.fail();continue;};
                                     let Ok(listener)=TcpListener::bind(with_port(local,0)).await else{relay.fail();continue;};
                                     let port=listener.local_addr()?.port();
@@ -1467,6 +1521,66 @@ async fn timing(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iap_datastream_uses_livi_client_type_uuid_and_typed_seed_on_the_wire() {
+        for (seed, expected) in [
+            (Value::Integer(42u64.into()), "42"),
+            (Value::Integer((-42i64).into()), "-42"),
+            (Value::Real(42.0), "42"),
+            (Value::Real(42.5), "42.5"),
+            (Value::String("opaque-seed".into()), "opaque-seed"),
+        ] {
+            let request = dict([
+                ("type", number(130)),
+                (
+                    "clientTypeUUID",
+                    string(&super::super::handover::IAP_UUID.to_lowercase()),
+                ),
+                ("clientUUID", string("private-phone-identifier")),
+                ("seed", seed),
+            ]);
+            let decoded = parse(&binary(&request).unwrap()).unwrap();
+            assert_eq!(iap_request(&decoded).as_deref(), Some(expected));
+            let shape = format!("{:?}", iap_shape(&decoded));
+            assert!(shape.contains("clientTypeUUID"));
+            assert!(!shape.contains("private-phone-identifier"));
+            assert!(!shape.contains("opaque-seed"));
+        }
+        let wrong = dict([
+            ("type", number(130)),
+            ("uuid", string(super::super::handover::IAP_UUID)),
+            ("seed", number(42)),
+        ]);
+        assert!(
+            iap_request(wrong.as_dictionary().unwrap()).is_none(),
+            "a display/device uuid is not a DataStream client type"
+        );
+    }
+
+    #[test]
+    fn iap_datastream_seed_bounds_and_shape_diagnostics_do_not_expose_values() {
+        for seed in [
+            Value::Real(f64::NAN),
+            Value::Real(f64::INFINITY),
+            Value::Real(1e21),
+            string(""),
+            string(&"s".repeat(129)),
+            string("seed\nvalue"),
+            Value::Data(vec![1, 2, 3]),
+        ] {
+            let request = dict([
+                ("clientTypeUUID", string(super::super::handover::IAP_UUID)),
+                ("seed", seed),
+                ("private-key-identifier", string("secret-value")),
+            ]);
+            let fields = request.as_dictionary().unwrap();
+            assert!(iap_request(fields).is_none());
+            let shape = format!("{:?}", iap_shape(fields));
+            assert!(!shape.contains("private-key-identifier"));
+            assert!(!shape.contains("secret-value"));
+        }
+    }
+
     #[test]
     fn phone_duck_is_bounded_and_unduck_restores_unity() {
         let mut params = plist::Dictionary::new();

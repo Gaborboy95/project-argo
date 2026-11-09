@@ -9,6 +9,64 @@ import 'package:argo/integrations/projection/carplay_projection_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('plugging a real mic into an active silence session preserves video and audio', () async {
+    String? microphone = '';
+    final fixture = await _MediaFixture.create(
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(fixture.close);
+    fixture.status.addAll({
+      'microphone_source': true,
+      'microphone_mode': 'silence',
+      'selected': true,
+      'visible': true,
+      'media_commands': ['playPause'],
+      'audio': [
+        {
+          'connection': 'music',
+          'category': 'media',
+          'rate': 44100,
+          'channels': 2,
+          'active': true,
+        },
+      ],
+    });
+    await fixture.backend.start();
+    final initial = fixture.backend.current.sessions.single;
+    expect(initial.audioStreams.single.active, isTrue);
+    microphone = 'new.usb.adc';
+    // activate performs a synchronous status refresh, so this checks a full
+    // post-plug adapter cycle without relying on the background poll timer.
+    await fixture.backend.activate('7');
+    expect(fixture.backend.current.backendAvailable, isTrue);
+    expect(fixture.backend.current.failure, isNull);
+    expect(fixture.backend.current.activeSessionId, '7');
+    final retained = fixture.backend.current.sessions.single;
+    expect(retained.state, ProjectionSessionState.streaming);
+    expect(retained.videoStreams, initial.videoStreams);
+    expect(retained.audioStreams, initial.audioStreams);
+    expect(
+      fixture.requests.where((r) => r['action'] == 'microphone_source'),
+      isEmpty,
+    );
+    await fixture.backend.sendButton(
+      '7',
+      ProjectionInputButton.playPause,
+      pressed: true,
+    );
+    expect(fixture.requests.last['action'], 'media');
+    // The next physical session can apply the microphone normally.
+    fixture.replaceSession(8);
+    fixture.status['microphone_mode'] = 'device';
+    await fixture.waitUntil(
+      () => fixture.backend.current.sessions.singleOrNull?.id == '8',
+    );
+    expect(
+      fixture.requests.where((r) => r['action'] == 'microphone_source').single,
+      {'action': 'microphone_source', 'session': 8, 'source': 'new.usb.adc'},
+    );
+  });
+
   test(
     'native metadata, selection and touch use one bounded session',
     () async {
@@ -507,7 +565,9 @@ class _MediaFixture {
   final requests = <Map<String, dynamic>>[];
   final sockets = <Socket>[];
   StreamSubscription<Socket>? subscription;
-  static Future<_MediaFixture> create() async {
+  static Future<_MediaFixture> create({
+    String? Function()? selectedMicrophone,
+  }) async {
     final directory = await Directory.systemTemp.createTemp('carplay-media-');
     final path = '${directory.path}/control';
     final server = await ServerSocket.bind(
@@ -519,6 +579,7 @@ class _MediaFixture {
       server,
       CarPlayProjectionBackend(
         socketPath: path,
+        selectedMicrophone: selectedMicrophone,
         pollInterval: const Duration(milliseconds: 50),
       ),
       {
@@ -571,7 +632,14 @@ class _MediaFixture {
       final request = jsonDecode(line) as Map<String, dynamic>;
       requests.add(request);
       socket.writeln(
-        jsonEncode(request['action'] == 'status' ? status : {'ok': true}),
+        jsonEncode(
+          request['action'] == 'status'
+              ? status
+              : request['action'] == 'microphone_source' &&
+                    status['microphone_mode'] == 'silence'
+              ? {'ok': false, 'code': 'unsupported'}
+              : {'ok': true},
+        ),
       );
       await socket.flush();
       await socket.close();

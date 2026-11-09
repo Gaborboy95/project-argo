@@ -22,7 +22,7 @@ the native playback pacing fix. This is not full CarPlay completion.
 | AirPlay receiver | SRP pairing, pair verification, real MFi auth-setup, encrypted control/events, authenticated H.264 main screen |
 | Native media | ARPM/1 into existing GStreamer/GBM/IHS surface; shared library also supports synthetic H.265 fixtures |
 | Flutter adapter | Private metadata/input IPC, session selection, visibility, presentation revisions, normalized two-contact touch |
-| Audio | PCM Spotify playback through Dzsibilee and pause/resume physically confirmed with Corsair input configured; Siri and clear two-way calls with music restoration confirmed; echo processing and shared microphone mute/unmute physically confirmed; AAC acceptance pending |
+| Audio | Wireless AAC music through JBL and play/pause physically confirmed with a virtual muted input; Opus duplex has synthetic coverage. Earlier wired PCM, Siri and two-way call acceptance is recorded below. |
 | Wireless | Current LIVI Link HCI/VHCI, selected-controller BlueZ iAP2, Wi-Fi bootstrap, interface-scoped AirPlay advertisement and the shared native receiver; physical acceptance is recorded separately |
 
 The managed application, AA daemon and CarPlay daemon have explicit startup,
@@ -48,13 +48,21 @@ capture-ownership path. Synthetic GStreamer tests cover decoding, encrypted
 uplink packets, frame bounds, timing and cleanup; wireless audio still requires
 physical acceptance on the target phone and output.
 
-The private development setting `silent_input` explicitly enables a virtual,
-muted input for compatibility tests. It defaults off and is not persisted across
-daemon restarts. The status reports `microphone_mode: "silence"`,
+The native setting `silent_input` enables a virtual, muted input. It defaults off
+and is not persisted across daemon restarts. Managed Argo enables it when a fresh
+inventory confirms that no selected microphone is available and the shared output
+is valid; a confirmed physical input takes precedence. Unknown inventory preserves
+the current mode. Older native receivers do not receive this optional setting.
+The status reports `microphone_mode: "silence"`,
 `microphone_available: false` and `microphone_muted: true`. It generates silence
 through the negotiated PCM/Opus encoder without selecting a default source,
 opening a speaker monitor or acquiring a hardware microphone lease. Reconnecting
 is required before changing an active silent session to a physical input.
+The user confirmed wireless music through JBL and working Media play/pause in
+this mode. On this iPhone XS, advertising no input produced no audio SETUP;
+advertising the implemented silent input produced AAC-LC stereo at 44.1 kHz.
+This does not provide a physical microphone for voice input or establish a
+requirement for every iOS version.
 
 ## Topology and ownership
 

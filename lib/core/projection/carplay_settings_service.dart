@@ -132,6 +132,15 @@ class CarPlaySettingsService {
     final source = selectedMicrophone?.call();
     final selectedSink = sink != null && sink.isNotEmpty ? sink : null;
     final effectiveSink = selectedSink ?? settings['audio_sink'];
+    // Some phones require an input route even for music playback. This native
+    // compatibility hint is runtime-only and is enabled only with a confirmed
+    // output and fresh proof that no microphone is selected. Unknown inventory
+    // preserves the current choice; a real microphone always takes precedence.
+    final silentInput = source == '' && selectedSink != null
+        ? true
+        : source != null && source.isNotEmpty
+        ? false
+        : null;
     return {
       if (selectedSink != null && selectedSink != settings['audio_sink'])
         'audio_sink': selectedSink,
@@ -143,6 +152,10 @@ class CarPlaySettingsService {
           effectiveSink.isNotEmpty &&
           source != settings['audio_source'])
         'audio_source': source,
+      if (current['silent_input_supported'] == true &&
+          silentInput != null &&
+          silentInput != settings['silent_input'])
+        'silent_input': silentInput,
     };
   }
 

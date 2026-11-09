@@ -315,6 +315,10 @@ final class CarPlayProjectionBackend implements ProjectionBackend {
       if (policySession is int &&
           data['available'] == true &&
           data['microphone_source'] == true &&
+          // Silence and physical capture are negotiated for the session. A
+          // newly plugged-in mic is saved for the next connection by settings;
+          // switching this active route would reject the request and lose AV.
+          data['microphone_mode'] != 'silence' &&
           source != null &&
           source.isNotEmpty) {
         final selection = (policySession, source);

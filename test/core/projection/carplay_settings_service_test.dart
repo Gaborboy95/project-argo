@@ -6,6 +6,138 @@ import 'package:argo/core/projection/carplay_settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('known absence enables supported silent input once and restores it after daemon restart', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'jbl.present',
+      'audio_source': 'old.usb.adc',
+      'silent_input': false,
+    });
+    receiver.silentInputSupported = true;
+    String? microphone;
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => 'jbl.present',
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    expect(receiver.configures, isEmpty);
+    microphone = '';
+    await service.refresh();
+    expect(receiver.configures.single['settings'], {
+      'audio_source': null,
+      'silent_input': true,
+    });
+    await Future.wait([service.refresh(), service.refresh()]);
+    expect(receiver.configures, hasLength(1));
+    microphone = null;
+    await service.refresh();
+    expect(receiver.settings['silent_input'], isTrue);
+    expect(receiver.configures, hasLength(1));
+    // Runtime hints disappear at daemon restart and are restored by fresh
+    // evidence, without touching the active receiver from a polling loop.
+    receiver.settings['silent_input'] = false;
+    microphone = '';
+    await service.refresh();
+    expect(receiver.configures.last['settings'], {'silent_input': true});
+    await service.refresh();
+    expect(receiver.configures, hasLength(2));
+    microphone = 'usb.adc';
+    await service.refresh();
+    expect(receiver.configures.last['settings'], {
+      'audio_source': 'usb.adc',
+      'silent_input': false,
+    });
+    await service.refresh();
+    expect(receiver.configures, hasLength(3));
+    expect(
+      receiver.requests.every(
+        (r) => {'status', 'configure'}.contains(r['action']),
+      ),
+      isTrue,
+    );
+  });
+
+  test('silent input requires a valid shared output and is never sent to old native APIs', () async {
+    final receiver = await _Receiver.start({
+      'audio_sink': 'saved.missing',
+      'audio_source': null,
+      'silent_input': false,
+    });
+    receiver.silentInputSupported = true;
+    String? output;
+    var microphone = '';
+    final service = CarPlaySettingsService(
+      socketPath: receiver.path,
+      selectedAudioOutput: () => output,
+      selectedMicrophone: () => microphone,
+    );
+    addTearDown(() async {
+      await service.close();
+      await receiver.close();
+    });
+    await service.start();
+    output = '';
+    await service.refresh();
+    expect(receiver.configures, isEmpty);
+    output = 'jbl.present';
+    for (final supported in <bool?>[null, false]) {
+      receiver.silentInputSupported = supported;
+      receiver.settings['audio_sink'] = 'saved.missing';
+      await service.refresh();
+      microphone = 'usb.adc';
+      await service.refresh();
+      microphone = '';
+      await service.refresh();
+    }
+    expect(receiver.configures, isNotEmpty);
+    expect(
+      receiver.configures.every(
+        (r) => !(r['settings'] as Map).containsKey('silent_input'),
+      ),
+      isTrue,
+    );
+    expect(receiver.settings['silent_input'], isFalse);
+  });
+
+  test(
+    'connect waits for silent input acknowledgement before negotiating audio',
+    () async {
+      final receiver = await _Receiver.start({
+        'audio_sink': 'jbl.present',
+        'audio_source': null,
+        'silent_input': false,
+      });
+      receiver.silentInputSupported = true;
+      String? microphone;
+      final service = CarPlaySettingsService(
+        socketPath: receiver.path,
+        selectedAudioOutput: () => 'jbl.present',
+        selectedMicrophone: () => microphone,
+      );
+      addTearDown(() async {
+        await service.close();
+        await receiver.close();
+      });
+      await service.start();
+      receiver.configureGate = Completer<void>();
+      microphone = '';
+      final connecting = service.connect();
+      await receiver.configureSeen.future.timeout(const Duration(seconds: 2));
+      expect(receiver.connectSinks, isEmpty);
+      receiver.configureGate!.complete();
+      await connecting;
+      expect(receiver.connectSinks, ['jbl.present']);
+      expect(receiver.connectSources, [null]);
+      expect(receiver.connectSilentInputs, [true]);
+      expect(receiver.configures.single['settings'], {'silent_input': true});
+      expect(service.failure, isNull);
+    },
+  );
+
   test('unknown microphone inventory preserves preferences, known absence clears once and replug restores', () async {
     final receiver = await _Receiver.start({
       'audio_sink': 'jbl.present',
@@ -360,11 +492,13 @@ class _Receiver {
   final requests = <Map<String, dynamic>>[];
   final connectSinks = <Object?>[];
   final connectSources = <Object?>[];
+  final connectSilentInputs = <Object?>[];
   final sockets = <Socket>{};
   final work = <Future<void>>{};
   final configureSeen = Completer<void>();
   Completer<void>? configureGate;
   bool rejectConfigure = false;
+  bool? silentInputSupported;
   late final StreamSubscription<Socket> subscription;
   String get path => '${directory.path}/settings';
   List<Map<String, dynamic>> get configures =>
@@ -412,6 +546,7 @@ class _Receiver {
         case 'connect':
           connectSinks.add(settings['audio_sink']);
           connectSources.add(settings['audio_source']);
+          connectSilentInputs.add(settings['silent_input']);
       }
       socket.writeln(
         jsonEncode(
@@ -419,6 +554,8 @@ class _Receiver {
               ? {
                   'ok': true,
                   'contract': 1,
+                  if (silentInputSupported != null)
+                    'silent_input_supported': silentInputSupported,
                   'settings': {...settings},
                   'running': false,
                   'phase': 'Disconnected',
