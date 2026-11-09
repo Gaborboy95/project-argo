@@ -444,7 +444,9 @@ where
             result=async{wifi.as_mut().unwrap().as_mut().await},if wifi.is_some()=>{
                 wifi.take();
                 failure_sender.send_replace(true);
-                eprintln!("CarPlay optional Wi-Fi iAP control ended: success={}",result.is_ok());
+                let reason=match &result {Ok(())=>"Complete",Err(wired::Error::Protocol(_))=>"Protocol",Err(wired::Error::Io(_))=>"Io",Err(wired::Error::Mfi(_))=>"Mfi",Err(wired::Error::Cancelled)=>"Cancelled"};
+                eprintln!("CarPlay optional Wi-Fi iAP control ended: origin=LinkControl reason={reason}");
+                if let Err(wired::Error::Protocol(error))=result{eprintln!("CarPlay optional Wi-Fi iAP protocol reason={error:?}");}
             }
         }
     }
@@ -469,6 +471,9 @@ async fn wifi_control(
     let (mut reader, mut writer) = tokio::io::split(bridge);
     let into_link = async {
         while let Some(bytes) = incoming.recv().await {
+            if bytes.is_empty() {
+                continue;
+            }
             if !(1..=super::handover::MAX_CHUNK).contains(&bytes.len()) {
                 return Err(ProtocolError::Bounds.into());
             }

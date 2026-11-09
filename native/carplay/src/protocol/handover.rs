@@ -4,6 +4,14 @@ use tokio::sync::{mpsc, watch};
 pub const MAX_CHUNK: usize = 65535;
 pub const IAP_UUID: &str = "E9459FD0-BCAD-4C45-820F-1E72447EF2F2";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelayFailure {
+    InvalidPayload,
+    NotRecorded,
+    QueueFull,
+    QueueClosed,
+}
+
 pub struct ReceiverSide {
     pub peer: [u8; 6],
     pub controller: [u8; 6],
@@ -65,16 +73,25 @@ impl ReceiverSide {
         self.disable.send_replace(true);
         true
     }
-    pub fn deliver(&self, data: &[u8]) -> Result<(), super::Error> {
+    pub fn deliver(&self, data: &[u8]) -> Result<(), RelayFailure> {
         if *self.failure.borrow() {
             return Ok(());
         }
-        if !(1..=MAX_CHUNK).contains(&data.len()) || !*self.recorded.borrow() {
-            return Err(super::Error::Bounds);
+        // A valid empty iAP keepalive carries no link bytes and must not end it.
+        if data.is_empty() {
+            return Ok(());
         }
-        self.incoming
-            .try_send(data.to_vec())
-            .map_err(|_| super::Error::Bounds)
+        if data.len() > MAX_CHUNK {
+            return Err(RelayFailure::InvalidPayload);
+        }
+        if !*self.recorded.borrow() {
+            return Err(RelayFailure::NotRecorded);
+        }
+        match self.incoming.try_send(data.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(RelayFailure::QueueFull),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(RelayFailure::QueueClosed),
+        }
     }
     pub fn fail(&self) -> bool {
         self.failure.send_if_modified(|failed| {
@@ -109,13 +126,26 @@ mod tests {
         let (receiver, mut control) = channel([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]);
         assert!(receiver.deliver(&[1]).is_err());
         receiver.recorded.send_replace(true);
-        assert!(receiver.deliver(&[]).is_err());
+        receiver.deliver(&[]).unwrap();
         assert!(receiver.deliver(&vec![0; MAX_CHUNK + 1]).is_err());
         for _ in 0..16 {
             receiver.deliver(&[1]).unwrap();
         }
-        assert!(receiver.deliver(&[2]).is_err());
+        assert_eq!(receiver.deliver(&[2]), Err(RelayFailure::QueueFull));
         assert_eq!(control.incoming.try_recv().unwrap(), [1]);
         receiver.deliver(&vec![3; MAX_CHUNK]).unwrap();
+    }
+    #[test]
+    fn relay_errors_are_fixed_and_distinguish_closed_full_and_bad_input() {
+        let (receiver, control) = channel([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]);
+        assert_eq!(receiver.deliver(&[1]), Err(RelayFailure::NotRecorded));
+        receiver.recorded.send_replace(true);
+        assert_eq!(
+            receiver.deliver(&vec![0; MAX_CHUNK + 1]),
+            Err(RelayFailure::InvalidPayload)
+        );
+        drop(control);
+        assert_eq!(receiver.deliver(&[1]), Err(RelayFailure::QueueClosed));
+        receiver.deliver(&[]).unwrap();
     }
 }

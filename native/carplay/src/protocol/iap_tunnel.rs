@@ -21,6 +21,37 @@ const MAX_PENDING: usize = 128 * 1024;
 const MAX_CIPHER_PLAIN: usize = 16 * 1024;
 const COMM: u32 = u32::from_be_bytes(*b"comm");
 
+/// Fixed protocol stages only; diagnostics never contain peer or payload data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Origin {
+    Accept,
+    Peer,
+    FrameLength,
+    FrameRead,
+    CipherAuthentication,
+    Package,
+    RelayQueue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fault {
+    pub origin: Origin,
+    pub reason: Error,
+}
+
+impl Fault {
+    fn new(origin: Origin, reason: Error) -> Self {
+        Self { origin, reason }
+    }
+}
+
+impl std::fmt::Display for Fault {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "CarPlay iAP {:?} {:?}", self.origin, self.reason)
+    }
+}
+impl std::error::Error for Fault {}
+
 /// Accept only the authenticated AirPlay peer and deliver its iAP link bytes.
 /// The supplied key is derived from the negotiated DataStream seed and the
 /// already verified AirPlay shared secret by the caller.
@@ -30,12 +61,24 @@ pub async fn run(
     key: [u8; 32],
     incoming: mpsc::Sender<Vec<u8>>,
 ) -> Result<(), Error> {
+    run_with_diagnostics(listener, peer, key, incoming)
+        .await
+        .map_err(|fault| fault.reason)
+}
+
+/// The compatibility `run` entry point discards these fixed stage diagnostics.
+pub async fn run_with_diagnostics(
+    listener: TcpListener,
+    peer: SocketAddr,
+    key: [u8; 32],
+    incoming: mpsc::Sender<Vec<u8>>,
+) -> Result<(), Fault> {
     let (socket, remote) = timeout(Duration::from_secs(15), listener.accept())
         .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(|_| Error::Rejected)?;
+        .map_err(|_| Fault::new(Origin::Accept, Error::Timeout))?
+        .map_err(|_| Fault::new(Origin::Accept, Error::Rejected))?;
     if remote.ip() != peer.ip() {
-        return Err(Error::Rejected);
+        return Err(Fault::new(Origin::Peer, Error::Rejected));
     }
     read(socket, key, incoming).await
 }
@@ -44,7 +87,7 @@ async fn read(
     mut socket: TcpStream,
     key: [u8; 32],
     incoming: mpsc::Sender<Vec<u8>>,
-) -> Result<(), Error> {
+) -> Result<(), Fault> {
     let mut cipher = ControlCipher::new(key);
     let mut pending = Vec::new();
     loop {
@@ -53,43 +96,46 @@ async fn read(
         if socket
             .read(&mut length[..1])
             .await
-            .map_err(|_| Error::Rejected)?
+            .map_err(|_| Fault::new(Origin::FrameRead, Error::Rejected))?
             == 0
         {
             return if pending.is_empty() {
                 Ok(())
             } else {
-                Err(Error::Malformed)
+                Err(Fault::new(Origin::Package, Error::Malformed))
             };
         }
         socket
             .read_exact(&mut length[1..])
             .await
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Fault::new(Origin::FrameRead, Error::Malformed))?;
         let size = usize::from(u16::from_le_bytes(length));
         if size > MAX_CIPHER_PLAIN {
-            return Err(Error::Bounds);
+            return Err(Fault::new(Origin::FrameLength, Error::Bounds));
         }
         let mut frame = vec![0; size + 18];
         frame[..2].copy_from_slice(&length);
         socket
             .read_exact(&mut frame[2..])
             .await
-            .map_err(|_| Error::Malformed)?;
-        let plain = cipher.decrypt(&frame)?;
+            .map_err(|_| Fault::new(Origin::FrameRead, Error::Malformed))?;
+        let plain = cipher
+            .decrypt(&frame)
+            .map_err(|reason| Fault::new(Origin::CipherAuthentication, reason))?;
         if pending.len() + plain.len() > MAX_PENDING {
-            return Err(Error::Bounds);
+            return Err(Fault::new(Origin::Package, Error::Bounds));
         }
         pending.extend_from_slice(&plain);
-        while let Some(package) = next_package(&mut pending)? {
-            if package.message_type == COMM {
-                if package.body.is_empty() {
-                    return Err(Error::Malformed);
-                }
+        while let Some(package) =
+            next_package(&mut pending).map_err(|reason| Fault::new(Origin::Package, reason))?
+        {
+            // Empty comm packages are valid tunnel keepalives; consume them
+            // without passing an empty iAP chunk to the control-link parser.
+            if package.message_type == COMM && !package.body.is_empty() {
                 timeout(Duration::from_secs(3), incoming.send(package.body))
                     .await
-                    .map_err(|_| Error::Timeout)?
-                    .map_err(|_| Error::State)?;
+                    .map_err(|_| Fault::new(Origin::RelayQueue, Error::Timeout))?
+                    .map_err(|_| Fault::new(Origin::RelayQueue, Error::State))?;
             }
             // Like LIVI's incoming iAP tunnel, non-comm packages are ignored.
             // This direction does not emit sync acknowledgements or commands.
@@ -144,6 +190,103 @@ mod tests {
         let task = tokio::spawn(run(listener, "127.0.0.1:1".parse().unwrap(), [7; 32], out));
         let phone = TcpStream::connect(address).await.unwrap();
         (phone, incoming, task)
+    }
+
+    async fn diagnostic_fixture() -> (
+        TcpStream,
+        mpsc::Receiver<Vec<u8>>,
+        JoinHandle<Result<(), Fault>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (out, incoming) = mpsc::channel(16);
+        let task = tokio::spawn(run_with_diagnostics(
+            listener,
+            "127.0.0.1:1".parse().unwrap(),
+            [7; 32],
+            out,
+        ));
+        let phone = TcpStream::connect(address).await.unwrap();
+        (phone, incoming, task)
+    }
+
+    #[tokio::test]
+    async fn an_empty_comm_package_keeps_the_link_and_cipher_counter_alive() {
+        let (mut phone, mut incoming, task) = fixture().await;
+        let mut cipher = ControlCipher::new([7; 32]);
+        phone
+            .write_all(&cipher.encrypt(&package(b"comm", &[])).unwrap())
+            .await
+            .unwrap();
+        phone
+            .write_all(
+                &cipher
+                    .encrypt(&package(b"comm", b"next iAP link bytes"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(incoming.recv().await.unwrap(), b"next iAP link bytes");
+        phone.shutdown().await.unwrap();
+        assert_eq!(task.await.unwrap(), Ok(()));
+        assert!(incoming.recv().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn diagnostic_faults_identify_cipher_package_frame_and_queue_stages() {
+        let (mut phone, mut incoming, task) = diagnostic_fixture().await;
+        let mut frame = ControlCipher::new([7; 32])
+            .encrypt(&package(b"comm", b"not delivered"))
+            .unwrap();
+        *frame.last_mut().unwrap() ^= 1;
+        phone.write_all(&frame).await.unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap_err().origin,
+            Origin::CipherAuthentication
+        );
+        assert!(incoming.recv().await.is_none());
+
+        let (mut phone, mut incoming, task) = diagnostic_fixture().await;
+        let mut header = vec![0; HEADER];
+        header[..4].copy_from_slice(&31u32.to_be_bytes());
+        phone
+            .write_all(&ControlCipher::new([7; 32]).encrypt(&header).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap(),
+            Err(Fault::new(Origin::Package, Error::Bounds))
+        );
+        assert!(incoming.recv().await.is_none());
+
+        let (mut phone, mut incoming, task) = diagnostic_fixture().await;
+        phone
+            .write_all(&((MAX_CIPHER_PLAIN + 1) as u16).to_le_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap(),
+            Err(Fault::new(Origin::FrameLength, Error::Bounds))
+        );
+        assert!(incoming.recv().await.is_none());
+
+        let (mut phone, mut incoming, task) = diagnostic_fixture().await;
+        let mut cipher = ControlCipher::new([7; 32]);
+        for _ in 0..17 {
+            phone
+                .write_all(&cipher.encrypt(&package(b"comm", &[1])).unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            task.await.unwrap(),
+            Err(Fault::new(Origin::RelayQueue, Error::Timeout))
+        );
+        let mut delivered = 0;
+        while incoming.recv().await.is_some() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, 16);
     }
 
     #[tokio::test]

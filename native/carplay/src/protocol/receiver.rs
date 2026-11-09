@@ -887,8 +887,12 @@ impl Receiver {
                                 }
                             }
                             Some(bytes)=async {match &mut handover {Some(relay)=>relay.outgoing.recv().await,None=>std::future::pending().await}} => {
-                                if let Some(relay)=&handover && !relay.is_failed()
-                                    && (!(1..=super::handover::MAX_CHUNK).contains(&bytes.len()) || !active || events_tx.try_send(Command::Iap(bytes)).is_err()) && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled");}
+                                if let Some(relay)=&handover && !relay.is_failed() {
+                                    let result=if bytes.len()>super::handover::MAX_CHUNK{Err(super::handover::RelayFailure::InvalidPayload)}else if !active{Err(super::handover::RelayFailure::NotRecorded)}else if bytes.is_empty(){Ok(())}else{
+                                        events_tx.try_send(Command::Iap(bytes)).map_err(|error|match error{mpsc::error::TrySendError::Full(_)=>super::handover::RelayFailure::QueueFull,mpsc::error::TrySendError::Closed(_)=>super::handover::RelayFailure::QueueClosed})
+                                    };
+                                    if let Err(reason)=result && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled: origin=EventOutput reason={reason:?}");}
+                                }
                             }
                             Some(result) = tasks.join_next(), if !tasks.is_empty() => { result.map_err(|_| Error::Rejected)??; return Err(Error::Rejected); },
                         }
@@ -944,7 +948,7 @@ impl Receiver {
                                     let port=listener.local_addr()?.port();
                                     let incoming=relay.incoming.clone();
                                     let failure=relay.failure.clone();
-                                    tasks.spawn(async move {let result=super::iap_tunnel::run(listener,peer,key,incoming).await;if result.is_err(){failure.send_replace(true);}std::future::pending::<Result<()>>().await});
+                                    tasks.spawn(async move {let result=super::iap_tunnel::run_with_diagnostics(listener,peer,key,incoming).await;if let Err(error)=result{eprintln!("CarPlay optional Wi-Fi iAP DataStream ended: origin={:?} reason={:?}",error.origin,error.reason);failure.send_replace(true);}std::future::pending::<Result<()>>().await});
                                     iap_stream_started=true;
                                     replies.push(dict([("type",number(130)),("streamID",number(1)),("dataPort",number(port as u64))]));
                                     continue;
@@ -1048,7 +1052,8 @@ impl Receiver {
                             Some("iAPSendMessage")=>{
                                 if let Some(relay)=&handover {
                                     let data=command.get("params").and_then(Value::as_dictionary).and_then(|p|p.get("data")).and_then(Value::as_data);
-                                    if data.is_none_or(|data|relay.deliver(data).is_err()) && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled");}
+                                    let result=data.ok_or(super::handover::RelayFailure::InvalidPayload).and_then(|data|relay.deliver(data));
+                                    if let Err(reason)=result && relay.fail(){eprintln!("CarPlay optional Wi-Fi iAP bridge disabled: origin=PostCommand reason={reason:?}");}
                                 }
                             }
                             Some("modesChanged") => {
